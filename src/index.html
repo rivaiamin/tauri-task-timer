@@ -1,0 +1,46 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>Multi-Task Timer</title>
+    <link rel="stylesheet" href="styles.css" />
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script type="module" src="/main.js" defer></script>
+  </head>
+  <body class="min-h-screen p-4 sm:p-8">
+    <div data-tauri-drag-region class="max-w-2xl mx-auto bg-white rounded-xl shadow-lg p-6 sm:p-8">
+      <header class="mb-6">
+        <h1 class="text-3xl font-bold text-gray-900 text-center">Task Timer</h1>
+        <p class="text-center text-gray-500 mt-1">
+          Add tasks and track your time. Only one timer can run at a time.
+        </p>
+      </header>
+
+      <form
+        id="task-form"
+        class="flex flex-col sm:flex-row space-y-2 sm:space-y-0 sm:space-x-2 mb-8"
+      >
+        <input
+          type="text"
+          id="task-input"
+          placeholder="Enter new task name..."
+          class="flex-1 p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <button
+          type="submit"
+          class="p-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition duration-200 shadow-sm"
+        >
+          Add Task
+        </button>
+      </form>
+
+      <div id="task-list" class="space-y-4">
+        <p class="text-gray-500 text-center">
+          No tasks added yet. Add one above to get started!
+        </p>
+      </div>
+    </div>
+    
+  </body>
+</html>
