@@ -6,6 +6,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const taskForm = document.getElementById("task-form");
   const taskInput = document.getElementById("task-input");
   const taskList = document.getElementById("task-list");
+  const exportCsvButton = document.getElementById("export-csv");
+  const exportCsvMobileButton = document.getElementById("export-csv-mobile");
 
   const appWindow = getCurrentWindow();
 
@@ -169,7 +171,86 @@ document.addEventListener("DOMContentLoaded", () => {
     return div.innerHTML;
   }
 
+  function tasksToCsv() {
+    const header = ["Task", "Story Points"];
+    const rows = [header];
+
+    tasks.forEach((task) => {
+      const storyPoints = task.elapsedTime / 3600; // 60 minutes => 1 story point
+      rows.push([task.label, storyPoints.toFixed(2)]);
+    });
+
+    return rows
+      .map((row) =>
+        row
+          .map((field) => {
+            const value = String(field ?? "");
+            const escaped = value.replace(/"/g, '""');
+            return `"${escaped}"`;
+          })
+          .join(","),
+      )
+      .join("\r\n");
+  }
+
+  async function exportTasksAsCsv() {
+    if (!tasks.length) {
+      alert("No tasks to export yet.");
+      return;
+    }
+
+    const csvContent = tasksToCsv();
+    const datePart = new Date().toISOString().slice(0, 10);
+
+    // Prefer Tauri-native save dialog when available
+    const tauri = window.__TAURI__;
+
+    if (tauri && tauri.fs && tauri.dialog) {
+      try {
+        const filePath = await tauri.dialog.save({
+          defaultPath: `tasks-${datePart}.csv`,
+          filters: [
+            {
+              name: "CSV Files",
+              extensions: ["csv"],
+            },
+          ],
+        });
+
+        // User cancelled the dialog
+        if (!filePath) {
+          return;
+        }
+
+        await tauri.fs.writeTextFile(filePath, csvContent);
+        alert("Tasks exported successfully.");
+        return;
+      } catch (error) {
+        console.error("Failed to export CSV via Tauri:", error);
+        alert("Failed to export CSV. Please try again.");
+        return;
+      }
+    }
+
+    // Fallback: browser-style download (for web/dev)
+    const blob = new Blob([csvContent], {
+      type: "text/csv;charset=utf-8;",
+    });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `tasks-${datePart}.csv`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
   taskForm.addEventListener("submit", addTask);
+
+  exportCsvButton?.addEventListener("click", exportTasksAsCsv);
+  exportCsvMobileButton?.addEventListener("click", exportTasksAsCsv);
 
   taskList.addEventListener("click", (event) => {
     const button = event.target.closest("button");

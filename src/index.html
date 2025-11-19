@@ -11,10 +11,30 @@
   <body class="min-h-screen p-4 sm:p-8">
     <div data-tauri-drag-region class="max-w-2xl mx-auto bg-white rounded-xl shadow-lg p-6 sm:p-8">
       <header class="mb-6">
-        <h1 class="text-3xl font-bold text-gray-900 text-center">Task Timer</h1>
-        <p class="text-center text-gray-500 mt-1">
-          Add tasks and track your time. Only one timer can run at a time.
-        </p>
+        <div class="flex items-center justify-between">
+          <div class="flex-1">
+            <h1 class="text-3xl font-bold text-gray-900 text-center sm:text-left">
+              Task Timer
+            </h1>
+            <p class="text-center sm:text-left text-gray-500 mt-1">
+              Add tasks and track your time. Only one timer can run at a time.
+            </p>
+          </div>
+          <button
+            id="export-csv"
+            class="hidden sm:inline-flex items-center px-3 py-2 ml-4 text-sm font-semibold text-white bg-emerald-600 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors"
+            type="button"
+          >
+            Export CSV
+          </button>
+        </div>
+        <button
+          id="export-csv-mobile"
+          class="mt-4 w-full inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-emerald-600 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors sm:hidden"
+          type="button"
+        >
+          Export CSV
+        </button>
       </header>
 
       <form
