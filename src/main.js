@@ -1,4 +1,7 @@
-const { getCurrentWindow } = window.__TAURI__.window;
+if (window.__TAURI__) {
+  const { getCurrentWindow } = window.__TAURI__.window;
+}
+
 // when using `"withGlobalTauri": true`, you may use
 // const { getCurrentWindow } = window.__TAURI__.window;
 
@@ -9,7 +12,11 @@ document.addEventListener("DOMContentLoaded", () => {
   const exportCsvButton = document.getElementById("export-csv");
   const exportCsvMobileButton = document.getElementById("export-csv-mobile");
 
-  const appWindow = getCurrentWindow();
+  if (window.__TAURI__) {
+    const appWindow = getCurrentWindow();
+  } else {
+    const appWindow = window.open("index.html", "_blank");
+  }
 
   document
     .querySelector('[data-tauri-drag-region]')
