@@ -38,14 +38,12 @@ document.addEventListener("DOMContentLoaded", () => {
     tasks.forEach((task) => {
       const taskElement = document.createElement("div");
       taskElement.className =
-        "flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200 " +
+        "flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:bg-gray-100 transition duration-200 " +
         (task.isRunning ? "ring-2 ring-green-400" : "");
+      taskElement.dataset.id = task.id;
+      taskElement.dataset.action = "toggle";
 
       const formattedTime = formatTime(task.elapsedTime);
-      const buttonText = task.isRunning ? "Stop" : "Start";
-      const buttonClass = task.isRunning
-        ? "bg-red-500 hover:bg-red-600"
-        : "bg-green-500 hover:bg-green-600";
 
       taskElement.innerHTML = `
         <div class="flex-1 mb-3 sm:mb-0">
@@ -57,17 +55,23 @@ document.addEventListener("DOMContentLoaded", () => {
         <div class="flex space-x-2 w-full sm:w-auto">
           <button
             data-id="${task.id}"
-            data-action="toggle"
-            class="w-1/2 sm:w-20 p-2 rounded-lg text-white font-semibold transition duration-200 ${buttonClass}"
+            data-action="reset"
+            class="p-2 rounded-lg text-white bg-orange-500 hover:bg-orange-600 transition duration-200 flex items-center justify-center"
+            title="Reset"
           >
-            ${buttonText}
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
           </button>
           <button
             data-id="${task.id}"
             data-action="delete"
-            class="w-1/2 sm:w-20 p-2 rounded-lg text-white font-semibold bg-gray-400 hover:bg-gray-500 transition duration-200"
+            class="p-2 rounded-lg text-white bg-gray-400 hover:bg-gray-500 transition duration-200 flex items-center justify-center"
+            title="Delete"
           >
-            Delete
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
           </button>
         </div>
       `;
@@ -105,6 +109,30 @@ document.addEventListener("DOMContentLoaded", () => {
       clearInterval(taskToToggle.intervalId);
       taskToToggle.isRunning = false;
       taskToToggle.intervalId = null;
+    }
+
+    saveTasks();
+    renderTasks();
+  }
+
+  function resetTimer(id) {
+    const taskToReset = tasks.find((task) => task.id === id);
+    if (!taskToReset) return;
+
+    // Stop the timer if it's running
+    if (taskToReset.isRunning) {
+      clearInterval(taskToReset.intervalId);
+      taskToReset.isRunning = false;
+      taskToReset.intervalId = null;
+    }
+
+    // Reset elapsed time to 0
+    taskToReset.elapsedTime = 0;
+    
+    // Update the display immediately
+    const timeElement = document.getElementById(`time-${taskToReset.id}`);
+    if (timeElement) {
+      timeElement.textContent = formatTime(0);
     }
 
     saveTasks();
@@ -260,18 +288,28 @@ document.addEventListener("DOMContentLoaded", () => {
   exportCsvMobileButton?.addEventListener("click", exportTasksAsCsv);
 
   taskList.addEventListener("click", (event) => {
+    // Check if a button was clicked (stop propagation to prevent card toggle)
     const button = event.target.closest("button");
-    if (!button) return;
+    if (button) {
+      event.stopPropagation();
+      const id = Number(button.dataset.id);
+      const action = button.dataset.action;
 
-    const id = Number(button.dataset.id);
-    const action = button.dataset.action;
-
-    if (action === "toggle") {
-      toggleTimer(id);
-    } else if (action === "delete") {
-      if (confirm("Are you sure you want to delete this task?")) {
-        deleteTask(id);
+      if (action === "reset") {
+        resetTimer(id);
+      } else if (action === "delete") {
+        if (confirm("Are you sure you want to delete this task?")) {
+          deleteTask(id);
+        }
       }
+      return;
+    }
+
+    // Check if the card itself was clicked (but not a button)
+    const card = event.target.closest("[data-action='toggle']");
+    if (card && !event.target.closest("button")) {
+      const id = Number(card.dataset.id);
+      toggleTimer(id);
     }
   });
 
