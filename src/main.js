@@ -43,7 +43,7 @@ document.addEventListener("DOMContentLoaded", () => {
       taskElement.dataset.id = task.id;
       taskElement.dataset.action = "toggle";
 
-      const formattedTime = formatTime(task.elapsedTime);
+      const formattedTime = formatTime(getCurrentElapsedTime(task));
 
       taskElement.innerHTML = `
         <div class="flex-1 mb-3 sm:mb-0">
@@ -88,31 +88,54 @@ document.addEventListener("DOMContentLoaded", () => {
     if (isStarting) {
       tasks.forEach((task) => {
         if (task.isRunning) {
+          // Save accumulated time before stopping
+          task.elapsedTime = getCurrentElapsedTime(task);
           clearInterval(task.intervalId);
           task.isRunning = false;
           task.intervalId = null;
+          task.startTime = null;
         }
       });
     }
 
     if (isStarting) {
       taskToToggle.isRunning = true;
+      taskToToggle.startTime = Date.now();
+      
+      // Update display immediately
+      updateTimerDisplay(taskToToggle);
+      
       taskToToggle.intervalId = setInterval(() => {
-        taskToToggle.elapsedTime += 1;
-        const timeElement = document.getElementById(`time-${taskToToggle.id}`);
-        if (timeElement) {
-          timeElement.textContent = formatTime(taskToToggle.elapsedTime);
-        }
+        updateTimerDisplay(taskToToggle);
         saveTasks();
       }, 1000);
     } else {
+      // Save accumulated time before stopping
+      taskToToggle.elapsedTime = getCurrentElapsedTime(taskToToggle);
       clearInterval(taskToToggle.intervalId);
       taskToToggle.isRunning = false;
       taskToToggle.intervalId = null;
+      taskToToggle.startTime = null;
     }
 
     saveTasks();
     renderTasks();
+  }
+
+  function getCurrentElapsedTime(task) {
+    if (!task.isRunning || !task.startTime) {
+      return task.elapsedTime;
+    }
+    const elapsedSinceStart = Math.floor((Date.now() - task.startTime) / 1000);
+    return task.elapsedTime + elapsedSinceStart;
+  }
+
+  function updateTimerDisplay(task) {
+    const currentElapsed = getCurrentElapsedTime(task);
+    const timeElement = document.getElementById(`time-${task.id}`);
+    if (timeElement) {
+      timeElement.textContent = formatTime(currentElapsed);
+    }
   }
 
   function resetTimer(id) {
@@ -124,6 +147,7 @@ document.addEventListener("DOMContentLoaded", () => {
       clearInterval(taskToReset.intervalId);
       taskToReset.isRunning = false;
       taskToReset.intervalId = null;
+      taskToReset.startTime = null;
     }
 
     // Reset elapsed time to 0
@@ -161,6 +185,7 @@ document.addEventListener("DOMContentLoaded", () => {
       elapsedTime: 0,
       isRunning: false,
       intervalId: null,
+      startTime: null,
     };
 
     tasks.push(newTask);
@@ -185,6 +210,7 @@ document.addEventListener("DOMContentLoaded", () => {
         ...task,
         isRunning: false,
         intervalId: null,
+        startTime: null,
       }));
     }
     return [];
@@ -310,6 +336,18 @@ document.addEventListener("DOMContentLoaded", () => {
     if (card && !event.target.closest("button")) {
       const id = Number(card.dataset.id);
       toggleTimer(id);
+    }
+  });
+
+  // Update timers when page becomes visible (handles background tab issue)
+  document.addEventListener("visibilitychange", () => {
+    if (!document.hidden) {
+      // Page became visible - update all running timers
+      tasks.forEach((task) => {
+        if (task.isRunning) {
+          updateTimerDisplay(task);
+        }
+      });
     }
   });
 
