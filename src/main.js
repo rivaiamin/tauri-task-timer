@@ -14,8 +14,6 @@ document.addEventListener("DOMContentLoaded", () => {
 
   if (window.__TAURI__) {
     const appWindow = getCurrentWindow();
-  } else {
-    const appWindow = window.open("index.html", "_blank");
   }
 
   document
@@ -56,7 +54,7 @@ document.addEventListener("DOMContentLoaded", () => {
           <button
             data-id="${task.id}"
             data-action="reset"
-            class="p-2 rounded-lg text-white bg-orange-500 hover:bg-orange-600 transition duration-200 flex items-center justify-center"
+            class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-orange-500 hover:bg-orange-600 transition duration-200 flex items-center justify-center text-sm font-semibold"
             title="Reset"
           >
             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -65,8 +63,18 @@ document.addEventListener("DOMContentLoaded", () => {
           </button>
           <button
             data-id="${task.id}"
+            data-action="edit"
+            class="w-1/3 sm:w-24 p-2 rounded-lg text-gray-800 bg-white border border-gray-300 hover:bg-gray-50 transition duration-200 flex items-center justify-center text-sm font-semibold"
+            title="Edit time"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+          </button>
+          <button
+            data-id="${task.id}"
             data-action="delete"
-            class="p-2 rounded-lg text-white bg-gray-400 hover:bg-gray-500 transition duration-200 flex items-center justify-center"
+            class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-gray-400 hover:bg-gray-500 transition duration-200 flex items-center justify-center text-sm font-semibold"
             title="Delete"
           >
             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -157,6 +165,72 @@ document.addEventListener("DOMContentLoaded", () => {
     const timeElement = document.getElementById(`time-${taskToReset.id}`);
     if (timeElement) {
       timeElement.textContent = formatTime(0);
+    }
+
+    saveTasks();
+    renderTasks();
+  }
+
+  function parseTimeInput(value) {
+    const input = String(value ?? "").trim();
+    if (!input) return null;
+
+    // Support HH:MM:SS, MM:SS, or SS
+    if (/^\d+(:\d+){0,2}$/.test(input)) {
+      const parts = input.split(":").map((part) => Number(part));
+      if (parts.some((n) => Number.isNaN(n) || n < 0)) return null;
+
+      let hours = 0;
+      let minutes = 0;
+      let seconds = 0;
+
+      if (parts.length === 3) {
+        [hours, minutes, seconds] = parts;
+      } else if (parts.length === 2) {
+        [minutes, seconds] = parts;
+      } else {
+        [seconds] = parts;
+      }
+
+      return hours * 3600 + minutes * 60 + seconds;
+    }
+
+    // Fallback: treat a plain number as minutes (can be decimal)
+    const asNumber = Number(input.replace(",", "."));
+    if (!Number.isFinite(asNumber) || asNumber < 0) return null;
+    return Math.round(asNumber * 60);
+  }
+
+  function editTaskTime(id) {
+    const task = tasks.find((t) => t.id === id);
+    if (!task) return;
+
+    const currentSeconds = getCurrentElapsedTime(task);
+    const currentFormatted = formatTime(currentSeconds);
+
+    const input = prompt(
+      `Edit time for "${task.label}".\n\n` +
+        "Use HH:MM:SS (e.g. 01:30:00) or minutes (e.g. 90 for 1.5 hours).",
+      currentFormatted,
+    );
+
+    if (input === null) {
+      // User cancelled
+      return;
+    }
+
+    const newSeconds = parseTimeInput(input);
+    if (newSeconds === null) {
+      alert("Couldn't understand that time. Please use HH:MM:SS or minutes.");
+      return;
+    }
+
+    // Update stored elapsed time based on new value
+    task.elapsedTime = newSeconds;
+
+    // If the timer is running, keep it running from the new base time
+    if (task.isRunning) {
+      task.startTime = Date.now();
     }
 
     saveTasks();
@@ -323,6 +397,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
       if (action === "reset") {
         resetTimer(id);
+      } else if (action === "edit") {
+        editTaskTime(id);
       } else if (action === "delete") {
         if (confirm("Are you sure you want to delete this task?")) {
           deleteTask(id);

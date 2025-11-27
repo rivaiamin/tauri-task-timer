@@ -6,7 +6,8 @@
   "scripts": {
     "tauri": "tauri",
     "build": "node build.js",
-    "predeploy": "npm run build"
+    "predeploy": "npm run build",
+    "preview": "npm run build && npx http-server dist"
   },
   "devDependencies": {
     "@tauri-apps/cli": "^2.9.4"
