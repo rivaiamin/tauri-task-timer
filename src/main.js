@@ -11,6 +11,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const taskList = document.getElementById("task-list");
   const exportCsvButton = document.getElementById("export-csv");
   const exportCsvMobileButton = document.getElementById("export-csv-mobile");
+  const resetAllButton = document.getElementById("reset-all");
+  const resetAllMobileButton = document.getElementById("reset-all-mobile");
 
   if (window.__TAURI__) {
     const appWindow = getCurrentWindow();
@@ -211,6 +213,32 @@ document.addEventListener("DOMContentLoaded", () => {
     if (timeElement) {
       timeElement.textContent = formatTime(0);
     }
+
+    saveTasks();
+    renderTasks();
+  }
+
+  function resetAllTimers() {
+    if (tasks.length === 0) {
+      alert("No tasks to reset.");
+      return;
+    }
+
+    if (!confirm("Are you sure you want to reset all timers to 00:00:00?")) {
+      return;
+    }
+
+    // Stop all running timers
+    tasks.forEach((task) => {
+      if (task.isRunning) {
+        clearInterval(task.intervalId);
+        task.isRunning = false;
+        task.intervalId = null;
+        task.startTime = null;
+      }
+      // Reset elapsed time to 0
+      task.elapsedTime = 0;
+    });
 
     saveTasks();
     renderTasks();
@@ -429,6 +457,8 @@ document.addEventListener("DOMContentLoaded", () => {
 
   taskForm.addEventListener("submit", addTask);
 
+  resetAllButton?.addEventListener("click", resetAllTimers);
+  resetAllMobileButton?.addEventListener("click", resetAllTimers);
   exportCsvButton?.addEventListener("click", exportTasksAsCsv);
   exportCsvMobileButton?.addEventListener("click", exportTasksAsCsv);
 
