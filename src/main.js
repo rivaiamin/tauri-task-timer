@@ -42,6 +42,9 @@ document.addEventListener("DOMContentLoaded", () => {
       taskElement.dataset.action = "toggle";
 
       const formattedTime = formatTime(getCurrentElapsedTime(task));
+      const taskIndex = tasks.findIndex(t => t.id === task.id);
+      const isFirst = taskIndex === 0;
+      const isLast = taskIndex === tasks.length - 1;
 
       taskElement.innerHTML = `
         <div class="flex-1 mb-3 sm:mb-0">
@@ -51,6 +54,28 @@ document.addEventListener("DOMContentLoaded", () => {
           <span id="time-${task.id}" class="text-3xl font-mono text-gray-700 block mt-1">${formattedTime}</span>
         </div>
         <div class="flex space-x-2 w-full sm:w-auto">
+          <button
+            data-id="${task.id}"
+            data-action="move-up"
+            class="p-2 rounded-lg text-gray-800 bg-white border border-gray-300 hover:bg-gray-50 transition duration-200 flex items-center justify-center text-sm font-semibold ${isFirst ? 'opacity-50 cursor-not-allowed' : ''}"
+            title="Move up"
+            ${isFirst ? 'disabled' : ''}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+            </svg>
+          </button>
+          <button
+            data-id="${task.id}"
+            data-action="move-down"
+            class="p-2 rounded-lg text-gray-800 bg-white border border-gray-300 hover:bg-gray-50 transition duration-200 flex items-center justify-center text-sm font-semibold ${isLast ? 'opacity-50 cursor-not-allowed' : ''}"
+            title="Move down"
+            ${isLast ? 'disabled' : ''}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
           <button
             data-id="${task.id}"
             data-action="reset"
@@ -85,6 +110,26 @@ document.addEventListener("DOMContentLoaded", () => {
       `;
       taskList.appendChild(taskElement);
     });
+  }
+
+  function moveTaskUp(id) {
+    const index = tasks.findIndex((task) => task.id === id);
+    if (index <= 0) return; // Already at the top
+
+    // Swap with the task above
+    [tasks[index - 1], tasks[index]] = [tasks[index], tasks[index - 1]];
+    saveTasks();
+    renderTasks();
+  }
+
+  function moveTaskDown(id) {
+    const index = tasks.findIndex((task) => task.id === id);
+    if (index < 0 || index >= tasks.length - 1) return; // Already at the bottom
+
+    // Swap with the task below
+    [tasks[index], tasks[index + 1]] = [tasks[index + 1], tasks[index]];
+    saveTasks();
+    renderTasks();
   }
 
   function toggleTimer(id) {
@@ -395,7 +440,11 @@ document.addEventListener("DOMContentLoaded", () => {
       const id = Number(button.dataset.id);
       const action = button.dataset.action;
 
-      if (action === "reset") {
+      if (action === "move-up") {
+        moveTaskUp(id);
+      } else if (action === "move-down") {
+        moveTaskDown(id);
+      } else if (action === "reset") {
         resetTimer(id);
       } else if (action === "edit") {
         editTaskTime(id);
