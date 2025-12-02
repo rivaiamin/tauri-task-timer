@@ -9,6 +9,7 @@ document.addEventListener("DOMContentLoaded", () => {
   const taskForm = document.getElementById("task-form");
   const taskInput = document.getElementById("task-input");
   const taskList = document.getElementById("task-list");
+  const totalTimeDisplay = document.getElementById("total-time-display");
   const exportCsvButton = document.getElementById("export-csv");
   const exportCsvMobileButton = document.getElementById("export-csv-mobile");
   const resetAllButton = document.getElementById("reset-all");
@@ -25,6 +26,7 @@ document.addEventListener("DOMContentLoaded", () => {
     });
 
   let tasks = loadTasks();
+  let totalTimerInterval = null;
 
   function renderTasks() {
     taskList.innerHTML = "";
@@ -112,6 +114,9 @@ document.addEventListener("DOMContentLoaded", () => {
       `;
       taskList.appendChild(taskElement);
     });
+
+    // Update total timer after rendering
+    updateTotalTimer();
   }
 
   function moveTaskUp(id) {
@@ -122,6 +127,7 @@ document.addEventListener("DOMContentLoaded", () => {
     [tasks[index - 1], tasks[index]] = [tasks[index], tasks[index - 1]];
     saveTasks();
     renderTasks();
+    updateTotalTimer();
   }
 
   function moveTaskDown(id) {
@@ -132,6 +138,7 @@ document.addEventListener("DOMContentLoaded", () => {
     [tasks[index], tasks[index + 1]] = [tasks[index + 1], tasks[index]];
     saveTasks();
     renderTasks();
+    updateTotalTimer();
   }
 
   function toggleTimer(id) {
@@ -164,6 +171,13 @@ document.addEventListener("DOMContentLoaded", () => {
         updateTimerDisplay(taskToToggle);
         saveTasks();
       }, 1000);
+
+      // Start total timer interval if not already running
+      if (!totalTimerInterval) {
+        totalTimerInterval = setInterval(() => {
+          updateTotalTimer();
+        }, 1000);
+      }
     } else {
       // Save accumulated time before stopping
       taskToToggle.elapsedTime = getCurrentElapsedTime(taskToToggle);
@@ -171,6 +185,15 @@ document.addEventListener("DOMContentLoaded", () => {
       taskToToggle.isRunning = false;
       taskToToggle.intervalId = null;
       taskToToggle.startTime = null;
+
+      // Stop total timer interval if no timers are running
+      const hasRunningTimer = tasks.some(task => task.isRunning);
+      if (!hasRunningTimer && totalTimerInterval) {
+        clearInterval(totalTimerInterval);
+        totalTimerInterval = null;
+        // Final update
+        updateTotalTimer();
+      }
     }
 
     saveTasks();
@@ -190,6 +213,61 @@ document.addEventListener("DOMContentLoaded", () => {
     const timeElement = document.getElementById(`time-${task.id}`);
     if (timeElement) {
       timeElement.textContent = formatTime(currentElapsed);
+    }
+    updateTotalTimer();
+  }
+
+  function getTotalTime() {
+    return tasks.reduce((total, task) => {
+      return total + getCurrentElapsedTime(task);
+    }, 0);
+  }
+
+  let hasPlayed8HourSound = false;
+
+  function updateTotalTimer() {
+    const totalSeconds = getTotalTime();
+    const formattedTotal = formatTime(totalSeconds);
+    
+    if (totalTimeDisplay) {
+      totalTimeDisplay.textContent = formattedTotal;
+      
+      // Check if total reaches 8 hours (28800 seconds) and play sound
+      if (totalSeconds >= 28800 && !hasPlayed8HourSound) {
+        play8HourSound();
+        hasPlayed8HourSound = true;
+      } else if (totalSeconds < 28800) {
+        // Reset the flag if total goes below 8 hours (e.g., after reset)
+        hasPlayed8HourSound = false;
+      }
+    }
+  }
+
+  function play8HourSound() {
+    // Create audio context for beep sound
+    const audioContext = new (window.AudioContext || window.webkitAudioContext)();
+    const oscillator = audioContext.createOscillator();
+    const gainNode = audioContext.createGain();
+
+    oscillator.connect(gainNode);
+    gainNode.connect(audioContext.destination);
+
+    // Set up a pleasant beep sound
+    oscillator.frequency.value = 800; // 800 Hz
+    oscillator.type = 'sine';
+    
+    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
+    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
+
+    oscillator.start(audioContext.currentTime);
+    oscillator.stop(audioContext.currentTime + 0.5);
+
+    // Also show a visual notification
+    if (totalTimeDisplay) {
+      totalTimeDisplay.classList.add('animate-pulse');
+      setTimeout(() => {
+        totalTimeDisplay.classList.remove('animate-pulse');
+      }, 2000);
     }
   }
 
@@ -216,6 +294,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     saveTasks();
     renderTasks();
+    updateTotalTimer();
   }
 
   function resetAllTimers() {
@@ -240,8 +319,15 @@ document.addEventListener("DOMContentLoaded", () => {
       task.elapsedTime = 0;
     });
 
+    // Stop total timer interval
+    if (totalTimerInterval) {
+      clearInterval(totalTimerInterval);
+      totalTimerInterval = null;
+    }
+
     saveTasks();
     renderTasks();
+    updateTotalTimer();
   }
 
   function parseTimeInput(value) {
@@ -319,6 +405,7 @@ document.addEventListener("DOMContentLoaded", () => {
     tasks = tasks.filter((task) => task.id !== id);
     saveTasks();
     renderTasks();
+    updateTotalTimer();
   }
 
   function addTask(event) {
@@ -339,6 +426,7 @@ document.addEventListener("DOMContentLoaded", () => {
     taskInput.value = "";
     saveTasks();
     renderTasks();
+    updateTotalTimer();
   }
 
   function saveTasks() {
@@ -503,8 +591,17 @@ document.addEventListener("DOMContentLoaded", () => {
           updateTimerDisplay(task);
         }
       });
+      updateTotalTimer();
     }
   });
 
   renderTasks();
+
+  // Start total timer interval if any timers are already running (e.g., after page reload)
+  const hasRunningTimer = tasks.some(task => task.isRunning);
+  if (hasRunningTimer && !totalTimerInterval) {
+    totalTimerInterval = setInterval(() => {
+      updateTotalTimer();
+    }, 1000);
+  }
 });
