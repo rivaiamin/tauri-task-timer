@@ -1,15 +1,16 @@
 {
-  "name": "task-timer",
-  "private": true,
-  "version": "0.1.0",
-  "type": "module",
-  "scripts": {
-    "tauri": "tauri",
-    "build": "node build.js",
-    "predeploy": "npm run build",
-    "preview": "npm run build && npx http-server dist"
-  },
-  "devDependencies": {
-    "@tauri-apps/cli": "^2.9.4"
-  }
+    "name": "task-timer-monorepo",
+    "private": true,
+    "version": "0.1.0",
+    "type": "module",
+    "scripts": {
+      "dev:desktop": "pnpm --filter desktop dev",
+      "dev:web": "pnpm --filter web dev",
+      "build:desktop": "pnpm --filter desktop build",
+      "build:web": "pnpm --filter web build",
+      "build:all": "pnpm build:desktop && pnpm build:web"
+    },
+    "devDependencies": {
+      "@tauri-apps/cli": "^2.9.4"
+    }
 }

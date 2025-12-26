@@ -25,7 +25,7 @@ document.addEventListener("DOMContentLoaded", () => {
       event.preventDefault();
     });
 
-  let tasks = loadTasks();
+  let tasks = [];
   let totalTimerInterval = null;
 
   function renderTasks() {
@@ -297,7 +297,7 @@ document.addEventListener("DOMContentLoaded", () => {
     updateTotalTimer();
   }
 
-  function resetAllTimers() {
+  async function resetAllTimers() {
     if (tasks.length === 0) {
       alert("No tasks to reset.");
       return;
@@ -323,6 +323,15 @@ document.addEventListener("DOMContentLoaded", () => {
     if (totalTimerInterval) {
       clearInterval(totalTimerInterval);
       totalTimerInterval = null;
+    }
+
+    // Reset in database if using Tauri
+    if (window.__TAURI__) {
+      try {
+        await window.__TAURI__.core.invoke("reset_all_tasks");
+      } catch (error) {
+        console.error("Failed to reset tasks in database:", error);
+      }
     }
 
     saveTasks();
@@ -396,13 +405,23 @@ document.addEventListener("DOMContentLoaded", () => {
     renderTasks();
   }
 
-  function deleteTask(id) {
+  async function deleteTask(id) {
     const taskToDelete = tasks.find((task) => task.id === id);
     if (taskToDelete && taskToDelete.isRunning) {
       clearInterval(taskToDelete.intervalId);
     }
 
     tasks = tasks.filter((task) => task.id !== id);
+    
+    // Delete from database if using Tauri
+    if (window.__TAURI__) {
+      try {
+        await window.__TAURI__.core.invoke("delete_task", { id });
+      } catch (error) {
+        console.error("Failed to delete task from database:", error);
+      }
+    }
+    
     saveTasks();
     renderTasks();
     updateTotalTimer();
@@ -429,16 +448,60 @@ document.addEventListener("DOMContentLoaded", () => {
     updateTotalTimer();
   }
 
-  function saveTasks() {
+  async function saveTasks() {
     const tasksToSave = tasks.map((task) => ({
       id: task.id,
       label: task.label,
       elapsedTime: task.elapsedTime,
     }));
-    localStorage.setItem("taskTimerApp", JSON.stringify(tasksToSave));
+
+    // Use Tauri database if available, otherwise fallback to localStorage
+    if (window.__TAURI__) {
+      try {
+        await window.__TAURI__.core.invoke("save_tasks", {
+          tasks: tasksToSave.map((task) => ({
+            id: task.id,
+            label: task.label,
+            elapsed_time: task.elapsedTime,
+            position: 0, // Will be set by Rust based on array index
+          })),
+        });
+      } catch (error) {
+        console.error("Failed to save tasks to database:", error);
+        // Fallback to localStorage on error
+        localStorage.setItem("taskTimerApp", JSON.stringify(tasksToSave));
+      }
+    } else {
+      // Fallback for web/dev mode
+      localStorage.setItem("taskTimerApp", JSON.stringify(tasksToSave));
+    }
   }
 
-  function loadTasks() {
+  async function loadTasks() {
+    // Use Tauri database if available, otherwise fallback to localStorage
+    if (window.__TAURI__) {
+      try {
+        const dbTasks = await window.__TAURI__.core.invoke("get_tasks");
+        return dbTasks.map((task) => ({
+          id: task.id,
+          label: task.label,
+          elapsedTime: task.elapsed_time,
+          isRunning: false,
+          intervalId: null,
+          startTime: null,
+        }));
+      } catch (error) {
+        console.error("Failed to load tasks from database:", error);
+        // Fallback to localStorage on error
+        return loadTasksFromLocalStorage();
+      }
+    } else {
+      // Fallback for web/dev mode
+      return loadTasksFromLocalStorage();
+    }
+  }
+
+  function loadTasksFromLocalStorage() {
     const savedTasks = localStorage.getItem("taskTimerApp");
     if (savedTasks) {
       return JSON.parse(savedTasks).map((task) => ({
@@ -595,13 +658,17 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  renderTasks();
+  // Load tasks and then render
+  (async () => {
+    tasks = await loadTasks();
+    renderTasks();
 
-  // Start total timer interval if any timers are already running (e.g., after page reload)
-  const hasRunningTimer = tasks.some(task => task.isRunning);
-  if (hasRunningTimer && !totalTimerInterval) {
-    totalTimerInterval = setInterval(() => {
-      updateTotalTimer();
-    }, 1000);
-  }
+    // Start total timer interval if any timers are already running (e.g., after page reload)
+    const hasRunningTimer = tasks.some(task => task.isRunning);
+    if (hasRunningTimer && !totalTimerInterval) {
+      totalTimerInterval = setInterval(() => {
+        updateTotalTimer();
+      }, 1000);
+    }
+  })();
 });
