@@ -28,6 +28,7 @@ jobs:
           node-version: '20'
 
       - name: Build
+        working-directory: ./apps/desktop
         run: node build.js
 
       - name: Setup Pages
@@ -36,7 +37,7 @@ jobs:
       - name: Upload artifact
         uses: actions/upload-pages-artifact@v3
         with:
-          path: './dist'
+          path: './apps/desktop/dist'
 
   deploy:
     environment:
