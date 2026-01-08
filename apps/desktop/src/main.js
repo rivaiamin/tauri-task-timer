@@ -12,6 +12,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const totalTimeDisplay = document.getElementById("total-time-display");
   const exportCsvButton = document.getElementById("export-csv");
   const exportCsvMobileButton = document.getElementById("export-csv-mobile");
+  const exportMarkdownButton = document.getElementById("export-markdown");
+  const exportMarkdownMobileButton = document.getElementById("export-markdown-mobile");
   const resetAllButton = document.getElementById("reset-all");
   const resetAllMobileButton = document.getElementById("reset-all-mobile");
 
@@ -552,6 +554,19 @@ document.addEventListener("DOMContentLoaded", () => {
       .join("\r\n");
   }
 
+  function tasksToMarkdown() {
+    // Template format for Google Chat compatibility
+    const datePart = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
+    const lines = [`### Daily Report ${datePart}`];
+    
+    tasks.forEach((task) => {
+      const storyPoints = getCurrentElapsedTime(task) / 3600; // 60 minutes => 1 story point
+      lines.push(`- [${storyPoints.toFixed(2)}] ${task.label}`);
+    });
+    
+    return lines.join("\n");
+  }
+
   async function exportTasksAsCsv() {
     if (!tasks.length) {
       alert("No tasks to export yet.");
@@ -612,6 +627,8 @@ document.addEventListener("DOMContentLoaded", () => {
   resetAllMobileButton?.addEventListener("click", resetAllTimers);
   exportCsvButton?.addEventListener("click", exportTasksAsCsv);
   exportCsvMobileButton?.addEventListener("click", exportTasksAsCsv);
+  exportMarkdownButton?.addEventListener("click", tasksToMarkdown);
+  exportMarkdownMobileButton?.addEventListener("click", tasksToMarkdown);
 
   taskList.addEventListener("click", (event) => {
     // Check if a button was clicked (stop propagation to prevent card toggle)
