@@ -96,7 +96,7 @@ document.addEventListener("DOMContentLoaded", () => {
             data-id="${task.id}"
             data-action="edit"
             class="w-1/3 sm:w-24 p-2 rounded-lg text-gray-800 bg-white border border-gray-300 hover:bg-gray-50 transition duration-200 flex items-center justify-center text-sm font-semibold"
-            title="Edit time"
+            title="Edit task"
           >
             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -371,32 +371,81 @@ document.addEventListener("DOMContentLoaded", () => {
     return Math.round(asNumber * 60);
   }
 
-  function editTaskTime(id) {
+  async function editTask(id) {
     const task = tasks.find((t) => t.id === id);
     if (!task) return;
 
     const currentSeconds = getCurrentElapsedTime(task);
     const currentFormatted = formatTime(currentSeconds);
 
-    const input = prompt(
-      `Edit time for "${task.label}".\n\n` +
-        "Use HH:MM:SS (e.g. 01:30:00) or minutes (e.g. 90 for 1.5 hours).",
-      currentFormatted,
-    );
+    const { value: formValues } = await Swal.fire({
+      title: 'Edit Task',
+      html: `
+        <div class="text-left">
+          <label for="swal-task-title" class="block text-sm font-medium text-gray-700 mb-2">Task Title</label>
+          <input 
+            id="swal-task-title" 
+            class="swal2-input w-full mb-4" 
+            placeholder="Enter task title" 
+            value="${escapeHTML(task.label)}"
+            maxlength="200"
+          />
+          <label for="swal-task-time" class="block text-sm font-medium text-gray-700 mb-2">Time</label>
+          <input 
+            id="swal-task-time" 
+            class="swal2-input w-full" 
+            placeholder="HH:MM:SS or minutes (e.g. 90)" 
+            value="${currentFormatted}"
+          />
+          <p class="text-xs text-gray-500 mt-2">Use HH:MM:SS (e.g. 01:30:00) or minutes (e.g. 90 for 1.5 hours)</p>
+        </div>
+      `,
+      focusConfirm: false,
+      showCancelButton: true,
+      confirmButtonText: 'Save',
+      cancelButtonText: 'Cancel',
+      confirmButtonColor: '#2563eb',
+      cancelButtonColor: '#6b7280',
+      preConfirm: () => {
+        const titleInput = document.getElementById('swal-task-title');
+        const timeInput = document.getElementById('swal-task-time');
+        
+        const newTitle = titleInput.value.trim();
+        const timeValue = timeInput.value.trim();
+        
+        if (!newTitle) {
+          Swal.showValidationMessage('Task title cannot be empty');
+          return false;
+        }
+        
+        if (!timeValue) {
+          Swal.showValidationMessage('Time cannot be empty');
+          return false;
+        }
+        
+        const newSeconds = parseTimeInput(timeValue);
+        if (newSeconds === null) {
+          Swal.showValidationMessage('Invalid time format. Use HH:MM:SS or minutes (e.g. 90)');
+          return false;
+        }
+        
+        return {
+          title: newTitle,
+          time: newSeconds
+        };
+      }
+    });
 
-    if (input === null) {
+    if (!formValues) {
       // User cancelled
       return;
     }
 
-    const newSeconds = parseTimeInput(input);
-    if (newSeconds === null) {
-      alert("Couldn't understand that time. Please use HH:MM:SS or minutes.");
-      return;
-    }
+    // Update task title
+    task.label = formValues.title;
 
     // Update stored elapsed time based on new value
-    task.elapsedTime = newSeconds;
+    task.elapsedTime = formValues.time;
 
     // If the timer is running, keep it running from the new base time
     if (task.isRunning) {
@@ -645,7 +694,7 @@ document.addEventListener("DOMContentLoaded", () => {
       } else if (action === "reset") {
         resetTimer(id);
       } else if (action === "edit") {
-        editTaskTime(id);
+        editTask(id);
       } else if (action === "delete") {
         if (confirm("Are you sure you want to delete this task?")) {
           deleteTask(id);
