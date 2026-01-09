@@ -623,51 +623,28 @@ document.addEventListener("DOMContentLoaded", () => {
     }
 
     const markdownContent = tasksToMarkdown();
-    const datePart = new Date().toISOString().slice(0, 10);
 
-    // Prefer Tauri-native save dialog when available
-    const tauri = window.__TAURI__;
-
-    if (tauri && tauri.fs && tauri.dialog) {
-      try {
-        const filePath = await tauri.dialog.save({
-          defaultPath: `daily-report-${datePart}.md`,
-          filters: [
-            {
-              name: "Markdown Files",
-              extensions: ["md"],
-            },
-          ],
-        });
-
-        // User cancelled the dialog
-        if (!filePath) {
-          return;
-        }
-
-        await tauri.fs.writeTextFile(filePath, markdownContent);
-        alert("Tasks exported successfully.");
-        return;
-      } catch (error) {
-        console.error("Failed to export Markdown via Tauri:", error);
-        alert("Failed to export Markdown. Please try again.");
-        return;
+    try {
+      // Use Clipboard API to copy to clipboard
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(markdownContent);
+        alert("Daily report copied to clipboard!");
+      } else {
+        // Fallback for older browsers
+        const textArea = document.createElement("textarea");
+        textArea.value = markdownContent;
+        textArea.style.position = "fixed";
+        textArea.style.left = "-999999px";
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand("copy");
+        document.body.removeChild(textArea);
+        alert("Daily report copied to clipboard!");
       }
+    } catch (error) {
+      console.error("Failed to copy to clipboard:", error);
+      alert("Failed to copy to clipboard. Please try again.");
     }
-
-    // Fallback: browser-style download (for web/dev)
-    const blob = new Blob([markdownContent], {
-      type: "text/markdown;charset=utf-8;",
-    });
-    const url = URL.createObjectURL(blob);
-
-    const link = document.createElement("a");
-    link.href = url;
-    link.download = `daily-report-${datePart}.md`;
-    document.body.appendChild(link);
-    link.click();
-    document.body.removeChild(link);
-    URL.revokeObjectURL(url);
   }
 
   async function exportTasksAsCsv() {
