@@ -616,6 +616,60 @@ document.addEventListener("DOMContentLoaded", () => {
     return lines.join("\n");
   }
 
+  async function exportTasksAsMarkdown() {
+    if (!tasks.length) {
+      alert("No tasks to export yet.");
+      return;
+    }
+
+    const markdownContent = tasksToMarkdown();
+    const datePart = new Date().toISOString().slice(0, 10);
+
+    // Prefer Tauri-native save dialog when available
+    const tauri = window.__TAURI__;
+
+    if (tauri && tauri.fs && tauri.dialog) {
+      try {
+        const filePath = await tauri.dialog.save({
+          defaultPath: `daily-report-${datePart}.md`,
+          filters: [
+            {
+              name: "Markdown Files",
+              extensions: ["md"],
+            },
+          ],
+        });
+
+        // User cancelled the dialog
+        if (!filePath) {
+          return;
+        }
+
+        await tauri.fs.writeTextFile(filePath, markdownContent);
+        alert("Tasks exported successfully.");
+        return;
+      } catch (error) {
+        console.error("Failed to export Markdown via Tauri:", error);
+        alert("Failed to export Markdown. Please try again.");
+        return;
+      }
+    }
+
+    // Fallback: browser-style download (for web/dev)
+    const blob = new Blob([markdownContent], {
+      type: "text/markdown;charset=utf-8;",
+    });
+    const url = URL.createObjectURL(blob);
+
+    const link = document.createElement("a");
+    link.href = url;
+    link.download = `daily-report-${datePart}.md`;
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+    URL.revokeObjectURL(url);
+  }
+
   async function exportTasksAsCsv() {
     if (!tasks.length) {
       alert("No tasks to export yet.");
@@ -676,8 +730,8 @@ document.addEventListener("DOMContentLoaded", () => {
   resetAllMobileButton?.addEventListener("click", resetAllTimers);
   exportCsvButton?.addEventListener("click", exportTasksAsCsv);
   exportCsvMobileButton?.addEventListener("click", exportTasksAsCsv);
-  exportMarkdownButton?.addEventListener("click", tasksToMarkdown);
-  exportMarkdownMobileButton?.addEventListener("click", tasksToMarkdown);
+  exportMarkdownButton?.addEventListener("click", exportTasksAsMarkdown);
+  exportMarkdownMobileButton?.addEventListener("click", exportTasksAsMarkdown);
 
   taskList.addEventListener("click", (event) => {
     // Check if a button was clicked (stop propagation to prevent card toggle)
