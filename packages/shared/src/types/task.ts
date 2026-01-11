@@ -15,6 +15,7 @@ export interface Task {
     id: number;
     user_id: string;
     label: string;
+    description?: string | null;
     elapsed_time: number;
     position: number;
     is_running: boolean;

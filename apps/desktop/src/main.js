@@ -390,6 +390,13 @@ document.addEventListener("DOMContentLoaded", () => {
             value="${escapeHTML(task.label)}"
             maxlength="200"
           />
+          <label for="swal-task-description" class="block text-sm font-medium text-gray-700 mb-2">Description (optional)</label>
+          <textarea 
+            id="swal-task-description" 
+            class="swal2-textarea w-full mb-4" 
+            placeholder="Enter task description"
+            rows="3"
+          >${escapeHTML(task.description || "")}</textarea>
           <label for="swal-task-time" class="block text-sm font-medium text-gray-700 mb-2">Time</label>
           <input 
             id="swal-task-time" 
@@ -408,9 +415,11 @@ document.addEventListener("DOMContentLoaded", () => {
       cancelButtonColor: '#6b7280',
       preConfirm: () => {
         const titleInput = document.getElementById('swal-task-title');
+        const descriptionInput = document.getElementById('swal-task-description');
         const timeInput = document.getElementById('swal-task-time');
         
         const newTitle = titleInput.value.trim();
+        const newDescription = descriptionInput.value.trim();
         const timeValue = timeInput.value.trim();
         
         if (!newTitle) {
@@ -431,6 +440,7 @@ document.addEventListener("DOMContentLoaded", () => {
         
         return {
           title: newTitle,
+          description: newDescription,
           time: newSeconds
         };
       }
@@ -441,8 +451,9 @@ document.addEventListener("DOMContentLoaded", () => {
       return;
     }
 
-    // Update task title
+    // Update task title and description
     task.label = formValues.title;
+    task.description = formValues.description || "";
 
     // Update stored elapsed time based on new value
     task.elapsedTime = formValues.time;
@@ -486,6 +497,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const newTask = {
       id: Date.now(),
       label,
+      description: "",
       elapsedTime: 0,
       isRunning: false,
       intervalId: null,
@@ -503,6 +515,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const tasksToSave = tasks.map((task) => ({
       id: task.id,
       label: task.label,
+      description: task.description || "",
       elapsedTime: task.elapsedTime,
     }));
 
@@ -513,6 +526,7 @@ document.addEventListener("DOMContentLoaded", () => {
           tasks: tasksToSave.map((task) => ({
             id: task.id,
             label: task.label,
+            description: task.description || null,
             elapsed_time: task.elapsedTime,
             position: 0, // Will be set by Rust based on array index
           })),
@@ -536,6 +550,7 @@ document.addEventListener("DOMContentLoaded", () => {
         return dbTasks.map((task) => ({
           id: task.id,
           label: task.label,
+          description: task.description || "",
           elapsedTime: task.elapsed_time,
           isRunning: false,
           intervalId: null,
@@ -557,6 +572,7 @@ document.addEventListener("DOMContentLoaded", () => {
     if (savedTasks) {
       return JSON.parse(savedTasks).map((task) => ({
         ...task,
+        description: task.description || "",
         isRunning: false,
         intervalId: null,
         startTime: null,
@@ -582,12 +598,12 @@ document.addEventListener("DOMContentLoaded", () => {
   }
 
   function tasksToCsv() {
-    const header = ["Task", "Story Points"];
+    const header = ["Task", "Description", "Story Points"];
     const rows = [header];
 
     tasks.forEach((task) => {
       const storyPoints = task.elapsedTime / 3600; // 60 minutes => 1 story point
-      rows.push([task.label, storyPoints.toFixed(2)]);
+      rows.push([task.label, task.description || "", storyPoints.toFixed(2)]);
     });
 
     return rows
@@ -610,7 +626,11 @@ document.addEventListener("DOMContentLoaded", () => {
     
     tasks.forEach((task) => {
       const storyPoints = getCurrentElapsedTime(task) / 3600; // 60 minutes => 1 story point
-      lines.push(`- [${storyPoints.toFixed(2)}] ${task.label}`);
+      let line = `- [${storyPoints.toFixed(2)}] ${task.label}`;
+      if (task.description && task.description.trim()) {
+        line += `\n  - ${task.description.trim()}`;
+      }
+      lines.push(line);
     });
     
     return lines.join("\n");

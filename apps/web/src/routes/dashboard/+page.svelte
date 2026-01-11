@@ -14,6 +14,13 @@
   let hasPlayed8HourSound = false;
   let channel: any = null;
   let tick = 0; // Reactive variable to force timer updates every second
+  
+  // Edit modal state
+  let showEditModal = false;
+  let editingTask: (DatabaseTask & { intervalId?: any; startTime?: number | null }) | null = null;
+  let editTitle = '';
+  let editDescription = '';
+  let editTime = '';
 
   // Reactive: Update total time whenever tasks change
   $: {
@@ -158,6 +165,7 @@
       .insert({
         user_id: session.user.id,
         label,
+        description: null,
         elapsed_time: 0,
         position: tasks.length,
         is_running: false
@@ -368,47 +376,71 @@
     return Math.round(asNumber * 60);
   }
 
-  async function editTaskTime(id: number) {
-    if (!session) return;
-
+  function openEditModal(id: number) {
     const task = tasks.find(t => t.id === id);
     if (!task) return;
 
+    editingTask = task;
+    editTitle = task.label;
+    editDescription = task.description || '';
     const currentSeconds = getCurrentElapsedTime(task);
-    const currentFormatted = formatTime(currentSeconds);
+    editTime = formatTime(currentSeconds);
+    showEditModal = true;
+  }
 
-    const input = prompt(
-      `Edit time for "${task.label}".\n\nUse HH:MM:SS (e.g. 01:30:00) or minutes (e.g. 90 for 1.5 hours).`,
-      currentFormatted
-    );
+  function closeEditModal() {
+    showEditModal = false;
+    editingTask = null;
+    editTitle = '';
+    editDescription = '';
+    editTime = '';
+  }
 
-    if (input === null) return;
+  async function saveEditTask() {
+    if (!session || !editingTask) return;
 
-    const newSeconds = parseTimeInput(input);
+    const newTitle = editTitle.trim();
+    if (!newTitle) {
+      alert('Task title cannot be empty');
+      return;
+    }
+
+    const newSeconds = parseTimeInput(editTime);
     if (newSeconds === null) {
-      alert("Couldn't understand that time. Please use HH:MM:SS or minutes.");
+      alert("Invalid time format. Use HH:MM:SS or minutes (e.g. 90)");
       return;
     }
 
     const { error } = await supabase
       .from('tasks')
       .update({
+        label: newTitle,
+        description: editDescription.trim() || null,
         elapsed_time: newSeconds,
-        start_time: task.is_running ? new Date().toISOString() : null
+        start_time: editingTask.is_running ? new Date().toISOString() : null
       })
-      .eq('id', id)
+      .eq('id', editingTask.id)
       .eq('user_id', session.user.id);
 
     if (error) {
-      console.error('Error updating task time:', error);
+      console.error('Error updating task:', error);
+      alert('Failed to update task');
       return;
     }
 
     tasks = tasks.map(t => 
-      t.id === id 
-        ? { ...t, elapsed_time: newSeconds, startTime: t.is_running ? Date.now() : null }
+      t.id === editingTask!.id 
+        ? { 
+            ...t, 
+            label: newTitle,
+            description: editDescription.trim() || null,
+            elapsed_time: newSeconds, 
+            startTime: t.is_running ? Date.now() : null 
+          }
         : t
     );
+
+    closeEditModal();
   }
 
   async function resetAllTimers() {
@@ -446,12 +478,12 @@
   }
 
   function tasksToCsv(): string {
-    const header = ['Task', 'Story Points'];
+    const header = ['Task', 'Description', 'Story Points'];
     const rows = [header];
 
     tasks.forEach(task => {
       const storyPoints = getCurrentElapsedTime(task) / 3600;
-      rows.push([task.label, storyPoints.toFixed(2)]);
+      rows.push([task.label, task.description || '', storyPoints.toFixed(2)]);
     });
 
     return rows
@@ -485,6 +517,51 @@
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
+  }
+
+  function tasksToMarkdown(): string {
+    const datePart = new Date().toISOString().slice(0, 10);
+    const lines = [`### Daily Report ${datePart}`];
+    
+    tasks.forEach(task => {
+      const storyPoints = getCurrentElapsedTime(task) / 3600;
+      let line = `- [${storyPoints.toFixed(2)}] ${task.label}`;
+      if (task.description && task.description.trim()) {
+        line += `\n  - ${task.description.trim()}`;
+      }
+      lines.push(line);
+    });
+    
+    return lines.join('\n');
+  }
+
+  async function exportTasksAsMarkdown() {
+    if (!tasks.length) {
+      alert('No tasks to export yet.');
+      return;
+    }
+
+    const markdownContent = tasksToMarkdown();
+
+    try {
+      if (navigator.clipboard && navigator.clipboard.writeText) {
+        await navigator.clipboard.writeText(markdownContent);
+        alert('Daily report copied to clipboard!');
+      } else {
+        const textArea = document.createElement('textarea');
+        textArea.value = markdownContent;
+        textArea.style.position = 'fixed';
+        textArea.style.left = '-999999px';
+        document.body.appendChild(textArea);
+        textArea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textArea);
+        alert('Daily report copied to clipboard!');
+      }
+    } catch (error) {
+      console.error('Failed to copy to clipboard:', error);
+      alert('Failed to copy to clipboard. Please try again.');
+    }
   }
 
   function handleVisibilityChange() {
@@ -533,6 +610,13 @@
             Export CSV
           </button>
           <button
+            on:click={exportTasksAsMarkdown}
+            class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg shadow-sm hover:bg-purple-700 transition-colors"
+            type="button"
+          >
+            Export Markdown
+          </button>
+          <button
             on:click={handleLogout}
             class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-gray-600 rounded-lg shadow-sm hover:bg-gray-700 transition-colors"
             type="button"
@@ -556,6 +640,13 @@
           type="button"
         >
           Export CSV
+        </button>
+        <button
+          on:click={exportTasksAsMarkdown}
+          class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg shadow-sm hover:bg-purple-700 transition-colors"
+          type="button"
+        >
+          Export Markdown
         </button>
         <button
           on:click={handleLogout}
@@ -598,7 +689,7 @@
           No tasks added yet. Add one above to get started!
         </p>
       {:else}
-        {#each tasks as task, index (task.id)}
+        {#each tasks as task (task.id), index}
           <div
             class="flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:bg-gray-100 transition duration-200 {task.is_running ? 'ring-2 ring-green-400' : ''}"
             on:click={() => toggleTimer(task.id)}
@@ -648,9 +739,9 @@
                 </svg>
               </button>
               <button
-                on:click={() => editTaskTime(task.id)}
+                on:click={() => openEditModal(task.id)}
                 class="w-1/3 sm:w-24 p-2 rounded-lg text-gray-800 bg-white border border-gray-300 hover:bg-gray-50 transition duration-200 flex items-center justify-center text-sm font-semibold"
-                title="Edit time"
+                title="Edit task"
               >
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
@@ -672,3 +763,83 @@
     </div>
   </div>
 </div>
+
+{#if showEditModal}
+  <div 
+    class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
+    on:click={closeEditModal}
+    on:keydown={(e) => e.key === 'Escape' ? closeEditModal() : null}
+    role="dialog"
+    aria-modal="true"
+    aria-labelledby="edit-modal-title"
+  >
+    <div 
+      class="bg-white rounded-lg shadow-xl max-w-md w-full p-6"
+      on:click|stopPropagation
+    >
+      <h2 id="edit-modal-title" class="text-2xl font-bold text-gray-900 mb-4">Edit Task</h2>
+      
+      <div class="space-y-4">
+        <div>
+          <label for="edit-title" class="block text-sm font-medium text-gray-700 mb-2">
+            Task Title
+          </label>
+          <input
+            id="edit-title"
+            type="text"
+            bind:value={editTitle}
+            class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="Enter task title"
+            maxlength="200"
+          />
+        </div>
+        
+        <div>
+          <label for="edit-description" class="block text-sm font-medium text-gray-700 mb-2">
+            Description (optional)
+          </label>
+          <textarea
+            id="edit-description"
+            bind:value={editDescription}
+            class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="Enter task description"
+            rows="3"
+          />
+        </div>
+        
+        <div>
+          <label for="edit-time" class="block text-sm font-medium text-gray-700 mb-2">
+            Time
+          </label>
+          <input
+            id="edit-time"
+            type="text"
+            bind:value={editTime}
+            class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            placeholder="HH:MM:SS or minutes (e.g. 90)"
+          />
+          <p class="text-xs text-gray-500 mt-2">
+            Use HH:MM:SS (e.g. 01:30:00) or minutes (e.g. 90 for 1.5 hours)
+          </p>
+        </div>
+      </div>
+      
+      <div class="flex justify-end gap-3 mt-6">
+        <button
+          on:click={closeEditModal}
+          class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+          type="button"
+        >
+          Cancel
+        </button>
+        <button
+          on:click={saveEditTask}
+          class="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
+          type="button"
+        >
+          Save
+        </button>
+      </div>
+    </div>
+  </div>
+{/if}

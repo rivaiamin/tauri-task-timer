@@ -7,6 +7,7 @@ use std::sync::Mutex;
 pub struct Task {
     pub id: i64,
     pub label: String,
+    pub description: Option<String>, // Optional description field
     pub elapsed_time: i64, // in seconds
     pub position: i64, // for ordering
 }
@@ -31,6 +32,7 @@ fn init_db(app: &tauri::AppHandle) -> Result<Connection, Box<dyn std::error::Err
         "CREATE TABLE IF NOT EXISTS tasks (
             id INTEGER PRIMARY KEY,
             label TEXT NOT NULL,
+            description TEXT,
             elapsed_time INTEGER NOT NULL DEFAULT 0,
             position INTEGER NOT NULL DEFAULT 0
         )",
@@ -43,6 +45,12 @@ fn init_db(app: &tauri::AppHandle) -> Result<Connection, Box<dyn std::error::Err
         [],
     );
     
+    // Add description column if it doesn't exist (for migration from old schema)
+    let _ = conn.execute(
+        "ALTER TABLE tasks ADD COLUMN description TEXT",
+        [],
+    );
+    
     Ok(conn)
 }
 
@@ -51,7 +59,7 @@ fn get_tasks(state: tauri::State<AppState>) -> Result<Vec<Task>, String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     
     let mut stmt = db
-        .prepare("SELECT id, label, elapsed_time, position FROM tasks ORDER BY position, id")
+        .prepare("SELECT id, label, description, elapsed_time, position FROM tasks ORDER BY position, id")
         .map_err(|e| e.to_string())?;
     
     let task_iter = stmt
@@ -59,8 +67,9 @@ fn get_tasks(state: tauri::State<AppState>) -> Result<Vec<Task>, String> {
             Ok(Task {
                 id: row.get(0)?,
                 label: row.get(1)?,
-                elapsed_time: row.get(2)?,
-                position: row.get(3).unwrap_or(0),
+                description: row.get(2).ok(),
+                elapsed_time: row.get(3)?,
+                position: row.get(4).unwrap_or(0),
             })
         })
         .map_err(|e| e.to_string())?;
@@ -78,8 +87,8 @@ fn save_task(state: tauri::State<AppState>, task: Task) -> Result<(), String> {
     let db = state.db.lock().map_err(|e| e.to_string())?;
     
     db.execute(
-        "INSERT OR REPLACE INTO tasks (id, label, elapsed_time, position) VALUES (?1, ?2, ?3, ?4)",
-        rusqlite::params![task.id, task.label, task.elapsed_time, task.position],
+        "INSERT OR REPLACE INTO tasks (id, label, description, elapsed_time, position) VALUES (?1, ?2, ?3, ?4, ?5)",
+        rusqlite::params![task.id, task.label, task.description, task.elapsed_time, task.position],
     )
     .map_err(|e| e.to_string())?;
     
@@ -99,8 +108,8 @@ fn save_tasks(state: tauri::State<AppState>, tasks: Vec<Task>) -> Result<(), Str
     // Insert all tasks with their positions
     for (index, task) in tasks.iter().enumerate() {
         tx.execute(
-            "INSERT INTO tasks (id, label, elapsed_time, position) VALUES (?1, ?2, ?3, ?4)",
-            rusqlite::params![task.id, task.label, task.elapsed_time, index as i64],
+            "INSERT INTO tasks (id, label, description, elapsed_time, position) VALUES (?1, ?2, ?3, ?4, ?5)",
+            rusqlite::params![task.id, task.label, task.description, task.elapsed_time, index as i64],
         )
         .map_err(|e| e.to_string())?;
     }
