@@ -622,13 +622,13 @@ document.addEventListener("DOMContentLoaded", () => {
   function tasksToMarkdown() {
     // Template format for Google Chat compatibility
     const datePart = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
-    const lines = [`### Daily Report ${datePart}`];
+    const lines = [`*Daily Report ${datePart}*`];
     
     tasks.forEach((task) => {
       const storyPoints = getCurrentElapsedTime(task) / 3600; // 60 minutes => 1 story point
       let line = `- [${storyPoints.toFixed(2)}] ${task.label}`;
       if (task.description && task.description.trim()) {
-        line += `\n  - ${task.description.trim()}`;
+        line += ` - ${task.description.trim()}`;
       }
       lines.push(line);
     });
