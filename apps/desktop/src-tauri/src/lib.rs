@@ -1,6 +1,7 @@
 use rusqlite::{Connection, Result};
 use serde::{Deserialize, Serialize};
 use std::sync::Mutex;
+use tauri::Manager;
 
 // Task structure matching the JavaScript version
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -97,7 +98,7 @@ fn save_task(state: tauri::State<AppState>, task: Task) -> Result<(), String> {
 
 #[tauri::command]
 fn save_tasks(state: tauri::State<AppState>, tasks: Vec<Task>) -> Result<(), String> {
-    let db = state.db.lock().map_err(|e| e.to_string())?;
+    let mut db = state.db.lock().map_err(|e| e.to_string())?;
     
     // Start a transaction for better performance
     let tx = db.transaction().map_err(|e| e.to_string())?;
