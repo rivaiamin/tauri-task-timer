@@ -725,22 +725,25 @@ document.addEventListener("DOMContentLoaded", () => {
     // Template format for Google Chat compatibility
     const datePart = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
     const lines = [`*Daily Report ${datePart}*`];
-    
-    tasks.forEach((task) => {
-      const storyPoints = getCurrentElapsedTime(task) / 3600; // 60 minutes => 1 story point
-      let line = `- [${storyPoints.toFixed(2)}] ${task.label}`;
-      if (task.description && task.description.trim()) {
-        line += ` - ${task.description.trim()}`;
-      }
-      lines.push(line);
-    });
-    
+
+    tasks
+      .filter((task) => getCurrentElapsedTime(task) > 0)
+      .forEach((task) => {
+        const storyPoints = getCurrentElapsedTime(task) / 3600; // 60 minutes => 1 story point
+        let line = `- [${storyPoints.toFixed(2)}] ${task.label}`;
+        if (task.description && task.description.trim()) {
+          line += ` - ${task.description.trim()}`;
+        }
+        lines.push(line);
+      });
+
     return lines.join("\n");
   }
 
   async function exportTasksAsMarkdown() {
-    if (!tasks.length) {
-      alert("No tasks to export yet.");
+    const tasksWithTime = tasks.filter((t) => getCurrentElapsedTime(t) > 0);
+    if (!tasksWithTime.length) {
+      alert(tasks.length ? "No tasks with recorded time to export." : "No tasks to export yet.");
       return;
     }
 
