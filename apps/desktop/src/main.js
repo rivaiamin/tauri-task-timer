@@ -16,6 +16,8 @@ document.addEventListener("DOMContentLoaded", () => {
   const exportMarkdownMobileButton = document.getElementById("export-markdown-mobile");
   const resetAllButton = document.getElementById("reset-all");
   const resetAllMobileButton = document.getElementById("reset-all-mobile");
+  const editModeToggle = document.getElementById("edit-mode-toggle");
+  const editModeToggleMobile = document.getElementById("edit-mode-toggle-mobile");
 
   if (window.__TAURI__) {
     const appWindow = getCurrentWindow();
@@ -29,6 +31,26 @@ document.addEventListener("DOMContentLoaded", () => {
 
   let tasks = [];
   let totalTimerInterval = null;
+  let editMode = false;
+
+  function setEditMode(value) {
+    editMode = value;
+    [editModeToggle, editModeToggleMobile].forEach((btn) => {
+      if (btn) {
+        const label = btn.querySelector("span");
+        if (label) label.textContent = editMode ? "Exit Edit Mode" : "Edit Mode";
+        btn.classList.toggle("bg-blue-600", editMode);
+        btn.classList.toggle("text-white", editMode);
+        btn.classList.toggle("border-blue-600", editMode);
+        btn.classList.toggle("hover:bg-blue-700", editMode);
+        btn.classList.toggle("bg-white", !editMode);
+        btn.classList.toggle("text-gray-700", !editMode);
+        btn.classList.toggle("border-gray-300", !editMode);
+        btn.classList.toggle("hover:bg-gray-50", !editMode);
+      }
+    });
+    renderTasks();
+  }
 
   function renderTasks() {
     taskList.innerHTML = "";
@@ -41,18 +63,97 @@ document.addEventListener("DOMContentLoaded", () => {
 
     tasks.forEach((task) => {
       const taskElement = document.createElement("div");
-      taskElement.className =
-        "flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:bg-gray-100 transition duration-200 " +
-        (task.isRunning ? "ring-2 ring-green-400" : "");
-      taskElement.dataset.id = task.id;
-      taskElement.dataset.action = "toggle";
-
       const formattedTime = formatTime(getCurrentElapsedTime(task));
       const taskIndex = tasks.findIndex(t => t.id === task.id);
       const isFirst = taskIndex === 0;
       const isLast = taskIndex === tasks.length - 1;
 
-      taskElement.innerHTML = `
+      if (editMode) {
+        taskElement.className =
+          "flex flex-col sm:flex-row items-start sm:items-center justify-between bg-amber-50 p-4 rounded-lg shadow-sm border-2 border-amber-300 transition duration-200";
+        taskElement.dataset.id = task.id;
+        taskElement.dataset.editMode = "true";
+
+        taskElement.innerHTML = `
+        <div class="flex-1 mb-3 sm:mb-0 w-full space-y-2">
+          <input
+            type="text"
+            data-id="${task.id}"
+            data-field="title"
+            class="edit-title w-full p-2 text-lg font-medium border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            value="${escapeHTML(task.label)}"
+            placeholder="Task title"
+          />
+          <input
+            type="text"
+            data-id="${task.id}"
+            data-field="description"
+            class="edit-description w-full p-2 text-sm text-gray-600 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            value="${escapeHTML(task.description || "")}"
+            placeholder="Description (optional)"
+          />
+          <input
+            type="text"
+            data-id="${task.id}"
+            data-field="time"
+            class="edit-time w-full p-2 text-xl font-mono border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            value="${formattedTime}"
+            placeholder="HH:MM:SS or minutes"
+          />
+        </div>
+        <div class="flex space-x-2 w-full sm:w-auto mt-2 sm:mt-0">
+          <button
+            data-id="${task.id}"
+            data-action="move-up"
+            class="p-2 rounded-lg text-gray-800 bg-white border border-gray-300 hover:bg-gray-50 transition duration-200 flex items-center justify-center text-sm font-semibold ${isFirst ? 'opacity-50 cursor-not-allowed' : ''}"
+            title="Move up"
+            ${isFirst ? 'disabled' : ''}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+            </svg>
+          </button>
+          <button
+            data-id="${task.id}"
+            data-action="move-down"
+            class="p-2 rounded-lg text-gray-800 bg-white border border-gray-300 hover:bg-gray-50 transition duration-200 flex items-center justify-center text-sm font-semibold ${isLast ? 'opacity-50 cursor-not-allowed' : ''}"
+            title="Move down"
+            ${isLast ? 'disabled' : ''}
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+            </svg>
+          </button>
+          <button
+            data-id="${task.id}"
+            data-action="reset"
+            class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-orange-500 hover:bg-orange-600 transition duration-200 flex items-center justify-center text-sm font-semibold"
+            title="Reset"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
+          </button>
+          <button
+            data-id="${task.id}"
+            data-action="delete"
+            class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-red-500 hover:bg-red-600 transition duration-200 flex items-center justify-center text-sm font-semibold"
+            title="Delete (no confirmation)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+            </svg>
+          </button>
+        </div>
+      `;
+      } else {
+        taskElement.className =
+          "flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:bg-gray-100 transition duration-200 " +
+          (task.isRunning ? "ring-2 ring-green-400" : "");
+        taskElement.dataset.id = task.id;
+        taskElement.dataset.action = "toggle";
+
+        taskElement.innerHTML = `
         <div class="flex-1 mb-3 sm:mb-0">
           <span class="text-lg font-medium text-gray-900 break-words">${escapeHTML(
             task.label,
@@ -114,6 +215,7 @@ document.addEventListener("DOMContentLoaded", () => {
           </button>
         </div>
       `;
+      }
       taskList.appendChild(taskElement);
     });
 
@@ -729,6 +831,8 @@ document.addEventListener("DOMContentLoaded", () => {
   exportCsvMobileButton?.addEventListener("click", exportTasksAsCsv);
   exportMarkdownButton?.addEventListener("click", exportTasksAsMarkdown);
   exportMarkdownMobileButton?.addEventListener("click", exportTasksAsMarkdown);
+  editModeToggle?.addEventListener("click", () => setEditMode(!editMode));
+  editModeToggleMobile?.addEventListener("click", () => setEditMode(!editMode));
 
   taskList.addEventListener("click", (event) => {
     // Check if a button was clicked (stop propagation to prevent card toggle)
@@ -747,20 +851,68 @@ document.addEventListener("DOMContentLoaded", () => {
       } else if (action === "edit") {
         editTask(id);
       } else if (action === "delete") {
-        if (confirm("Are you sure you want to delete this task?")) {
+        if (editMode) {
+          deleteTask(id);
+        } else if (confirm("Are you sure you want to delete this task?")) {
           deleteTask(id);
         }
       }
       return;
     }
 
-    // Check if the card itself was clicked (but not a button)
+    // Check if the card itself was clicked (but not a button) - only in normal mode
     const card = event.target.closest("[data-action='toggle']");
-    if (card && !event.target.closest("button")) {
+    if (card && !event.target.closest("button") && !editMode) {
       const id = Number(card.dataset.id);
       toggleTimer(id);
     }
   });
+
+  taskList.addEventListener("blur", (event) => {
+    if (!editMode) return;
+    const input = event.target;
+    if (!input.matches(".edit-title, .edit-description, .edit-time")) return;
+
+    const id = Number(input.dataset.id);
+    const field = input.dataset.field;
+    const task = tasks.find((t) => t.id === id);
+    if (!task) return;
+
+    if (field === "title") {
+      const newTitle = input.value.trim();
+      if (newTitle) {
+        task.label = newTitle;
+        saveTasks();
+      } else {
+        input.value = task.label;
+      }
+    } else if (field === "description") {
+      task.description = input.value.trim();
+      saveTasks();
+    } else if (field === "time") {
+      const newSeconds = parseTimeInput(input.value);
+      if (newSeconds !== null && newSeconds >= 0) {
+        task.elapsedTime = newSeconds;
+        if (task.isRunning) {
+          task.startTime = Date.now();
+        }
+        saveTasks();
+        updateTotalTimer();
+        input.value = formatTime(newSeconds);
+      } else {
+        input.value = formatTime(getCurrentElapsedTime(task));
+      }
+    }
+  }, true);
+
+  taskList.addEventListener("keydown", (event) => {
+    if (!editMode) return;
+    const input = event.target;
+    if (!input.matches(".edit-title, .edit-description, .edit-time")) return;
+    if (event.key === "Enter") {
+      input.blur();
+    }
+  }, true);
 
   // Update timers when page becomes visible (handles background tab issue)
   document.addEventListener("visibilitychange", () => {
@@ -778,7 +930,7 @@ document.addEventListener("DOMContentLoaded", () => {
   // Load tasks and then render
   (async () => {
     tasks = await loadTasks();
-    renderTasks();
+    setEditMode(false);
 
     // Start total timer interval if any timers are already running (e.g., after page reload)
     const hasRunningTimer = tasks.some(task => task.isRunning);

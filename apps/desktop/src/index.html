@@ -11,61 +11,111 @@
   </head>
   <body class="min-h-screen p-4 sm:p-8">
     <div data-tauri-drag-region class="max-w-2xl mx-auto bg-white rounded-xl shadow-lg p-6 sm:p-8">
-      <header class="mb-6">
-        <div class="flex items-center justify-between">
-          <div class="flex-1">
-            <h1 class="text-3xl font-bold text-gray-900 text-center sm:text-left">
-              Task Timer
-            </h1>
-            <p class="text-center sm:text-left text-gray-500 mt-1">
-              Add tasks and track your time. Only one timer can run at a time.
-            </p>
-          </div>
-          <div class="hidden sm:flex items-center gap-2 ml-4">
+      <header class="mb-8">
+        <div class="text-center sm:text-left mb-5">
+          <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 tracking-tight">
+            Task Timer
+          </h1>
+          <p class="text-gray-500 mt-1.5 text-sm sm:text-base max-w-md">
+            Add tasks and track your time. Only one timer can run at a time.
+          </p>
+        </div>
+        <div class="hidden sm:flex flex-wrap items-center gap-2 sm:gap-3">
+          <div class="flex items-center gap-2 sm:gap-3 flex-1 sm:flex-initial min-w-0">
+            <button
+              id="edit-mode-toggle"
+              class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-400 transition-colors shadow-sm"
+              type="button"
+              title="Toggle edit mode to change task details inline"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+              </svg>
+              <span>Edit Mode</span>
+            </button>
+            <div class="hidden sm:block w-px h-6 bg-gray-200" aria-hidden="true"></div>
             <button
               id="reset-all"
-              class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-orange-600 rounded-lg shadow-sm hover:bg-orange-700 transition-colors"
+              class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-orange-500 rounded-lg hover:bg-orange-600 transition-colors shadow-sm"
               type="button"
+              title="Reset all timers to 00:00:00"
             >
-              Reset All
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+              </svg>
+              <span>Reset All</span>
             </button>
+          </div>
+          <div class="flex items-center gap-2 sm:gap-3">
+            <div class="hidden sm:block w-px h-6 bg-gray-200" aria-hidden="true"></div>
             <button
               id="export-csv"
-              class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-emerald-600 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors"
+              class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-emerald-700 bg-emerald-50 rounded-lg hover:bg-emerald-100 border border-emerald-200 transition-colors"
               type="button"
+              title="Export tasks as CSV file"
             >
-              Export CSV
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              <span>CSV</span>
             </button>
             <button
               id="export-markdown"
-              class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg shadow-sm hover:bg-purple-700 transition-colors"
+              class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-purple-700 bg-purple-50 rounded-lg hover:bg-purple-100 border border-purple-200 transition-colors"
               type="button"
+              title="Copy daily report as Markdown to clipboard"
             >
-              Export Markdown
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+              </svg>
+              <span>Markdown</span>
             </button>
           </div>
         </div>
-        <div class="mt-4 flex gap-2 sm:hidden">
+        <div class="sm:hidden mt-3 grid grid-cols-2 gap-2">
+          <button
+            id="edit-mode-toggle-mobile"
+            class="col-span-2 inline-flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-semibold rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
+            type="button"
+            title="Toggle edit mode"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+            </svg>
+            Edit Mode
+          </button>
           <button
             id="reset-all-mobile"
-            class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-orange-600 rounded-lg shadow-sm hover:bg-orange-700 transition-colors"
+            class="inline-flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-semibold text-white bg-orange-500 rounded-lg hover:bg-orange-600 transition-colors"
             type="button"
+            title="Reset all timers"
           >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+            </svg>
             Reset All
           </button>
           <button
             id="export-csv-mobile"
-            class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-emerald-600 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors"
+            class="inline-flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-semibold text-emerald-700 bg-emerald-50 rounded-lg hover:bg-emerald-100 border border-emerald-200 transition-colors"
             type="button"
+            title="Export as CSV"
           >
-            Export CSV
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m0 0l-3-3m3 3l3-3m2 8H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            CSV
           </button>
           <button
             id="export-markdown-mobile"
-            class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg shadow-sm hover:bg-purple-700 transition-colors"
+            class="inline-flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-semibold text-purple-700 bg-purple-50 rounded-lg hover:bg-purple-100 border border-purple-200 transition-colors"
             type="button"
+            title="Copy Markdown"
           >
-            Export Markdown
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z" />
+            </svg>
+            Markdown
           </button>
         </div>
       </header>
