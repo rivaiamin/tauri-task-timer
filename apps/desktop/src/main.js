@@ -26,12 +26,21 @@ document.addEventListener("DOMContentLoaded", () => {
   document
     .querySelector('[data-tauri-drag-region]')
     ?.addEventListener('dragstart', (event) => {
+      // Allow HTML5 drag/drop inside the task list; only prevent window-drag conflicts elsewhere.
+      if (event.target instanceof Element && event.target.closest("#task-list")) {
+        return;
+      }
       event.preventDefault();
     });
 
   let tasks = [];
   let totalTimerInterval = null;
   let editMode = false;
+  let dragState = {
+    draggingId: null,
+    overId: null,
+    insertAfter: false,
+  };
 
   function setEditMode(value) {
     editMode = value;
@@ -67,6 +76,7 @@ document.addEventListener("DOMContentLoaded", () => {
       const taskIndex = tasks.findIndex(t => t.id === task.id);
       const isFirst = taskIndex === 0;
       const isLast = taskIndex === tasks.length - 1;
+      taskElement.dataset.taskCard = "true";
 
       if (editMode) {
         taskElement.className =
@@ -148,10 +158,11 @@ document.addEventListener("DOMContentLoaded", () => {
       `;
       } else {
         taskElement.className =
-          "flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:bg-gray-100 transition duration-200 " +
+          "flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200 cursor-grab active:cursor-grabbing select-none hover:bg-gray-100 transition duration-200 " +
           (task.isRunning ? "ring-2 ring-green-400" : "");
         taskElement.dataset.id = task.id;
         taskElement.dataset.action = "toggle";
+        taskElement.draggable = true;
 
         taskElement.innerHTML = `
         <div class="flex-1 mb-3 sm:mb-0">
@@ -221,6 +232,30 @@ document.addEventListener("DOMContentLoaded", () => {
 
     // Update total timer after rendering
     updateTotalTimer();
+  }
+
+  function moveTaskRelativeToTarget(sourceId, targetId, insertAfter) {
+    if (sourceId === targetId) return;
+
+    const sourceIndex = tasks.findIndex((t) => t.id === sourceId);
+    if (sourceIndex < 0) return;
+
+    const [moved] = tasks.splice(sourceIndex, 1);
+    const targetIndex = tasks.findIndex((t) => t.id === targetId);
+
+    if (targetIndex < 0) {
+      // Put it back if we can't find a target.
+      tasks.splice(sourceIndex, 0, moved);
+      return;
+    }
+
+    const insertIndex = insertAfter ? targetIndex + 1 : targetIndex;
+    tasks.splice(insertIndex, 0, moved);
+  }
+
+  function getClosestFromEventTarget(eventTarget, selector) {
+    const el = eventTarget instanceof Element ? eventTarget : eventTarget?.parentElement;
+    return el?.closest?.(selector) ?? null;
   }
 
   function moveTaskUp(id) {
@@ -869,6 +904,82 @@ document.addEventListener("DOMContentLoaded", () => {
       const id = Number(card.dataset.id);
       toggleTimer(id);
     }
+  });
+
+  taskList.addEventListener("dragstart", (event) => {
+    if (editMode) return;
+    // Avoid the tauri drag-region handler cancelling the drag operation.
+    event.stopPropagation();
+
+    if (getClosestFromEventTarget(event.target, "button")) {
+      event.preventDefault();
+      return;
+    }
+
+    const card = getClosestFromEventTarget(event.target, "[data-task-card='true']");
+    if (!card) return;
+
+    const id = Number(card.dataset.id);
+    if (!Number.isFinite(id)) return;
+
+    dragState.draggingId = id;
+    dragState.overId = null;
+    dragState.insertAfter = false;
+
+    card.classList.add("opacity-60", "ring-2", "ring-blue-300");
+
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = "move";
+      event.dataTransfer.setData("text/plain", String(id));
+    }
+  });
+
+  taskList.addEventListener("dragover", (event) => {
+    if (editMode) return;
+    if (!dragState.draggingId) return;
+
+    const card = getClosestFromEventTarget(event.target, "[data-task-card='true']");
+    if (!card) return;
+
+    const overId = Number(card.dataset.id);
+    if (!Number.isFinite(overId)) return;
+    if (overId === dragState.draggingId) return;
+
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = "move";
+
+    const rect = card.getBoundingClientRect();
+    const insertAfter = event.clientY > rect.top + rect.height / 2;
+
+    dragState.overId = overId;
+    dragState.insertAfter = insertAfter;
+  });
+
+  taskList.addEventListener("drop", (event) => {
+    if (editMode) return;
+    if (!dragState.draggingId || !dragState.overId) return;
+
+    event.preventDefault();
+
+    const sourceId = dragState.draggingId;
+    const targetId = dragState.overId;
+    const insertAfter = dragState.insertAfter;
+
+    dragState.draggingId = null;
+    dragState.overId = null;
+    dragState.insertAfter = false;
+
+    moveTaskRelativeToTarget(sourceId, targetId, insertAfter);
+    saveTasks();
+    renderTasks();
+    updateTotalTimer();
+  });
+
+  taskList.addEventListener("dragend", () => {
+    dragState.draggingId = null;
+    dragState.overId = null;
+    dragState.insertAfter = false;
+    renderTasks();
   });
 
   taskList.addEventListener("blur", (event) => {
