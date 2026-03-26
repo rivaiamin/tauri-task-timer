@@ -3,20 +3,21 @@
   <head>
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <meta name="color-scheme" content="light dark" />
     <title>Multi-Task Timer</title>
     <link rel="stylesheet" href="styles.css" />
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/sweetalert2@11"></script>
     <script type="module" src="main.js" defer></script>
   </head>
-  <body class="min-h-screen p-4 sm:p-8">
-    <div data-tauri-drag-region class="max-w-2xl mx-auto bg-white rounded-xl shadow-lg p-6 sm:p-8">
+  <body class="min-h-screen p-4 sm:p-8 bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+    <div data-tauri-drag-region class="max-w-2xl mx-auto bg-white dark:bg-gray-900 rounded-xl shadow-lg p-6 sm:p-8 ring-1 ring-black/5 dark:ring-white/10">
       <header class="mb-8">
         <div class="text-center sm:text-left mb-5">
-          <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 tracking-tight">
+          <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-gray-100 tracking-tight">
             Task Timer
           </h1>
-          <p class="text-gray-500 mt-1.5 text-sm sm:text-base max-w-md">
+          <p class="text-gray-500 dark:text-gray-400 mt-1.5 text-sm sm:text-base max-w-md">
             Add tasks and track your time. Only one timer can run at a time.
           </p>
         </div>
@@ -24,7 +25,7 @@
           <div class="flex items-center gap-2 sm:gap-3 flex-1 sm:flex-initial min-w-0">
             <button
               id="edit-mode-toggle"
-              class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 hover:border-gray-400 transition-colors shadow-sm"
+              class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 hover:border-gray-400 dark:hover:border-gray-600 transition-colors shadow-sm"
               type="button"
               title="Toggle edit mode to change task details inline"
             >
@@ -33,7 +34,7 @@
               </svg>
               <span>Edit Mode</span>
             </button>
-            <div class="hidden sm:block w-px h-6 bg-gray-200" aria-hidden="true"></div>
+            <div class="hidden sm:block w-px h-6 bg-gray-200 dark:bg-gray-800" aria-hidden="true"></div>
             <button
               id="reset-all"
               class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-white bg-orange-500 rounded-lg hover:bg-orange-600 transition-colors shadow-sm"
@@ -47,10 +48,10 @@
             </button>
           </div>
           <div class="flex items-center gap-2 sm:gap-3">
-            <div class="hidden sm:block w-px h-6 bg-gray-200" aria-hidden="true"></div>
+            <div class="hidden sm:block w-px h-6 bg-gray-200 dark:bg-gray-800" aria-hidden="true"></div>
             <button
               id="export-csv"
-              class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-emerald-700 bg-emerald-50 rounded-lg hover:bg-emerald-100 border border-emerald-200 transition-colors"
+              class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-900/40 transition-colors"
               type="button"
               title="Export tasks as CSV file"
             >
@@ -61,7 +62,7 @@
             </button>
             <button
               id="export-markdown"
-              class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-purple-700 bg-purple-50 rounded-lg hover:bg-purple-100 border border-purple-200 transition-colors"
+              class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-900/20 rounded-lg hover:bg-purple-100 dark:hover:bg-purple-900/30 border border-purple-200 dark:border-purple-900/40 transition-colors"
               type="button"
               title="Copy daily report as Markdown to clipboard"
             >
@@ -75,7 +76,7 @@
         <div class="sm:hidden mt-3 grid grid-cols-2 gap-2">
           <button
             id="edit-mode-toggle-mobile"
-            class="col-span-2 inline-flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-semibold rounded-lg border border-gray-300 bg-white text-gray-700 hover:bg-gray-50 transition-colors"
+            class="col-span-2 inline-flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-semibold rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
             type="button"
             title="Toggle edit mode"
           >
@@ -97,7 +98,7 @@
           </button>
           <button
             id="export-csv-mobile"
-            class="inline-flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-semibold text-emerald-700 bg-emerald-50 rounded-lg hover:bg-emerald-100 border border-emerald-200 transition-colors"
+            class="inline-flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-semibold text-emerald-700 dark:text-emerald-300 bg-emerald-50 dark:bg-emerald-900/20 rounded-lg hover:bg-emerald-100 dark:hover:bg-emerald-900/30 border border-emerald-200 dark:border-emerald-900/40 transition-colors"
             type="button"
             title="Export as CSV"
           >
@@ -108,7 +109,7 @@
           </button>
           <button
             id="export-markdown-mobile"
-            class="inline-flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-semibold text-purple-700 bg-purple-50 rounded-lg hover:bg-purple-100 border border-purple-200 transition-colors"
+            class="inline-flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-semibold text-purple-700 dark:text-purple-300 bg-purple-50 dark:bg-purple-900/20 rounded-lg hover:bg-purple-100 dark:hover:bg-purple-900/30 border border-purple-200 dark:border-purple-900/40 transition-colors"
             type="button"
             title="Copy Markdown"
           >
@@ -128,7 +129,7 @@
           type="text"
           id="task-input"
           placeholder="Enter new task name..."
-          class="flex-1 p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+          class="flex-1 p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
         />
         <button
           type="submit"
@@ -138,15 +139,15 @@
         </button>
       </form>
 
-      <div id="total-timer" class="mb-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border-2 border-blue-200">
+      <div id="total-timer" class="mb-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 rounded-lg border-2 border-blue-200 dark:border-blue-900/50">
         <div class="text-center">
-          <p class="text-sm font-semibold text-gray-600 mb-2">Total Time</p>
-          <p id="total-time-display" class="text-4xl font-mono font-bold text-blue-700">00:00:00</p>
+          <p class="text-sm font-semibold text-gray-600 dark:text-gray-300 mb-2">Total Time</p>
+          <p id="total-time-display" class="text-4xl font-mono font-bold text-blue-700 dark:text-blue-300">00:00:00</p>
         </div>
       </div>
 
       <div id="task-list" class="space-y-4">
-        <p class="text-gray-500 text-center">
+        <p class="text-gray-500 dark:text-gray-400 text-center">
           No tasks added yet. Add one above to get started!
         </p>
       </div>
