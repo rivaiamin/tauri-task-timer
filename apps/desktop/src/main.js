@@ -66,7 +66,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
     if (tasks.length === 0) {
       taskList.innerHTML =
-        '<p class="text-gray-500 text-center">No tasks added yet. Add one above to get started!</p>';
+        '<p class="text-gray-500 dark:text-gray-400 text-center">No tasks added yet. Add one above to get started!</p>';
       return;
     }
 
@@ -80,7 +80,7 @@ document.addEventListener("DOMContentLoaded", () => {
 
       if (editMode) {
         taskElement.className =
-          "flex flex-col sm:flex-row items-start sm:items-center justify-between bg-amber-50 p-4 rounded-lg shadow-sm border-2 border-amber-300 transition duration-200";
+          "flex flex-col sm:flex-row items-start sm:items-center justify-between bg-amber-50 dark:bg-amber-950/20 p-4 rounded-lg shadow-sm border-2 border-amber-300 dark:border-amber-900/50 transition duration-200";
         taskElement.dataset.id = task.id;
         taskElement.dataset.editMode = "true";
 
@@ -90,7 +90,7 @@ document.addEventListener("DOMContentLoaded", () => {
             type="text"
             data-id="${task.id}"
             data-field="title"
-            class="edit-title w-full p-2 text-lg font-medium border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            class="edit-title w-full p-2 text-lg font-medium border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-blue-500 dark:focus:border-blue-400"
             value="${escapeHTML(task.label)}"
             placeholder="Task title"
           />
@@ -98,7 +98,7 @@ document.addEventListener("DOMContentLoaded", () => {
             type="text"
             data-id="${task.id}"
             data-field="description"
-            class="edit-description w-full p-2 text-sm text-gray-600 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            class="edit-description w-full p-2 text-sm text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-blue-500 dark:focus:border-blue-400"
             value="${escapeHTML(task.description || "")}"
             placeholder="Description (optional)"
           />
@@ -106,7 +106,7 @@ document.addEventListener("DOMContentLoaded", () => {
             type="text"
             data-id="${task.id}"
             data-field="time"
-            class="edit-time w-full p-2 text-xl font-mono border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-blue-500"
+            class="edit-time w-full p-2 text-xl font-mono border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-blue-500 dark:focus:border-blue-400"
             value="${formattedTime}"
             placeholder="HH:MM:SS or minutes"
           />
@@ -115,7 +115,7 @@ document.addEventListener("DOMContentLoaded", () => {
           <button
             data-id="${task.id}"
             data-action="move-up"
-            class="p-2 rounded-lg text-gray-800 bg-white border border-gray-300 hover:bg-gray-50 transition duration-200 flex items-center justify-center text-sm font-semibold ${isFirst ? 'opacity-50 cursor-not-allowed' : ''}"
+            class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold ${isFirst ? 'opacity-50 cursor-not-allowed' : ''}"
             title="Move up"
             ${isFirst ? 'disabled' : ''}
           >
@@ -126,7 +126,7 @@ document.addEventListener("DOMContentLoaded", () => {
           <button
             data-id="${task.id}"
             data-action="move-down"
-            class="p-2 rounded-lg text-gray-800 bg-white border border-gray-300 hover:bg-gray-50 transition duration-200 flex items-center justify-center text-sm font-semibold ${isLast ? 'opacity-50 cursor-not-allowed' : ''}"
+            class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold ${isLast ? 'opacity-50 cursor-not-allowed' : ''}"
             title="Move down"
             ${isLast ? 'disabled' : ''}
           >
@@ -158,24 +158,24 @@ document.addEventListener("DOMContentLoaded", () => {
       `;
       } else {
         taskElement.className =
-          "flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200 cursor-grab active:cursor-grabbing select-none hover:bg-gray-100 transition duration-200 " +
-          (task.isRunning ? "ring-2 ring-green-400" : "");
+          "flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 dark:bg-gray-800/70 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 cursor-grab active:cursor-grabbing select-none hover:bg-gray-100 dark:hover:bg-gray-800 transition duration-200 " +
+          (task.isRunning ? "ring-2 ring-green-400 dark:ring-green-500" : "");
         taskElement.dataset.id = task.id;
         taskElement.dataset.action = "toggle";
         taskElement.draggable = true;
 
         taskElement.innerHTML = `
         <div class="flex-1 mb-3 sm:mb-0">
-          <span class="text-lg font-medium text-gray-900 break-words">${escapeHTML(
+          <span class="text-lg font-medium text-gray-900 dark:text-gray-100 break-words">${escapeHTML(
             task.label,
           )}</span>
-          <span id="time-${task.id}" class="text-3xl font-mono text-gray-700 block mt-1">${formattedTime}</span>
+          <span id="time-${task.id}" class="text-3xl font-mono text-gray-700 dark:text-gray-300 block mt-1">${formattedTime}</span>
         </div>
         <div class="flex space-x-2 w-full sm:w-auto">
           <button
             data-id="${task.id}"
             data-action="move-up"
-            class="p-2 rounded-lg text-gray-800 bg-white border border-gray-300 hover:bg-gray-50 transition duration-200 flex items-center justify-center text-sm font-semibold ${isFirst ? 'opacity-50 cursor-not-allowed' : ''}"
+            class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold ${isFirst ? 'opacity-50 cursor-not-allowed' : ''}"
             title="Move up"
             ${isFirst ? 'disabled' : ''}
           >
@@ -186,7 +186,7 @@ document.addEventListener("DOMContentLoaded", () => {
           <button
             data-id="${task.id}"
             data-action="move-down"
-            class="p-2 rounded-lg text-gray-800 bg-white border border-gray-300 hover:bg-gray-50 transition duration-200 flex items-center justify-center text-sm font-semibold ${isLast ? 'opacity-50 cursor-not-allowed' : ''}"
+            class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold ${isLast ? 'opacity-50 cursor-not-allowed' : ''}"
             title="Move down"
             ${isLast ? 'disabled' : ''}
           >
@@ -207,7 +207,7 @@ document.addEventListener("DOMContentLoaded", () => {
           <button
             data-id="${task.id}"
             data-action="edit"
-            class="w-1/3 sm:w-24 p-2 rounded-lg text-gray-800 bg-white border border-gray-300 hover:bg-gray-50 transition duration-200 flex items-center justify-center text-sm font-semibold"
+            class="w-1/3 sm:w-24 p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold"
             title="Edit task"
           >
             <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -519,29 +519,29 @@ document.addEventListener("DOMContentLoaded", () => {
       title: 'Edit Task',
       html: `
         <div class="text-left">
-          <label for="swal-task-title" class="block text-sm font-medium text-gray-700 mb-2">Task Title</label>
+          <label for="swal-task-title" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Task Title</label>
           <input 
             id="swal-task-title" 
-            class="swal2-input w-full mb-4" 
+            class="swal2-input w-full mb-4 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700" 
             placeholder="Enter task title" 
             value="${escapeHTML(task.label)}"
             maxlength="200"
           />
-          <label for="swal-task-description" class="block text-sm font-medium text-gray-700 mb-2">Description (optional)</label>
+          <label for="swal-task-description" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Description (optional)</label>
           <textarea 
             id="swal-task-description" 
-            class="swal2-textarea w-full mb-4" 
+            class="swal2-textarea w-full mb-4 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700" 
             placeholder="Enter task description"
             rows="3"
           >${escapeHTML(task.description || "")}</textarea>
-          <label for="swal-task-time" class="block text-sm font-medium text-gray-700 mb-2">Time</label>
+          <label for="swal-task-time" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Time</label>
           <input 
             id="swal-task-time" 
-            class="swal2-input w-full" 
+            class="swal2-input w-full bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 border border-gray-300 dark:border-gray-700" 
             placeholder="HH:MM:SS or minutes (e.g. 90)" 
             value="${currentFormatted}"
           />
-          <p class="text-xs text-gray-500 mt-2">Use HH:MM:SS (e.g. 01:30:00) or minutes (e.g. 90 for 1.5 hours)</p>
+          <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">Use HH:MM:SS (e.g. 01:30:00) or minutes (e.g. 90 for 1.5 hours)</p>
         </div>
       `,
       focusConfirm: false,
@@ -926,7 +926,7 @@ document.addEventListener("DOMContentLoaded", () => {
     dragState.overId = null;
     dragState.insertAfter = false;
 
-    card.classList.add("opacity-60", "ring-2", "ring-blue-300");
+    card.classList.add("opacity-60", "ring-2", "ring-blue-300", "dark:ring-blue-500");
 
     if (event.dataTransfer) {
       event.dataTransfer.effectAllowed = "move";
