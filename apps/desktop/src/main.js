@@ -6,6 +6,8 @@ if (window.__TAURI__) {
 // const { getCurrentWindow } = window.__TAURI__.window;
 
 document.addEventListener("DOMContentLoaded", () => {
+  const SwalWithTheme = Swal.mixin({ theme: "auto" });
+
   const taskForm = document.getElementById("task-form");
   const taskInput = document.getElementById("task-input");
   const taskList = document.getElementById("task-list");
@@ -515,7 +517,7 @@ document.addEventListener("DOMContentLoaded", () => {
     const currentSeconds = getCurrentElapsedTime(task);
     const currentFormatted = formatTime(currentSeconds);
 
-    const { value: formValues } = await Swal.fire({
+    const { value: formValues } = await SwalWithTheme.fire({
       title: 'Edit Task',
       html: `
         <div class="text-left">
