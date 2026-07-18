@@ -1,1 +1,7 @@
 @import 'tailwindcss';
+
+/* Let native controls (form fields, scrollbars) follow the OS theme,
+   matching the desktop app's `<meta name="color-scheme" content="light dark">`. */
+:root {
+  color-scheme: light dark;
+}

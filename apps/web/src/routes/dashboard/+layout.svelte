@@ -16,7 +16,7 @@
 {#if session}
   <slot />
 {:else}
-  <div class="flex items-center justify-center min-h-screen">
+  <div class="flex items-center justify-center min-h-screen bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
     <p>Redirecting to login...</p>
   </div>
 {/if}

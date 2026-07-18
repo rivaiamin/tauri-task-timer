@@ -6,18 +6,30 @@
   import { getSession, signOut } from '$lib/auth/helpers';
   import { goto } from '$app/navigation';
 
+  type TaskRow = DatabaseTask & { intervalId?: any; startTime?: number | null };
+
   let session: any = null;
-  let tasks: (DatabaseTask & { intervalId?: any; startTime?: number | null })[] = [];
+  let tasks: TaskRow[] = [];
   let totalTime = 0;
   let taskInput = '';
   let totalTimerInterval: ReturnType<typeof setInterval> | null = null;
   let hasPlayed8HourSound = false;
+  let pulse8Hour = false;
   let channel: any = null;
   let tick = 0; // Reactive variable to force timer updates every second
-  
+
+  // Inline "Edit Mode" state (matches the desktop app)
+  let editMode = false;
+  let editBuffers: Record<string, { label: string; description: string; time: string }> = {};
+
+  // Drag-and-drop state
+  let draggingId: number | null = null;
+  let dragOverId: number | null = null;
+  let dragInsertAfter = false;
+
   // Edit modal state
   let showEditModal = false;
-  let editingTask: (DatabaseTask & { intervalId?: any; startTime?: number | null }) | null = null;
+  let editingTask: TaskRow | null = null;
   let editTitle = '';
   let editDescription = '';
   let editTime = '';
@@ -26,6 +38,20 @@
   $: {
     totalTime = getTotalTime();
     check8HourNotification();
+  }
+
+  // Ensure every rendered task has an edit buffer while in edit mode.
+  // Guarded so typing (and per-second ticks) never clobber in-progress edits.
+  $: if (editMode) {
+    for (const t of tasks) {
+      if (!editBuffers[t.id]) {
+        editBuffers[t.id] = {
+          label: t.label,
+          description: t.description || '',
+          time: formatTime(getCurrentElapsedTime(t))
+        };
+      }
+    }
   }
 
   onMount(async () => {
@@ -68,7 +94,9 @@
     if (totalTimerInterval) {
       clearInterval(totalTimerInterval);
     }
-    document.removeEventListener('visibilitychange', handleVisibilityChange);
+    if (typeof document !== 'undefined') {
+      document.removeEventListener('visibilitychange', handleVisibilityChange);
+    }
   });
 
   async function loadTasks() {
@@ -92,29 +120,36 @@
     }));
   }
 
+  // Keep the list ordered by `position` (stable for equal positions) so
+  // realtime edits from another device — including reorders — stay in sync.
+  function sortByPosition(list: TaskRow[]): TaskRow[] {
+    return [...list].sort((a, b) => a.position - b.position);
+  }
+
   function handleRealtimeUpdate(payload: any) {
     if (payload.eventType === 'INSERT') {
-      tasks = [...tasks, {
+      if (tasks.some(t => t.id === payload.new.id)) return;
+      tasks = sortByPosition([...tasks, {
         ...payload.new,
         intervalId: null,
         startTime: payload.new.start_time ? new Date(payload.new.start_time).getTime() : null
-      }];
+      }]);
     } else if (payload.eventType === 'UPDATE') {
-      tasks = tasks.map(task => 
-        task.id === payload.new.id 
+      tasks = sortByPosition(tasks.map(task =>
+        task.id === payload.new.id
           ? {
               ...payload.new,
               intervalId: task.intervalId,
               startTime: payload.new.start_time ? new Date(payload.new.start_time).getTime() : task.startTime
             }
           : task
-      );
+      ));
     } else if (payload.eventType === 'DELETE') {
       tasks = tasks.filter(t => t.id !== payload.old.id);
     }
   }
 
-  function getCurrentElapsedTime(task: DatabaseTask & { startTime?: number | null }): number {
+  function getCurrentElapsedTime(task: TaskRow): number {
     if (!task.is_running || !task.startTime) {
       return task.elapsed_time;
     }
@@ -132,6 +167,8 @@
     if (totalTime >= 28800 && !hasPlayed8HourSound) {
       play8HourSound();
       hasPlayed8HourSound = true;
+      pulse8Hour = true;
+      setTimeout(() => (pulse8Hour = false), 2000);
     } else if (totalTime < 28800) {
       hasPlayed8HourSound = false;
     }
@@ -147,12 +184,23 @@
 
     oscillator.frequency.value = 800;
     oscillator.type = 'sine';
-    
+
     gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
     gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
 
     oscillator.start(audioContext.currentTime);
     oscillator.stop(audioContext.currentTime + 0.5);
+  }
+
+  async function persistUpdate(id: number, fields: Record<string, unknown>) {
+    if (!session) return;
+    const { error } = await supabase
+      .from('tasks')
+      .update(fields)
+      .eq('id', id)
+      .eq('user_id', session.user.id);
+    if (error) console.error('Error updating task:', error);
+    return error;
   }
 
   async function addTask(event: Event) {
@@ -179,16 +227,16 @@
       return;
     }
 
-    tasks = [...tasks, {
-      ...data,
-      intervalId: null,
-      startTime: null
-    }];
+    const newTask: TaskRow = { ...data, intervalId: null, startTime: null };
+    tasks = [...tasks, newTask];
+    if (editMode) {
+      editBuffers[newTask.id] = { label: newTask.label, description: newTask.description || '', time: formatTime(0) };
+    }
     taskInput = '';
   }
 
   async function toggleTimer(id: number) {
-    if (!session) return;
+    if (!session || editMode) return;
 
     const taskToToggle = tasks.find(t => t.id === id);
     if (!taskToToggle) return;
@@ -229,8 +277,8 @@
     }
 
     // Update local state
-    tasks = tasks.map(task => 
-      task.id === id 
+    tasks = tasks.map(task =>
+      task.id === id
         ? { ...task, is_running: true, startTime: Date.now() }
         : task
     );
@@ -260,8 +308,8 @@
     }
 
     // Update local state
-    tasks = tasks.map(t => 
-      t.id === id 
+    tasks = tasks.map(t =>
+      t.id === id
         ? { ...t, is_running: false, elapsed_time: currentElapsed, startTime: null }
         : t
     );
@@ -285,16 +333,18 @@
       return;
     }
 
-    tasks = tasks.map(t => 
-      t.id === id 
+    tasks = tasks.map(t =>
+      t.id === id
         ? { ...t, elapsed_time: 0, is_running: false, startTime: null }
         : t
     );
+    if (editBuffers[id]) editBuffers[id].time = formatTime(0);
+    editBuffers = editBuffers;
   }
 
-  async function deleteTask(id: number) {
+  async function deleteTask(id: number, skipConfirm = false) {
     if (!session) return;
-    if (!confirm('Are you sure you want to delete this task?')) return;
+    if (!skipConfirm && !confirm('Are you sure you want to delete this task?')) return;
 
     const { error } = await supabase
       .from('tasks')
@@ -308,45 +358,97 @@
     }
 
     tasks = tasks.filter(t => t.id !== id);
+    delete editBuffers[id];
+    editBuffers = editBuffers;
   }
 
   async function moveTaskUp(id: number) {
     const index = tasks.findIndex(t => t.id === id);
     if (index <= 0 || !session) return;
-
-    const newPosition = index - 1;
-    await reorderTasks(id, newPosition);
+    const newTasks = [...tasks];
+    [newTasks[index - 1], newTasks[index]] = [newTasks[index], newTasks[index - 1]];
+    tasks = newTasks;
+    await persistPositions();
   }
 
   async function moveTaskDown(id: number) {
     const index = tasks.findIndex(t => t.id === id);
     if (index < 0 || index >= tasks.length - 1 || !session) return;
-
-    const newPosition = index + 1;
-    await reorderTasks(id, newPosition);
+    const newTasks = [...tasks];
+    [newTasks[index], newTasks[index + 1]] = [newTasks[index + 1], newTasks[index]];
+    tasks = newTasks;
+    await persistPositions();
   }
 
-  async function reorderTasks(taskId: number, newPosition: number) {
+  // Persist the current array order as contiguous positions (0..n-1).
+  async function persistPositions() {
     if (!session) return;
+    tasks = tasks.map((t, i) => ({ ...t, position: i }));
+    await Promise.all(
+      tasks.map((t, i) =>
+        supabase.from('tasks').update({ position: i }).eq('id', t.id).eq('user_id', session.user.id)
+      )
+    );
+  }
 
-    // Swap positions
-    const task1 = tasks[newPosition];
-    const task2 = tasks.find(t => t.id === taskId);
-    if (!task2) return;
+  // ---- Drag-and-drop reordering (disabled in edit mode, mirrors desktop) ----
+  function handleDragStart(event: DragEvent, id: number) {
+    if (editMode) return;
+    // Don't start a card drag when grabbing a button.
+    if (event.target instanceof Element && event.target.closest('button')) {
+      event.preventDefault();
+      return;
+    }
+    draggingId = id;
+    dragOverId = null;
+    dragInsertAfter = false;
+    if (event.dataTransfer) {
+      event.dataTransfer.effectAllowed = 'move';
+      event.dataTransfer.setData('text/plain', String(id));
+    }
+  }
 
-    // Update both tasks' positions
-    const updates = [
-      supabase.from('tasks').update({ position: newPosition }).eq('id', taskId).eq('user_id', session.user.id),
-      supabase.from('tasks').update({ position: task1.position }).eq('id', task1.id).eq('user_id', session.user.id)
-    ];
+  function handleDragOver(event: DragEvent, id: number) {
+    if (editMode || draggingId === null || id === draggingId) return;
+    event.preventDefault();
+    if (event.dataTransfer) event.dataTransfer.dropEffect = 'move';
+    const rect = (event.currentTarget as HTMLElement).getBoundingClientRect();
+    dragInsertAfter = event.clientY > rect.top + rect.height / 2;
+    dragOverId = id;
+  }
 
-    await Promise.all(updates);
+  async function handleDrop(event: DragEvent, id: number) {
+    if (editMode || draggingId === null) return;
+    event.preventDefault();
+    const sourceId = draggingId;
+    const targetId = dragOverId ?? id;
+    const insertAfter = dragInsertAfter;
+    draggingId = null;
+    dragOverId = null;
+    dragInsertAfter = false;
+    await moveTaskRelativeToTarget(sourceId, targetId, insertAfter);
+  }
 
-    // Update local state
+  function handleDragEnd() {
+    draggingId = null;
+    dragOverId = null;
+    dragInsertAfter = false;
+  }
+
+  async function moveTaskRelativeToTarget(sourceId: number, targetId: number, insertAfter: boolean) {
+    if (sourceId === targetId) return;
+    const sourceIndex = tasks.findIndex(t => t.id === sourceId);
+    if (sourceIndex < 0) return;
+
     const newTasks = [...tasks];
-    const task2Index = tasks.findIndex(t => t.id === taskId);
-    [newTasks[newPosition], newTasks[task2Index]] = [newTasks[task2Index], newTasks[newPosition]];
+    const [moved] = newTasks.splice(sourceIndex, 1);
+    const targetIndex = newTasks.findIndex(t => t.id === targetId);
+    if (targetIndex < 0) return;
+
+    const insertIndex = insertAfter ? targetIndex + 1 : targetIndex;
+    newTasks.splice(insertIndex, 0, moved);
     tasks = newTasks;
+    await persistPositions();
   }
 
   function parseTimeInput(value: string): number | null {
@@ -376,6 +478,73 @@
     return Math.round(asNumber * 60);
   }
 
+  // ---- Inline edit mode ----
+  function toggleEditMode() {
+    editMode = !editMode;
+    if (editMode) {
+      editBuffers = {};
+      for (const t of tasks) {
+        editBuffers[t.id] = {
+          label: t.label,
+          description: t.description || '',
+          time: formatTime(getCurrentElapsedTime(t))
+        };
+      }
+    } else {
+      editBuffers = {};
+    }
+  }
+
+  async function saveInlineTitle(task: TaskRow) {
+    const buf = editBuffers[task.id];
+    if (!buf) return;
+    const newTitle = buf.label.trim();
+    if (!newTitle) {
+      buf.label = task.label;
+      editBuffers = editBuffers;
+      return;
+    }
+    if (newTitle === task.label) return;
+    await persistUpdate(task.id, { label: newTitle });
+    tasks = tasks.map(t => (t.id === task.id ? { ...t, label: newTitle } : t));
+  }
+
+  async function saveInlineDescription(task: TaskRow) {
+    const buf = editBuffers[task.id];
+    if (!buf) return;
+    const newDescription = buf.description.trim();
+    if (newDescription === (task.description || '')) return;
+    await persistUpdate(task.id, { description: newDescription || null });
+    tasks = tasks.map(t => (t.id === task.id ? { ...t, description: newDescription || null } : t));
+  }
+
+  async function saveInlineTime(task: TaskRow) {
+    const buf = editBuffers[task.id];
+    if (!buf) return;
+    const newSeconds = parseTimeInput(buf.time);
+    if (newSeconds === null || newSeconds < 0) {
+      buf.time = formatTime(getCurrentElapsedTime(task));
+      editBuffers = editBuffers;
+      return;
+    }
+    await persistUpdate(task.id, {
+      elapsed_time: newSeconds,
+      start_time: task.is_running ? new Date().toISOString() : null
+    });
+    tasks = tasks.map(t =>
+      t.id === task.id
+        ? { ...t, elapsed_time: newSeconds, startTime: t.is_running ? Date.now() : null }
+        : t
+    );
+    buf.time = formatTime(newSeconds);
+    editBuffers = editBuffers;
+  }
+
+  function blurOnEnter(event: KeyboardEvent) {
+    if (event.key === 'Enter') (event.currentTarget as HTMLInputElement).blur();
+  }
+
+  // ---- Modal edit (single task) ----
   function openEditModal(id: number) {
     const task = tasks.find(t => t.id === id);
     if (!task) return;
@@ -407,7 +576,7 @@
 
     const newSeconds = parseTimeInput(editTime);
     if (newSeconds === null) {
-      alert("Invalid time format. Use HH:MM:SS or minutes (e.g. 90)");
+      alert('Invalid time format. Use HH:MM:SS or minutes (e.g. 90)');
       return;
     }
 
@@ -428,14 +597,14 @@
       return;
     }
 
-    tasks = tasks.map(t => 
-      t.id === editingTask!.id 
-        ? { 
-            ...t, 
+    tasks = tasks.map(t =>
+      t.id === editingTask!.id
+        ? {
+            ...t,
             label: newTitle,
             description: editDescription.trim() || null,
-            elapsed_time: newSeconds, 
-            startTime: t.is_running ? Date.now() : null 
+            elapsed_time: newSeconds,
+            startTime: t.is_running ? Date.now() : null
           }
         : t
     );
@@ -475,6 +644,10 @@
       is_running: false,
       startTime: null
     }));
+    for (const id of Object.keys(editBuffers)) {
+      editBuffers[id].time = formatTime(0);
+    }
+    editBuffers = editBuffers;
   }
 
   function tasksToCsv(): string {
@@ -519,25 +692,30 @@
     URL.revokeObjectURL(url);
   }
 
+  // Daily Report format kept identical to the desktop app (Google Chat friendly):
+  // bold header + only tasks that have recorded time.
   function tasksToMarkdown(): string {
     const datePart = new Date().toISOString().slice(0, 10);
-    const lines = [`### Daily Report ${datePart}`];
-    
-    tasks.forEach(task => {
-      const storyPoints = getCurrentElapsedTime(task) / 3600;
-      let line = `- [${storyPoints.toFixed(2)}] ${task.label}`;
-      if (task.description && task.description.trim()) {
-        line += `\n  - ${task.description.trim()}`;
-      }
-      lines.push(line);
-    });
-    
+    const lines = [`*Daily Report ${datePart}*`];
+
+    tasks
+      .filter(task => getCurrentElapsedTime(task) > 0)
+      .forEach(task => {
+        const storyPoints = getCurrentElapsedTime(task) / 3600;
+        let line = `- [${storyPoints.toFixed(2)}] ${task.label}`;
+        if (task.description && task.description.trim()) {
+          line += ` - ${task.description.trim()}`;
+        }
+        lines.push(line);
+      });
+
     return lines.join('\n');
   }
 
   async function exportTasksAsMarkdown() {
-    if (!tasks.length) {
-      alert('No tasks to export yet.');
+    const tasksWithTime = tasks.filter(t => getCurrentElapsedTime(t) > 0);
+    if (!tasksWithTime.length) {
+      alert(tasks.length ? 'No tasks with recorded time to export.' : 'No tasks to export yet.');
       return;
     }
 
@@ -582,19 +760,28 @@
   }
 </script>
 
-<div class="min-h-screen p-4 sm:p-8">
-  <div class="max-w-2xl mx-auto bg-white rounded-xl shadow-lg p-6 sm:p-8">
+<div class="min-h-screen p-4 sm:p-8 bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
+  <div class="max-w-2xl mx-auto bg-white dark:bg-gray-900 rounded-xl shadow-lg p-6 sm:p-8 ring-1 ring-black/5 dark:ring-white/10">
     <header class="mb-6">
       <div class="flex items-center justify-between">
         <div class="flex-1">
-          <h1 class="text-3xl font-bold text-gray-900 text-center sm:text-left">
+          <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 text-center sm:text-left">
             Task Timer
           </h1>
-          <p class="text-center sm:text-left text-gray-500 mt-1">
+          <p class="text-center sm:text-left text-gray-500 dark:text-gray-400 mt-1">
             Add tasks and track your time. Only one timer can run at a time.
           </p>
         </div>
         <div class="hidden sm:flex items-center gap-2 ml-4">
+          <button
+            on:click={toggleEditMode}
+            class="inline-flex items-center px-3 py-2 text-sm font-semibold rounded-lg shadow-sm border transition-colors {editMode
+              ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
+              : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'}"
+            type="button"
+          >
+            {editMode ? 'Exit Edit Mode' : 'Edit Mode'}
+          </button>
           <button
             on:click={resetAllTimers}
             class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-orange-600 rounded-lg shadow-sm hover:bg-orange-700 transition-colors"
@@ -626,37 +813,44 @@
           </button>
         </div>
       </div>
-      <div class="mt-4 flex gap-2 sm:hidden">
+      <div class="mt-4 grid grid-cols-2 gap-2 sm:hidden">
+        <button
+          on:click={toggleEditMode}
+          class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold rounded-lg shadow-sm border transition-colors {editMode
+            ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
+            : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'}"
+          type="button"
+        >
+          {editMode ? 'Exit Edit Mode' : 'Edit Mode'}
+        </button>
         <button
           on:click={resetAllTimers}
-          class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-orange-600 rounded-lg shadow-sm hover:bg-orange-700 transition-colors"
+          class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-orange-600 rounded-lg shadow-sm hover:bg-orange-700 transition-colors"
           type="button"
         >
           Reset All
         </button>
         <button
           on:click={exportTasksAsCsv}
-          class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-emerald-600 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors"
+          class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-emerald-600 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors"
           type="button"
         >
           Export CSV
         </button>
         <button
           on:click={exportTasksAsMarkdown}
-          class="flex-1 inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg shadow-sm hover:bg-purple-700 transition-colors"
+          class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg shadow-sm hover:bg-purple-700 transition-colors"
           type="button"
         >
           Export Markdown
         </button>
         <button
           on:click={handleLogout}
-          class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-gray-600 rounded-lg shadow-sm hover:bg-gray-700 transition-colors"
+          class="col-span-2 inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-gray-600 rounded-lg shadow-sm hover:bg-gray-700 transition-colors"
           type="button"
           title="Sign out"
         >
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1" />
-          </svg>
+          Sign Out
         </button>
       </div>
     </header>
@@ -666,7 +860,7 @@
         type="text"
         bind:value={taskInput}
         placeholder="Enter new task name..."
-        class="flex-1 p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+        class="flex-1 p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
       />
       <button
         type="submit"
@@ -676,88 +870,170 @@
       </button>
     </form>
 
-    <div class="mb-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 rounded-lg border-2 border-blue-200">
+    <div class="mb-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 rounded-lg border-2 border-blue-200 dark:border-blue-900" class:animate-pulse={pulse8Hour}>
       <div class="text-center">
-        <p class="text-sm font-semibold text-gray-600 mb-2">Total Time</p>
-        <p class="text-4xl font-mono font-bold text-blue-700">{formatTime(totalTime)}</p>
+        <p class="text-sm font-semibold text-gray-600 dark:text-gray-400 mb-2">Total Time</p>
+        <p class="text-4xl font-mono font-bold text-blue-700 dark:text-blue-300">{formatTime(totalTime)}</p>
       </div>
     </div>
 
     <div class="space-y-4">
       {#if tasks.length === 0}
-        <p class="text-gray-500 text-center">
+        <p class="text-gray-500 dark:text-gray-400 text-center">
           No tasks added yet. Add one above to get started!
         </p>
       {:else}
-        {#each tasks as task (task.id), index}
-          <div
-            class="flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 p-4 rounded-lg shadow-sm border border-gray-200 cursor-pointer hover:bg-gray-100 transition duration-200 {task.is_running ? 'ring-2 ring-green-400' : ''}"
-            on:click={() => toggleTimer(task.id)}
-            on:keydown={(e) => e.key === 'Enter' || e.key === ' ' ? toggleTimer(task.id) : null}
-            role="button"
-            tabindex="0"
-          >
-            <div class="flex-1 mb-3 sm:mb-0">
-              <span class="text-lg font-medium text-gray-900 break-words">{task.label}</span>
-              <span class="text-3xl font-mono text-gray-700 block mt-1">
-                {formatTime(getCurrentElapsedTime(task) + (tick ? 0 : 0))}
-              </span>
-            </div>
-            <div 
-              class="flex space-x-2 w-full sm:w-auto" 
-              on:click|stopPropagation
-              on:keydown|stopPropagation
-              role="none"
+        {#each tasks as task (task.id)}
+          {@const index = tasks.findIndex(t => t.id === task.id)}
+          {#if editMode && editBuffers[task.id]}
+            <!-- Inline edit card -->
+            <div
+              class="flex flex-col sm:flex-row items-start sm:items-center justify-between bg-amber-50 dark:bg-amber-950/20 p-4 rounded-lg shadow-sm border-2 border-amber-300 dark:border-amber-900/50 transition duration-200"
             >
-              <button
-                on:click={() => moveTaskUp(task.id)}
-                disabled={index === 0}
-                class="p-2 rounded-lg text-gray-800 bg-white border border-gray-300 hover:bg-gray-50 transition duration-200 flex items-center justify-center text-sm font-semibold {index === 0 ? 'opacity-50 cursor-not-allowed' : ''}"
-                title="Move up"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
-                </svg>
-              </button>
-              <button
-                on:click={() => moveTaskDown(task.id)}
-                disabled={index === tasks.length - 1}
-                class="p-2 rounded-lg text-gray-800 bg-white border border-gray-300 hover:bg-gray-50 transition duration-200 flex items-center justify-center text-sm font-semibold {index === tasks.length - 1 ? 'opacity-50 cursor-not-allowed' : ''}"
-                title="Move down"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                </svg>
-              </button>
-              <button
-                on:click={() => resetTimer(task.id)}
-                class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-orange-500 hover:bg-orange-600 transition duration-200 flex items-center justify-center text-sm font-semibold"
-                title="Reset"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                </svg>
-              </button>
-              <button
-                on:click={() => openEditModal(task.id)}
-                class="w-1/3 sm:w-24 p-2 rounded-lg text-gray-800 bg-white border border-gray-300 hover:bg-gray-50 transition duration-200 flex items-center justify-center text-sm font-semibold"
-                title="Edit task"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                </svg>
-              </button>
-              <button
-                on:click={() => deleteTask(task.id)}
-                class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-gray-400 hover:bg-gray-500 transition duration-200 flex items-center justify-center text-sm font-semibold"
-                title="Delete"
-              >
-                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                </svg>
-              </button>
+              <div class="flex-1 mb-3 sm:mb-0 w-full space-y-2">
+                <input
+                  type="text"
+                  bind:value={editBuffers[task.id].label}
+                  on:blur={() => saveInlineTitle(task)}
+                  on:keydown={blurOnEnter}
+                  placeholder="Task title"
+                  maxlength="200"
+                  class="w-full p-2 text-lg font-medium border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-blue-500 dark:focus:border-blue-400"
+                />
+                <input
+                  type="text"
+                  bind:value={editBuffers[task.id].description}
+                  on:blur={() => saveInlineDescription(task)}
+                  on:keydown={blurOnEnter}
+                  placeholder="Description (optional)"
+                  class="w-full p-2 text-sm text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-blue-500 dark:focus:border-blue-400"
+                />
+                <input
+                  type="text"
+                  bind:value={editBuffers[task.id].time}
+                  on:blur={() => saveInlineTime(task)}
+                  on:keydown={blurOnEnter}
+                  placeholder="HH:MM:SS or minutes"
+                  class="w-full p-2 text-xl font-mono border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-blue-500 dark:focus:border-blue-400"
+                />
+              </div>
+              <div class="flex space-x-2 w-full sm:w-auto mt-2 sm:mt-0">
+                <button
+                  on:click={() => moveTaskUp(task.id)}
+                  disabled={index === 0}
+                  class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold {index === 0 ? 'opacity-50 cursor-not-allowed' : ''}"
+                  title="Move up"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+                  </svg>
+                </button>
+                <button
+                  on:click={() => moveTaskDown(task.id)}
+                  disabled={index === tasks.length - 1}
+                  class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold {index === tasks.length - 1 ? 'opacity-50 cursor-not-allowed' : ''}"
+                  title="Move down"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                <button
+                  on:click={() => resetTimer(task.id)}
+                  class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-orange-500 hover:bg-orange-600 transition duration-200 flex items-center justify-center text-sm font-semibold"
+                  title="Reset"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+                <button
+                  on:click={() => deleteTask(task.id, true)}
+                  class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-red-500 hover:bg-red-600 transition duration-200 flex items-center justify-center text-sm font-semibold"
+                  title="Delete (no confirmation)"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+              </div>
             </div>
-          </div>
+          {:else}
+            <!-- Normal card (click to toggle, drag to reorder) -->
+            <div
+              class="flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 dark:bg-gray-800/70 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 cursor-grab active:cursor-grabbing select-none hover:bg-gray-100 dark:hover:bg-gray-800 transition duration-200 {task.is_running ? 'ring-2 ring-green-400 dark:ring-green-500' : ''} {draggingId === task.id ? 'opacity-60 ring-2 ring-blue-300 dark:ring-blue-500' : ''}"
+              draggable={true}
+              on:dragstart={(e) => handleDragStart(e, task.id)}
+              on:dragover={(e) => handleDragOver(e, task.id)}
+              on:drop={(e) => handleDrop(e, task.id)}
+              on:dragend={handleDragEnd}
+              on:click={() => toggleTimer(task.id)}
+              on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && toggleTimer(task.id)}
+              role="button"
+              tabindex="0"
+            >
+              <div class="flex-1 mb-3 sm:mb-0">
+                <span class="text-lg font-medium text-gray-900 dark:text-gray-100 break-words">{task.label}</span>
+                <span class="text-3xl font-mono text-gray-700 dark:text-gray-300 block mt-1">
+                  {formatTime(getCurrentElapsedTime(task) + (tick ? 0 : 0))}
+                </span>
+              </div>
+              <div
+                class="flex space-x-2 w-full sm:w-auto"
+                on:click|stopPropagation
+                on:keydown|stopPropagation
+                role="none"
+              >
+                <button
+                  on:click={() => moveTaskUp(task.id)}
+                  disabled={index === 0}
+                  class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold {index === 0 ? 'opacity-50 cursor-not-allowed' : ''}"
+                  title="Move up"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
+                  </svg>
+                </button>
+                <button
+                  on:click={() => moveTaskDown(task.id)}
+                  disabled={index === tasks.length - 1}
+                  class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold {index === tasks.length - 1 ? 'opacity-50 cursor-not-allowed' : ''}"
+                  title="Move down"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
+                  </svg>
+                </button>
+                <button
+                  on:click={() => resetTimer(task.id)}
+                  class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-orange-500 hover:bg-orange-600 transition duration-200 flex items-center justify-center text-sm font-semibold"
+                  title="Reset"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                  </svg>
+                </button>
+                <button
+                  on:click={() => openEditModal(task.id)}
+                  class="w-1/3 sm:w-24 p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold"
+                  title="Edit task"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+                  </svg>
+                </button>
+                <button
+                  on:click={() => deleteTask(task.id)}
+                  class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-gray-400 hover:bg-gray-500 transition duration-200 flex items-center justify-center text-sm font-semibold"
+                  title="Delete"
+                >
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+                  </svg>
+                </button>
+              </div>
+            </div>
+          {/if}
         {/each}
       {/if}
     </div>
@@ -765,7 +1041,7 @@
 </div>
 
 {#if showEditModal}
-  <div 
+  <div
     class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
     on:click={closeEditModal}
     on:keydown={(e) => e.key === 'Escape' ? closeEditModal() : null}
@@ -773,61 +1049,61 @@
     aria-modal="true"
     aria-labelledby="edit-modal-title"
   >
-    <div 
-      class="bg-white rounded-lg shadow-xl max-w-md w-full p-6"
+    <div
+      class="bg-white dark:bg-gray-900 rounded-lg shadow-xl max-w-md w-full p-6 ring-1 ring-black/5 dark:ring-white/10"
       on:click|stopPropagation
     >
-      <h2 id="edit-modal-title" class="text-2xl font-bold text-gray-900 mb-4">Edit Task</h2>
-      
+      <h2 id="edit-modal-title" class="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4">Edit Task</h2>
+
       <div class="space-y-4">
         <div>
-          <label for="edit-title" class="block text-sm font-medium text-gray-700 mb-2">
+          <label for="edit-title" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
             Task Title
           </label>
           <input
             id="edit-title"
             type="text"
             bind:value={editTitle}
-            class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
             placeholder="Enter task title"
             maxlength="200"
           />
         </div>
-        
+
         <div>
-          <label for="edit-description" class="block text-sm font-medium text-gray-700 mb-2">
+          <label for="edit-description" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
             Description (optional)
           </label>
           <textarea
             id="edit-description"
             bind:value={editDescription}
-            class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
             placeholder="Enter task description"
             rows="3"
-          />
+          ></textarea>
         </div>
-        
+
         <div>
-          <label for="edit-time" class="block text-sm font-medium text-gray-700 mb-2">
+          <label for="edit-time" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
             Time
           </label>
           <input
             id="edit-time"
             type="text"
             bind:value={editTime}
-            class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500"
+            class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
             placeholder="HH:MM:SS or minutes (e.g. 90)"
           />
-          <p class="text-xs text-gray-500 mt-2">
+          <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">
             Use HH:MM:SS (e.g. 01:30:00) or minutes (e.g. 90 for 1.5 hours)
           </p>
         </div>
       </div>
-      
+
       <div class="flex justify-end gap-3 mt-6">
         <button
           on:click={closeEditModal}
-          class="px-4 py-2 text-sm font-semibold text-gray-700 bg-gray-100 rounded-lg hover:bg-gray-200 transition-colors"
+          class="px-4 py-2 text-sm font-semibold text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-800 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
           type="button"
         >
           Cancel
