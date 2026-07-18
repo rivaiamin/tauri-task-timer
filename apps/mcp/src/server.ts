@@ -24,7 +24,10 @@ export function makeApi(baseUrl: string, apiKey: string): ApiFn {
       }
       throw new Error(`${res.status} ${res.statusText}: ${message}`);
     }
-    return text ? JSON.parse(text) : null;
+    // JSON endpoints -> parse; text endpoints (e.g. /report) -> raw string.
+    const contentType = res.headers.get('content-type') ?? '';
+    if (contentType.includes('application/json')) return text ? JSON.parse(text) : null;
+    return text || null;
   };
 }
 
@@ -45,7 +48,8 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
     server.registerTool(name, toolConfig, async (args: any) => {
       try {
         const result = await run(args ?? {});
-        return { content: [{ type: 'text' as const, text: JSON.stringify(result ?? { ok: true }, null, 2) }] };
+        const text = typeof result === 'string' ? result : JSON.stringify(result ?? { ok: true }, null, 2);
+        return { content: [{ type: 'text' as const, text }] };
       } catch (e) {
         return {
           content: [{ type: 'text' as const, text: `Error: ${e instanceof Error ? e.message : String(e)}` }],
@@ -145,6 +149,16 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
     'set_timer_mode',
     { title: 'Set timer mode', description: 'Set the timer mode.', inputSchema: { mode: z.enum(['focus', 'parallel']) } },
     ({ mode }) => api('/settings/timer-mode', 'PUT', { timer_mode: mode })
+  );
+
+  tool(
+    'get_report',
+    {
+      title: 'Get report',
+      description: 'Get a Daily Report of tracked time as text. format: "markdown" (default) or "csv".',
+      inputSchema: { format: z.enum(['markdown', 'csv']).optional() }
+    },
+    ({ format }) => api(`/report?format=${format ?? 'markdown'}`)
   );
 
   return server;

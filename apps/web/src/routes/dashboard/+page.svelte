@@ -1,6 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { formatTime, currentElapsedSeconds, secondsToStoryPoints } from 'shared';
+  import { formatTime, currentElapsedSeconds, buildCsvReport, buildMarkdownReport } from 'shared';
   import type { PageData } from './$types';
 
   export let data: PageData;
@@ -439,14 +439,12 @@
   }
 
   // ---- Exports (client-side, over the in-memory list) ----
+  function reportTasks() {
+    return tasks.map((t) => ({ label: t.label, description: t.description, elapsedSeconds: elapsed(t, now) }));
+  }
+
   function tasksToCsv(): string {
-    const rows = [['Task', 'Description', 'Story Points']];
-    for (const t of tasks) {
-      rows.push([t.label, t.description || '', secondsToStoryPoints(elapsed(t, now)).toFixed(2)]);
-    }
-    return rows
-      .map((row) => row.map((f) => `"${String(f ?? '').replace(/"/g, '""')}"`).join(','))
-      .join('\r\n');
+    return buildCsvReport(reportTasks());
   }
 
   function exportTasksAsCsv() {
@@ -466,16 +464,7 @@
   }
 
   function tasksToMarkdown(): string {
-    const datePart = new Date().toISOString().slice(0, 10);
-    const lines = [`*Daily Report ${datePart}*`];
-    for (const t of tasks) {
-      const secs = elapsed(t, now);
-      if (secs <= 0) continue;
-      let line = `- [${secondsToStoryPoints(secs).toFixed(2)}] ${t.label}`;
-      if (t.description && t.description.trim()) line += ` - ${t.description.trim()}`;
-      lines.push(line);
-    }
-    return lines.join('\n');
+    return buildMarkdownReport(reportTasks(), new Date().toISOString().slice(0, 10));
   }
 
   async function exportTasksAsMarkdown() {

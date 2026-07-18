@@ -64,7 +64,7 @@ before exposing it publicly (the default bind is loopback only).
 
 `list_tasks`, `create_task`, `start_timer`, `stop_timer`, `reset_task`,
 `reset_all`, `update_task`, `delete_task`, `reorder_tasks`, `get_timer_mode`,
-`set_timer_mode`.
+`set_timer_mode`, `get_report`.
 
 Because the web app pushes changes over SSE, anything an agent does here shows up
 live in any open dashboard.

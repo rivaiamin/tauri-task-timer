@@ -1,7 +1,7 @@
 // Domain layer for task/timer operations, scoped by user, on local SQLite.
 // Used by the REST API (browser + AI agents). Pure timer math lives in `shared`.
 import { and, asc, eq, ne } from 'drizzle-orm';
-import { currentElapsedSeconds } from 'shared';
+import { currentElapsedSeconds, buildMarkdownReport, buildCsvReport } from 'shared';
 import { db, schema } from './db';
 import { publish } from './events';
 import type { Task } from './db/schema';
@@ -200,6 +200,26 @@ export function updateTask(userId: string, taskId: number, changes: TaskUpdate):
     .get();
   publish(userId);
   return toDTO(updated);
+}
+
+export type ReportFormat = 'markdown' | 'csv';
+
+/** Build a Daily Report over the user's current elapsed times. */
+export function buildReport(
+  userId: string,
+  format: ReportFormat,
+  dateISO: string
+): { contentType: string; body: string } {
+  const { tasks: dtos } = listTasks(userId);
+  const reportTasks = dtos.map((t) => ({
+    label: t.label,
+    description: t.description,
+    elapsedSeconds: t.currentElapsedSeconds
+  }));
+  if (format === 'csv') {
+    return { contentType: 'text/csv; charset=utf-8', body: buildCsvReport(reportTasks) };
+  }
+  return { contentType: 'text/markdown; charset=utf-8', body: buildMarkdownReport(reportTasks, dateISO) };
 }
 
 /** Set positions to match the given id order (only the user's own tasks). */

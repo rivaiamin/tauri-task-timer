@@ -89,6 +89,22 @@ List responses wrap tasks with a total:
 | GET | `/api/settings/timer-mode` | read | — | `{ timer_mode }` |
 | PUT | `/api/settings/timer-mode` | write | `{ timer_mode: "focus" \| "parallel" }` | `{ timer_mode }` |
 
+### Reports
+
+| Method | Path | Scope | Returns |
+|---|---|---|---|
+| GET | `/api/report?format=markdown\|csv` | read | raw report **text** (`text/markdown` or `text/csv`) |
+
+A "Daily Report" over each task's **current** elapsed time (dated today, UTC).
+`markdown` is the Google-Chat-friendly format (bold header; only tasks with
+recorded time; `- [storyPoints] label - description`); `csv` has a
+`Task, Description, Story Points` header row for all tasks. Story points =
+seconds / 3600. Unlike the other endpoints this returns raw text, not JSON.
+
+```bash
+curl -H "Authorization: Bearer $KEY" "$BASE/api/report?format=markdown"
+```
+
 ### API keys (session only)
 
 | Method | Path | Body | Returns |
