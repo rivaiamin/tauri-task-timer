@@ -10,8 +10,9 @@ two independent apps and a shared package.
 - **Web app** (`apps/web`) — SvelteKit app with accounts and live updates,
   backed by a **local SQLite** database. Exposes a REST + SSE API that both the
   dashboard and AI agents can drive (see `docs/ai-control.md`).
-- **MCP server** (`apps/mcp`) — a Model Context Protocol server (stdio) that lets
-  AI agents (Claude Desktop / Claude Code) drive the timer via the web API.
+- **MCP server** (`apps/mcp`) — a Model Context Protocol server (stdio + remote
+  HTTP) that lets AI agents (Claude Desktop / Claude Code) drive the timer via
+  the web API.
 - **Shared package** (`packages/shared`) — TypeScript types and utilities used by
   both apps.
 

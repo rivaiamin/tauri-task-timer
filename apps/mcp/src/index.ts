@@ -1,157 +1,111 @@
 #!/usr/bin/env node
-import { McpServer } from '@modelcontextprotocol/sdk/server/mcp.js';
+import { createServer as createHttpServer, type IncomingMessage, type ServerResponse } from 'node:http';
+import { randomUUID } from 'node:crypto';
 import { StdioServerTransport } from '@modelcontextprotocol/sdk/server/stdio.js';
-import { z } from 'zod';
+import { StreamableHTTPServerTransport } from '@modelcontextprotocol/sdk/server/streamableHttp.js';
+import { isInitializeRequest } from '@modelcontextprotocol/sdk/types.js';
+import { createServer } from './server.js';
 
-// --- Config (stderr only; stdout is reserved for the JSON-RPC stream) ---
-const BASE_URL = (process.env.BASE_URL || 'http://localhost:4320').replace(/\/$/, '');
-const API_KEY = process.env.API_KEY;
-if (!API_KEY) {
-  console.error('[task-timer-mcp] Missing API_KEY env var (mint one at /dashboard/keys).');
-  process.exit(1);
+// All logging goes to stderr — stdout is reserved for the stdio JSON-RPC stream.
+const BASE_URL = process.env.BASE_URL || 'http://localhost:4320';
+const ENV_API_KEY = process.env.API_KEY;
+const MODE = (process.env.MCP_TRANSPORT || (process.argv.includes('--http') ? 'http' : 'stdio')).toLowerCase();
+
+function bearer(req: IncomingMessage): string | undefined {
+  const auth = req.headers['authorization'];
+  const m = typeof auth === 'string' ? auth.match(/^Bearer\s+(.+)$/i) : null;
+  return m?.[1]?.trim();
 }
 
-async function apiCall(path: string, method = 'GET', body?: unknown): Promise<unknown> {
-  const res = await fetch(`${BASE_URL}/api${path}`, {
-    method,
-    headers: {
-      authorization: `Bearer ${API_KEY}`,
-      ...(body !== undefined ? { 'content-type': 'application/json' } : {})
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined
-  });
-  const text = await res.text();
-  if (!res.ok) {
-    let message = text;
-    try {
-      message = JSON.parse(text).message ?? text;
-    } catch {
-      /* non-JSON body */
-    }
-    throw new Error(`${res.status} ${res.statusText}: ${message}`);
-  }
-  return text ? JSON.parse(text) : null;
-}
-
-const server = new McpServer({ name: 'task-timer', version: '0.1.0' });
-
-// Wrap a handler so results/errors are returned in MCP's content shape.
-function tool(
-  name: string,
-  config: { title: string; description: string; inputSchema?: z.ZodRawShape },
-  run: (args: any) => Promise<unknown>
-) {
-  // Omit inputSchema for no-arg tools so a call with no arguments validates.
-  const toolConfig = config.inputSchema
-    ? { title: config.title, description: config.description, inputSchema: config.inputSchema }
-    : { title: config.title, description: config.description };
-  server.registerTool(name, toolConfig, async (args: any) => {
-    try {
-      const result = await run(args ?? {});
-      return { content: [{ type: 'text' as const, text: JSON.stringify(result ?? { ok: true }, null, 2) }] };
-    } catch (e) {
-      return {
-        content: [{ type: 'text' as const, text: `Error: ${e instanceof Error ? e.message : String(e)}` }],
-        isError: true
-      };
-    }
+function readBody(req: IncomingMessage): Promise<unknown> {
+  return new Promise((resolve) => {
+    let data = '';
+    req.on('data', (c) => (data += c));
+    req.on('end', () => {
+      if (!data) return resolve(undefined);
+      try {
+        resolve(JSON.parse(data));
+      } catch {
+        resolve(undefined);
+      }
+    });
+    req.on('error', () => resolve(undefined));
   });
 }
 
-tool('list_tasks', { title: 'List tasks', description: 'List all tasks with elapsed time and the total.' }, () =>
-  apiCall('/tasks')
-);
+function rpcError(res: ServerResponse, status: number, message: string) {
+  res.writeHead(status, { 'content-type': 'application/json' });
+  res.end(JSON.stringify({ jsonrpc: '2.0', error: { code: -32000, message }, id: null }));
+}
 
-tool(
-  'create_task',
-  {
-    title: 'Create task',
-    description: 'Create a new task.',
-    inputSchema: { label: z.string().min(1).describe('Task name'), description: z.string().optional() }
-  },
-  ({ label, description }) => apiCall('/tasks', 'POST', { label, description })
-);
-
-tool(
-  'start_timer',
-  {
-    title: 'Start timer',
-    description:
-      "Start a task's timer. Omit `exclusive` to use the user's timer mode (focus stops others; parallel does not).",
-    inputSchema: {
-      task_id: z.number().int(),
-      exclusive: z.boolean().optional().describe('If true, stop all other running timers first')
-    }
-  },
-  ({ task_id, exclusive }) => apiCall(`/tasks/${task_id}/start`, 'POST', { exclusive })
-);
-
-tool(
-  'stop_timer',
-  { title: 'Stop timer', description: "Stop a task's timer, accumulating elapsed time.", inputSchema: { task_id: z.number().int() } },
-  ({ task_id }) => apiCall(`/tasks/${task_id}/stop`, 'POST')
-);
-
-tool(
-  'reset_task',
-  { title: 'Reset task', description: "Reset a single task's elapsed time to zero.", inputSchema: { task_id: z.number().int() } },
-  ({ task_id }) => apiCall(`/tasks/${task_id}/reset`, 'POST')
-);
-
-tool('reset_all', { title: 'Reset all', description: 'Reset every task to zero.' }, () =>
-  apiCall('/tasks/reset-all', 'POST')
-);
-
-tool(
-  'update_task',
-  {
-    title: 'Update task',
-    description: 'Update a task label, description, and/or elapsed time (seconds).',
-    inputSchema: {
-      task_id: z.number().int(),
-      label: z.string().min(1).optional(),
-      description: z.string().nullable().optional(),
-      elapsed_seconds: z.number().int().min(0).optional()
-    }
-  },
-  ({ task_id, label, description, elapsed_seconds }) => {
-    const body: Record<string, unknown> = {};
-    if (label !== undefined) body.label = label;
-    if (description !== undefined) body.description = description;
-    if (elapsed_seconds !== undefined) body.elapsed_seconds = elapsed_seconds;
-    return apiCall(`/tasks/${task_id}`, 'PATCH', body);
+async function runStdio() {
+  if (!ENV_API_KEY) {
+    console.error('[task-timer-mcp] Missing API_KEY env var (mint one at /dashboard/keys).');
+    process.exit(1);
   }
-);
+  const server = createServer(BASE_URL, ENV_API_KEY);
+  await server.connect(new StdioServerTransport());
+  console.error(`[task-timer-mcp] stdio connected (BASE_URL=${BASE_URL})`);
+}
 
-tool(
-  'delete_task',
-  { title: 'Delete task', description: 'Delete a task.', inputSchema: { task_id: z.number().int() } },
-  async ({ task_id }) => {
-    await apiCall(`/tasks/${task_id}`, 'DELETE');
-    return { deleted: task_id };
-  }
-);
+function runHttp() {
+  const port = Number(process.env.PORT || 3010);
+  const host = process.env.HOST || '127.0.0.1';
+  const path = process.env.MCP_PATH || '/mcp';
 
-tool(
-  'reorder_tasks',
-  {
-    title: 'Reorder tasks',
-    description: 'Set task order by giving all task ids in the desired order.',
-    inputSchema: { ids: z.array(z.number().int()).min(1) }
-  },
-  ({ ids }) => apiCall('/tasks/reorder', 'POST', { ids })
-);
+  // One transport per MCP session id.
+  const transports = new Map<string, StreamableHTTPServerTransport>();
 
-tool('get_timer_mode', { title: 'Get timer mode', description: 'Get the current timer mode (focus | parallel).' }, () =>
-  apiCall('/settings/timer-mode')
-);
+  const http = createHttpServer(async (req, res) => {
+    const url = new URL(req.url ?? '/', `http://${req.headers.host ?? host}`);
+    if (url.pathname !== path) {
+      rpcError(res, 404, 'Not found');
+      return;
+    }
 
-tool(
-  'set_timer_mode',
-  { title: 'Set timer mode', description: 'Set the timer mode.', inputSchema: { mode: z.enum(['focus', 'parallel']) } },
-  ({ mode }) => apiCall('/settings/timer-mode', 'PUT', { timer_mode: mode })
-);
+    // Each client authenticates with its own Task Timer API key (multi-tenant);
+    // falls back to the server's API_KEY env for single-user hosting.
+    const apiKey = bearer(req) ?? ENV_API_KEY;
+    if (!apiKey) {
+      rpcError(res, 401, 'Missing API key (send Authorization: Bearer <task-timer-key>)');
+      return;
+    }
 
-const transport = new StdioServerTransport();
-await server.connect(transport);
-console.error(`[task-timer-mcp] connected (BASE_URL=${BASE_URL})`);
+    const sessionId = req.headers['mcp-session-id'];
+    const sid = Array.isArray(sessionId) ? sessionId[0] : sessionId;
+    let transport = sid ? transports.get(sid) : undefined;
+
+    const body = req.method === 'POST' ? await readBody(req) : undefined;
+
+    if (!transport) {
+      if (req.method === 'POST' && isInitializeRequest(body)) {
+        transport = new StreamableHTTPServerTransport({
+          sessionIdGenerator: () => randomUUID(),
+          onsessioninitialized: (newId) => {
+            transports.set(newId, transport!);
+          }
+        });
+        transport.onclose = () => {
+          if (transport!.sessionId) transports.delete(transport!.sessionId);
+        };
+        // Bind this session's server to the key presented on initialize.
+        await createServer(BASE_URL, apiKey).connect(transport);
+      } else {
+        rpcError(res, 400, 'No valid session — send an initialize request first.');
+        return;
+      }
+    }
+
+    await transport.handleRequest(req, res, body);
+  });
+
+  http.listen(port, host, () => {
+    console.error(`[task-timer-mcp] http listening on http://${host}:${port}${path} (BASE_URL=${BASE_URL})`);
+  });
+}
+
+if (MODE === 'http') {
+  runHttp();
+} else {
+  await runStdio();
+}
