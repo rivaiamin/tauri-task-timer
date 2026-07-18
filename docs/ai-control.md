@@ -172,8 +172,10 @@ create table user_settings (
 - **Phase 1 — REST API + `api_keys`.** ✅ *Implemented* — see
   [Using the API](#using-the-api-phase-1) below. (Key issuance is CLI/SQL for now;
   a settings-page UI is still open.)
-- **Phase 2 — MCP server.** Thin wrapper over the REST API exposing tools; point
-  Claude/agents at it. Now it's AI-native.
+- **Phase 2 — MCP server.** ✅ *Implemented* — `apps/mcp` (stdio) wraps the REST
+  API as MCP tools; point Claude Desktop / Claude Code at it with `BASE_URL` +
+  `API_KEY`. See `apps/mcp/README.md`. (A remote Streamable-HTTP transport is a
+  possible follow-up.)
 - **Phase 3 — Intent + notifications.** Higher-level tools (`start_working_on`),
   webhook events, and eventually a fully-autonomous loop (voice / computer-use).
 
