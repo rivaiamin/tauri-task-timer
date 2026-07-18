@@ -1,6 +1,15 @@
 # AI-Controllable Timer — Architecture
 
-Status: **Draft / proposal** · Last updated: 2026-07-18
+Status: **Partially implemented** · Last updated: 2026-07-18
+
+> **Update — local SQLite cutover.** The backend has moved off Supabase to a
+> local **SQLite** database (Drizzle ORM, `better-sqlite3`). Auth is now
+> session-cookie based (argon2 + a `sessions` table) instead of Supabase Auth;
+> the API authenticates a request by **session cookie (browser) or `Bearer` API
+> key (agents)**. Live updates use **SSE** (`/api/stream`) instead of Supabase
+> realtime. The layered design below still holds — only the storage/auth/realtime
+> implementations changed. Sections mentioning Supabase/RLS/`mint_api_key` are
+> historical; see the updated setup steps under [Using the API](#using-the-api-phase-1).
 
 This document sketches how an AI agent (Claude, or any other) can drive the Task
 Timer — create tasks, start/stop timers, adjust time, export reports — so a user
@@ -192,16 +201,25 @@ Implemented endpoints (all require `Authorization: Bearer <key>`, JSON in/out):
 | GET | `/api/settings/timer-mode` | `tasks:read` | — |
 | PUT | `/api/settings/timer-mode` | `tasks:write` | `{ timer_mode }` |
 
-**Setup**
-1. Apply migrations `005_user_settings.sql` and `006_api_keys.sql` to your
-   Supabase project.
-2. Ensure the server has `PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
-   set (see `.env.example`).
-3. Mint a key from the Supabase SQL editor (returns the raw key **once**):
-   ```sql
-   select mint_api_key('you@example.com', 'claude-agent');
-   -- => sk_live_abcd...   (store it; only its hash is kept)
+Endpoints also exist to manage keys and reset/update/delete/reorder tasks:
+`POST/GET /api/keys`, `DELETE /api/keys/:id`, `POST /api/tasks/:id/reset`,
+`POST /api/tasks/reset-all`, `PATCH/DELETE /api/tasks/:id`, `POST /api/tasks/reorder`.
+Live updates: `GET /api/stream` (SSE, session cookie).
+
+**Setup (local SQLite)**
+1. Apply migrations: `pnpm --filter sv-task-timer db:migrate` (creates/updates
+   `local.db`; path configurable via `DATABASE_PATH`, see `.env.example`).
+2. Register a user in the app (`/register`) and sign in.
+3. Mint a key — either in the browser console while logged in, or via any
+   session-authenticated client (returns the raw key **once**):
+   ```js
+   await fetch('/api/keys', {
+     method: 'POST',
+     headers: { 'content-type': 'application/json' },
+     body: JSON.stringify({ name: 'claude-agent' })
+   }).then((r) => r.json()); // => { key: "sk_live_…", … }  (store it; only its hash is kept)
    ```
+   Key management requires a logged-in **session** — an API key cannot mint more keys.
 
 **Examples**
 ```bash

@@ -1,407 +1,257 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
-  import { supabase } from '$lib/supabaseClient';
-  import { formatTime } from 'shared';
-  import type { DatabaseTask } from 'shared';
-  import { getSession, signOut } from '$lib/auth/helpers';
-  import { goto } from '$app/navigation';
+  import { formatTime, currentElapsedSeconds, secondsToStoryPoints } from 'shared';
+  import type { PageData } from './$types';
 
-  type TaskRow = DatabaseTask & { intervalId?: any; startTime?: number | null };
+  export let data: PageData;
 
-  let session: any = null;
-  let tasks: TaskRow[] = [];
-  let totalTime = 0;
+  interface TaskDTO {
+    id: number;
+    label: string;
+    description: string | null;
+    position: number;
+    isRunning: boolean;
+    startTime: number | null;
+    elapsedSeconds: number;
+    currentElapsedSeconds: number;
+  }
+
+  let tasks: TaskDTO[] = data.tasks as TaskDTO[];
+  let timerMode: 'focus' | 'parallel' = data.timerMode as 'focus' | 'parallel';
   let taskInput = '';
-  let totalTimerInterval: ReturnType<typeof setInterval> | null = null;
+  let now = Date.now();
   let hasPlayed8HourSound = false;
   let pulse8Hour = false;
-  let channel: any = null;
-  let tick = 0; // Reactive variable to force timer updates every second
 
-  // Inline "Edit Mode" state (matches the desktop app)
+  let tickInterval: ReturnType<typeof setInterval> | null = null;
+  let sse: EventSource | null = null;
+  let refreshTimer: ReturnType<typeof setTimeout> | null = null;
+
+  // Inline "Edit Mode"
   let editMode = false;
   let editBuffers: Record<string, { label: string; description: string; time: string }> = {};
 
-  // Timer mode: "focus" = one timer at a time, "parallel" = multiple at once.
-  // Persisted per device in localStorage (matches the desktop app).
-  let timerMode: 'focus' | 'parallel' = 'focus';
-
-  // Drag-and-drop state
+  // Drag-and-drop
   let draggingId: number | null = null;
   let dragOverId: number | null = null;
   let dragInsertAfter = false;
 
-  // Edit modal state
+  // Edit modal
   let showEditModal = false;
-  let editingTask: TaskRow | null = null;
+  let editingTask: TaskDTO | null = null;
   let editTitle = '';
   let editDescription = '';
   let editTime = '';
 
-  // Reactive: Update total time whenever tasks change
+  function elapsed(task: TaskDTO, atNow: number): number {
+    return currentElapsedSeconds(task.elapsedSeconds, task.isRunning, task.startTime, atNow);
+  }
+
+  function play8HourSound() {
+    try {
+      const ctx = new (window.AudioContext || (window as any).webkitAudioContext)();
+      const osc = ctx.createOscillator();
+      const gain = ctx.createGain();
+      osc.connect(gain);
+      gain.connect(ctx.destination);
+      osc.frequency.value = 800;
+      osc.type = 'sine';
+      gain.gain.setValueAtTime(0.3, ctx.currentTime);
+      gain.gain.exponentialRampToValueAtTime(0.01, ctx.currentTime + 0.5);
+      osc.start(ctx.currentTime);
+      osc.stop(ctx.currentTime + 0.5);
+    } catch {
+      // audio not available
+    }
+  }
+
+  $: totalSeconds = tasks.reduce((sum, t) => sum + elapsed(t, now), 0);
+
   $: {
-    totalTime = getTotalTime();
-    check8HourNotification();
+    if (totalSeconds >= 28800 && !hasPlayed8HourSound) {
+      play8HourSound();
+      hasPlayed8HourSound = true;
+      pulse8Hour = true;
+      setTimeout(() => (pulse8Hour = false), 2000);
+    } else if (totalSeconds < 28800) {
+      hasPlayed8HourSound = false;
+    }
   }
 
   // Ensure every rendered task has an edit buffer while in edit mode.
-  // Guarded so typing (and per-second ticks) never clobber in-progress edits.
   $: if (editMode) {
     for (const t of tasks) {
       if (!editBuffers[t.id]) {
         editBuffers[t.id] = {
           label: t.label,
           description: t.description || '',
-          time: formatTime(getCurrentElapsedTime(t))
+          time: formatTime(elapsed(t, now))
         };
       }
     }
   }
 
-  onMount(async () => {
-    session = await getSession();
-    if (!session) return;
+  onMount(() => {
+    tickInterval = setInterval(() => (now = Date.now()), 1000);
 
-    timerMode = localStorage.getItem('taskTimerMode') === 'parallel' ? 'parallel' : 'focus';
+    sse = new EventSource('/api/stream');
+    sse.onmessage = (e) => {
+      try {
+        const payload = JSON.parse(e.data);
+        if (payload.type === 'tasks-changed') scheduleRefresh();
+      } catch {
+        // ignore malformed event
+      }
+    };
+    sse.onerror = () => {
+      // Browser auto-reconnects EventSource; nothing to do.
+    };
 
-    await loadTasks();
-
-    // Subscribe to real-time updates
-    channel = supabase
-      .channel('tasks-changes')
-      .on(
-        'postgres_changes',
-        {
-          event: '*',
-          schema: 'public',
-          table: 'tasks',
-          filter: `user_id=eq.${session.user.id}`
-        },
-        (payload: any) => {
-          handleRealtimeUpdate(payload);
-        }
-      )
-      .subscribe();
-
-    // Start total timer interval - updates tick to force re-renders
-    totalTimerInterval = setInterval(() => {
-      tick = Date.now(); // Update tick to trigger reactivity for all timers
-      totalTime = getTotalTime();
-    }, 1000);
-
-    // Handle visibility change (for background tab issue)
-    document.addEventListener('visibilitychange', handleVisibilityChange);
+    document.addEventListener('visibilitychange', onVisible);
   });
 
   onDestroy(() => {
-    if (channel) {
-      supabase.removeChannel(channel);
-    }
-    if (totalTimerInterval) {
-      clearInterval(totalTimerInterval);
-    }
-    if (typeof document !== 'undefined') {
-      document.removeEventListener('visibilitychange', handleVisibilityChange);
-    }
+    if (tickInterval) clearInterval(tickInterval);
+    if (refreshTimer) clearTimeout(refreshTimer);
+    sse?.close();
+    if (typeof document !== 'undefined') document.removeEventListener('visibilitychange', onVisible);
   });
 
-  async function loadTasks() {
-    if (!session) return;
-
-    const { data, error } = await supabase
-      .from('tasks')
-      .select('*')
-      .eq('user_id', session.user.id)
-      .order('position', { ascending: true });
-
-    if (error) {
-      console.error('Error loading tasks:', error);
-      return;
-    }
-
-    tasks = (data || []).map(task => ({
-      ...task,
-      intervalId: null,
-      startTime: task.start_time ? new Date(task.start_time).getTime() : null
-    }));
-  }
-
-  // Keep the list ordered by `position` (stable for equal positions) so
-  // realtime edits from another device — including reorders — stay in sync.
-  function sortByPosition(list: TaskRow[]): TaskRow[] {
-    return [...list].sort((a, b) => a.position - b.position);
-  }
-
-  function handleRealtimeUpdate(payload: any) {
-    if (payload.eventType === 'INSERT') {
-      if (tasks.some(t => t.id === payload.new.id)) return;
-      tasks = sortByPosition([...tasks, {
-        ...payload.new,
-        intervalId: null,
-        startTime: payload.new.start_time ? new Date(payload.new.start_time).getTime() : null
-      }]);
-    } else if (payload.eventType === 'UPDATE') {
-      tasks = sortByPosition(tasks.map(task =>
-        task.id === payload.new.id
-          ? {
-              ...payload.new,
-              intervalId: task.intervalId,
-              startTime: payload.new.start_time ? new Date(payload.new.start_time).getTime() : task.startTime
-            }
-          : task
-      ));
-    } else if (payload.eventType === 'DELETE') {
-      tasks = tasks.filter(t => t.id !== payload.old.id);
+  function onVisible() {
+    if (!document.hidden) {
+      now = Date.now();
+      scheduleRefresh();
     }
   }
 
-  function getCurrentElapsedTime(task: TaskRow): number {
-    if (!task.is_running || !task.startTime) {
-      return task.elapsed_time;
+  async function api(path: string, opts: { method?: string; body?: unknown } = {}) {
+    const res = await fetch(`/api${path}`, {
+      method: opts.method ?? 'GET',
+      headers: opts.body !== undefined ? { 'content-type': 'application/json' } : undefined,
+      body: opts.body !== undefined ? JSON.stringify(opts.body) : undefined
+    });
+    if (!res.ok) {
+      let message = res.statusText;
+      try {
+        const e = await res.json();
+        message = e.message ?? message;
+      } catch {
+        // non-JSON error
+      }
+      throw new Error(message);
     }
-    const elapsedSinceStart = Math.floor((Date.now() - task.startTime) / 1000);
-    return task.elapsed_time + elapsedSinceStart;
+    return res.status === 204 ? null : await res.json();
   }
 
-  function getTotalTime(): number {
-    return tasks.reduce((sum, task) => {
-      return sum + getCurrentElapsedTime(task);
-    }, 0);
-  }
-
-  function check8HourNotification() {
-    if (totalTime >= 28800 && !hasPlayed8HourSound) {
-      play8HourSound();
-      hasPlayed8HourSound = true;
-      pulse8Hour = true;
-      setTimeout(() => (pulse8Hour = false), 2000);
-    } else if (totalTime < 28800) {
-      hasPlayed8HourSound = false;
+  async function refresh() {
+    try {
+      const d = await api('/tasks');
+      tasks = d.tasks;
+    } catch (e) {
+      console.error('refresh failed', e);
     }
   }
 
-  function play8HourSound() {
-    const audioContext = new (window.AudioContext || (window as any).webkitAudioContext)();
-    const oscillator = audioContext.createOscillator();
-    const gainNode = audioContext.createGain();
-
-    oscillator.connect(gainNode);
-    gainNode.connect(audioContext.destination);
-
-    oscillator.frequency.value = 800;
-    oscillator.type = 'sine';
-
-    gainNode.gain.setValueAtTime(0.3, audioContext.currentTime);
-    gainNode.gain.exponentialRampToValueAtTime(0.01, audioContext.currentTime + 0.5);
-
-    oscillator.start(audioContext.currentTime);
-    oscillator.stop(audioContext.currentTime + 0.5);
+  function scheduleRefresh() {
+    if (refreshTimer) clearTimeout(refreshTimer);
+    refreshTimer = setTimeout(refresh, 120);
   }
 
-  async function persistUpdate(id: number, fields: Record<string, unknown>) {
-    if (!session) return;
-    const { error } = await supabase
-      .from('tasks')
-      .update(fields)
-      .eq('id', id)
-      .eq('user_id', session.user.id);
-    if (error) console.error('Error updating task:', error);
-    return error;
+  function fail(e: unknown) {
+    alert(e instanceof Error ? e.message : 'Something went wrong');
   }
 
   async function addTask(event: Event) {
     event.preventDefault();
     const label = taskInput.trim();
-    if (!label || !session) return;
-
-    const { data, error } = await supabase
-      .from('tasks')
-      .insert({
-        user_id: session.user.id,
-        label,
-        description: null,
-        elapsed_time: 0,
-        position: tasks.length,
-        is_running: false
-      })
-      .select()
-      .single();
-
-    if (error) {
-      console.error('Error adding task:', error);
-      alert('Failed to add task');
-      return;
-    }
-
-    const newTask: TaskRow = { ...data, intervalId: null, startTime: null };
-    tasks = [...tasks, newTask];
-    if (editMode) {
-      editBuffers[newTask.id] = { label: newTask.label, description: newTask.description || '', time: formatTime(0) };
-    }
+    if (!label) return;
     taskInput = '';
+    try {
+      await api('/tasks', { method: 'POST', body: { label } });
+      scheduleRefresh();
+    } catch (e) {
+      fail(e);
+    }
   }
 
-  async function toggleTimer(id: number) {
-    if (!session || editMode) return;
-
-    const taskToToggle = tasks.find(t => t.id === id);
-    if (!taskToToggle) return;
-
-    const isStarting = !taskToToggle.is_running;
-
-    // In focus mode, starting a timer stops all others. In parallel mode,
-    // multiple timers may run at once, so leave the others running.
-    if (isStarting && timerMode === 'focus') {
-      for (const task of tasks) {
-        if (task.is_running && task.id !== id) {
-          await stopTimer(task.id);
-        }
+  async function toggleTimer(task: TaskDTO) {
+    if (editMode) return;
+    try {
+      if (task.isRunning) {
+        await api(`/tasks/${task.id}/stop`, { method: 'POST' });
+      } else {
+        await api(`/tasks/${task.id}/start`, { method: 'POST', body: { exclusive: timerMode === 'focus' } });
       }
+      scheduleRefresh();
+    } catch (e) {
+      fail(e);
     }
-
-    if (isStarting) {
-      await startTimer(id);
-    } else {
-      await stopTimer(id);
-    }
-  }
-
-  async function startTimer(id: number) {
-    if (!session) return;
-
-    const { error } = await supabase
-      .from('tasks')
-      .update({
-        is_running: true,
-        start_time: new Date().toISOString()
-      })
-      .eq('id', id)
-      .eq('user_id', session.user.id);
-
-    if (error) {
-      console.error('Error starting timer:', error);
-      return;
-    }
-
-    // Update local state
-    tasks = tasks.map(task =>
-      task.id === id
-        ? { ...task, is_running: true, startTime: Date.now() }
-        : task
-    );
-  }
-
-  async function stopTimer(id: number) {
-    if (!session) return;
-
-    const task = tasks.find(t => t.id === id);
-    if (!task) return;
-
-    const currentElapsed = getCurrentElapsedTime(task);
-
-    const { error } = await supabase
-      .from('tasks')
-      .update({
-        is_running: false,
-        elapsed_time: currentElapsed,
-        start_time: null
-      })
-      .eq('id', id)
-      .eq('user_id', session.user.id);
-
-    if (error) {
-      console.error('Error stopping timer:', error);
-      return;
-    }
-
-    // Update local state
-    tasks = tasks.map(t =>
-      t.id === id
-        ? { ...t, is_running: false, elapsed_time: currentElapsed, startTime: null }
-        : t
-    );
   }
 
   async function resetTimer(id: number) {
-    if (!session) return;
-
-    const { error } = await supabase
-      .from('tasks')
-      .update({
-        elapsed_time: 0,
-        is_running: false,
-        start_time: null
-      })
-      .eq('id', id)
-      .eq('user_id', session.user.id);
-
-    if (error) {
-      console.error('Error resetting timer:', error);
-      return;
+    try {
+      await api(`/tasks/${id}/reset`, { method: 'POST' });
+      scheduleRefresh();
+    } catch (e) {
+      fail(e);
     }
-
-    tasks = tasks.map(t =>
-      t.id === id
-        ? { ...t, elapsed_time: 0, is_running: false, startTime: null }
-        : t
-    );
-    if (editBuffers[id]) editBuffers[id].time = formatTime(0);
-    editBuffers = editBuffers;
   }
 
   async function deleteTask(id: number, skipConfirm = false) {
-    if (!session) return;
     if (!skipConfirm && !confirm('Are you sure you want to delete this task?')) return;
+    try {
+      await api(`/tasks/${id}`, { method: 'DELETE' });
+      scheduleRefresh();
+    } catch (e) {
+      fail(e);
+    }
+  }
 
-    const { error } = await supabase
-      .from('tasks')
-      .delete()
-      .eq('id', id)
-      .eq('user_id', session.user.id);
-
-    if (error) {
-      console.error('Error deleting task:', error);
+  async function resetAllTimers() {
+    if (tasks.length === 0) {
+      alert('No tasks to reset.');
       return;
     }
-
-    tasks = tasks.filter(t => t.id !== id);
-    delete editBuffers[id];
-    editBuffers = editBuffers;
+    if (!confirm('Are you sure you want to reset all timers to 00:00:00?')) return;
+    try {
+      await api('/tasks/reset-all', { method: 'POST' });
+      scheduleRefresh();
+    } catch (e) {
+      fail(e);
+    }
   }
 
-  async function moveTaskUp(id: number) {
-    const index = tasks.findIndex(t => t.id === id);
-    if (index <= 0 || !session) return;
-    const newTasks = [...tasks];
-    [newTasks[index - 1], newTasks[index]] = [newTasks[index], newTasks[index - 1]];
-    tasks = newTasks;
-    await persistPositions();
+  async function persistOrder(orderedIds: number[]) {
+    try {
+      await api('/tasks/reorder', { method: 'POST', body: { ids: orderedIds } });
+      scheduleRefresh();
+    } catch (e) {
+      fail(e);
+      refresh();
+    }
   }
 
-  async function moveTaskDown(id: number) {
-    const index = tasks.findIndex(t => t.id === id);
-    if (index < 0 || index >= tasks.length - 1 || !session) return;
-    const newTasks = [...tasks];
-    [newTasks[index], newTasks[index + 1]] = [newTasks[index + 1], newTasks[index]];
-    tasks = newTasks;
-    await persistPositions();
+  function moveTaskUp(id: number) {
+    const i = tasks.findIndex((t) => t.id === id);
+    if (i <= 0) return;
+    const a = [...tasks];
+    [a[i - 1], a[i]] = [a[i], a[i - 1]];
+    tasks = a;
+    persistOrder(a.map((t) => t.id));
   }
 
-  // Persist the current array order as contiguous positions (0..n-1).
-  async function persistPositions() {
-    if (!session) return;
-    tasks = tasks.map((t, i) => ({ ...t, position: i }));
-    await Promise.all(
-      tasks.map((t, i) =>
-        supabase.from('tasks').update({ position: i }).eq('id', t.id).eq('user_id', session.user.id)
-      )
-    );
+  function moveTaskDown(id: number) {
+    const i = tasks.findIndex((t) => t.id === id);
+    if (i < 0 || i >= tasks.length - 1) return;
+    const a = [...tasks];
+    [a[i], a[i + 1]] = [a[i + 1], a[i]];
+    tasks = a;
+    persistOrder(a.map((t) => t.id));
   }
 
-  // ---- Drag-and-drop reordering (disabled in edit mode, mirrors desktop) ----
+  // ---- Drag-and-drop ----
   function handleDragStart(event: DragEvent, id: number) {
     if (editMode) return;
-    // Don't start a card drag when grabbing a button.
     if (event.target instanceof Element && event.target.closest('button')) {
       event.preventDefault();
       return;
@@ -424,16 +274,26 @@
     dragOverId = id;
   }
 
-  async function handleDrop(event: DragEvent, id: number) {
+  function handleDrop(event: DragEvent) {
     if (editMode || draggingId === null) return;
     event.preventDefault();
     const sourceId = draggingId;
-    const targetId = dragOverId ?? id;
-    const insertAfter = dragInsertAfter;
+    const targetId = dragOverId;
+    const after = dragInsertAfter;
     draggingId = null;
     dragOverId = null;
     dragInsertAfter = false;
-    await moveTaskRelativeToTarget(sourceId, targetId, insertAfter);
+    if (targetId === null || sourceId === targetId) return;
+
+    const a = [...tasks];
+    const si = a.findIndex((t) => t.id === sourceId);
+    if (si < 0) return;
+    const [moved] = a.splice(si, 1);
+    const ti = a.findIndex((t) => t.id === targetId);
+    if (ti < 0) return;
+    a.splice(after ? ti + 1 : ti, 0, moved);
+    tasks = a;
+    persistOrder(a.map((t) => t.id));
   }
 
   function handleDragEnd() {
@@ -442,134 +302,107 @@
     dragInsertAfter = false;
   }
 
-  async function moveTaskRelativeToTarget(sourceId: number, targetId: number, insertAfter: boolean) {
-    if (sourceId === targetId) return;
-    const sourceIndex = tasks.findIndex(t => t.id === sourceId);
-    if (sourceIndex < 0) return;
-
-    const newTasks = [...tasks];
-    const [moved] = newTasks.splice(sourceIndex, 1);
-    const targetIndex = newTasks.findIndex(t => t.id === targetId);
-    if (targetIndex < 0) return;
-
-    const insertIndex = insertAfter ? targetIndex + 1 : targetIndex;
-    newTasks.splice(insertIndex, 0, moved);
-    tasks = newTasks;
-    await persistPositions();
-  }
-
   function parseTimeInput(value: string): number | null {
     const input = value.trim();
     if (!input) return null;
-
-    // Support HH:MM:SS, MM:SS, or SS
     if (/^\d+(:\d+){0,2}$/.test(input)) {
       const parts = input.split(':').map(Number);
-      if (parts.some(n => isNaN(n) || n < 0)) return null;
-
-      let hours = 0, minutes = 0, seconds = 0;
-      if (parts.length === 3) {
-        [hours, minutes, seconds] = parts;
-      } else if (parts.length === 2) {
-        [minutes, seconds] = parts;
-      } else {
-        [seconds] = parts;
-      }
-
+      if (parts.some((n) => isNaN(n) || n < 0)) return null;
+      let hours = 0,
+        minutes = 0,
+        seconds = 0;
+      if (parts.length === 3) [hours, minutes, seconds] = parts;
+      else if (parts.length === 2) [minutes, seconds] = parts;
+      else [seconds] = parts;
       return hours * 3600 + minutes * 60 + seconds;
     }
-
-    // Fallback: treat as minutes (can be decimal)
     const asNumber = Number(input.replace(',', '.'));
     if (!isFinite(asNumber) || asNumber < 0) return null;
     return Math.round(asNumber * 60);
   }
 
-  function toggleTimerMode() {
-    timerMode = timerMode === 'focus' ? 'parallel' : 'focus';
+  // ---- Timer mode ----
+  async function toggleTimerMode() {
+    const next = timerMode === 'focus' ? 'parallel' : 'focus';
     try {
-      localStorage.setItem('taskTimerMode', timerMode);
-    } catch (error) {
-      console.error('Failed to persist timer mode:', error);
+      await api('/settings/timer-mode', { method: 'PUT', body: { timer_mode: next } });
+      timerMode = next;
+    } catch (e) {
+      fail(e);
     }
   }
 
-  // ---- Inline edit mode ----
+  // ---- Inline edit ----
   function toggleEditMode() {
     editMode = !editMode;
+    editBuffers = {};
     if (editMode) {
-      editBuffers = {};
       for (const t of tasks) {
-        editBuffers[t.id] = {
-          label: t.label,
-          description: t.description || '',
-          time: formatTime(getCurrentElapsedTime(t))
-        };
+        editBuffers[t.id] = { label: t.label, description: t.description || '', time: formatTime(elapsed(t, now)) };
       }
-    } else {
-      editBuffers = {};
     }
   }
 
-  async function saveInlineTitle(task: TaskRow) {
+  async function saveInlineTitle(task: TaskDTO) {
     const buf = editBuffers[task.id];
     if (!buf) return;
-    const newTitle = buf.label.trim();
-    if (!newTitle) {
+    const v = buf.label.trim();
+    if (!v) {
       buf.label = task.label;
       editBuffers = editBuffers;
       return;
     }
-    if (newTitle === task.label) return;
-    await persistUpdate(task.id, { label: newTitle });
-    tasks = tasks.map(t => (t.id === task.id ? { ...t, label: newTitle } : t));
+    if (v === task.label) return;
+    try {
+      await api(`/tasks/${task.id}`, { method: 'PATCH', body: { label: v } });
+      scheduleRefresh();
+    } catch (e) {
+      fail(e);
+    }
   }
 
-  async function saveInlineDescription(task: TaskRow) {
+  async function saveInlineDescription(task: TaskDTO) {
     const buf = editBuffers[task.id];
     if (!buf) return;
-    const newDescription = buf.description.trim();
-    if (newDescription === (task.description || '')) return;
-    await persistUpdate(task.id, { description: newDescription || null });
-    tasks = tasks.map(t => (t.id === task.id ? { ...t, description: newDescription || null } : t));
+    const v = buf.description.trim();
+    if (v === (task.description || '')) return;
+    try {
+      await api(`/tasks/${task.id}`, { method: 'PATCH', body: { description: v || null } });
+      scheduleRefresh();
+    } catch (e) {
+      fail(e);
+    }
   }
 
-  async function saveInlineTime(task: TaskRow) {
+  async function saveInlineTime(task: TaskDTO) {
     const buf = editBuffers[task.id];
     if (!buf) return;
-    const newSeconds = parseTimeInput(buf.time);
-    if (newSeconds === null || newSeconds < 0) {
-      buf.time = formatTime(getCurrentElapsedTime(task));
+    const secs = parseTimeInput(buf.time);
+    if (secs === null || secs < 0) {
+      buf.time = formatTime(elapsed(task, now));
       editBuffers = editBuffers;
       return;
     }
-    await persistUpdate(task.id, {
-      elapsed_time: newSeconds,
-      start_time: task.is_running ? new Date().toISOString() : null
-    });
-    tasks = tasks.map(t =>
-      t.id === task.id
-        ? { ...t, elapsed_time: newSeconds, startTime: t.is_running ? Date.now() : null }
-        : t
-    );
-    buf.time = formatTime(newSeconds);
-    editBuffers = editBuffers;
+    try {
+      await api(`/tasks/${task.id}`, { method: 'PATCH', body: { elapsed_seconds: secs } });
+      buf.time = formatTime(secs);
+      editBuffers = editBuffers;
+      scheduleRefresh();
+    } catch (e) {
+      fail(e);
+    }
   }
 
   function blurOnEnter(event: KeyboardEvent) {
     if (event.key === 'Enter') (event.currentTarget as HTMLInputElement).blur();
   }
 
-  // ---- Modal edit (single task) ----
-  function openEditModal(id: number) {
-    const task = tasks.find(t => t.id === id);
-    if (!task) return;
-
+  // ---- Edit modal ----
+  function openEditModal(task: TaskDTO) {
     editingTask = task;
     editTitle = task.label;
     editDescription = task.description || '';
-    const currentSeconds = getCurrentElapsedTime(task);
-    editTime = formatTime(currentSeconds);
+    editTime = formatTime(elapsed(task, now));
     showEditModal = true;
   }
 
@@ -582,109 +415,37 @@
   }
 
   async function saveEditTask() {
-    if (!session || !editingTask) return;
-
+    if (!editingTask) return;
     const newTitle = editTitle.trim();
     if (!newTitle) {
       alert('Task title cannot be empty');
       return;
     }
-
-    const newSeconds = parseTimeInput(editTime);
-    if (newSeconds === null) {
+    const secs = parseTimeInput(editTime);
+    if (secs === null) {
       alert('Invalid time format. Use HH:MM:SS or minutes (e.g. 90)');
       return;
     }
-
-    const { error } = await supabase
-      .from('tasks')
-      .update({
-        label: newTitle,
-        description: editDescription.trim() || null,
-        elapsed_time: newSeconds,
-        start_time: editingTask.is_running ? new Date().toISOString() : null
-      })
-      .eq('id', editingTask.id)
-      .eq('user_id', session.user.id);
-
-    if (error) {
-      console.error('Error updating task:', error);
-      alert('Failed to update task');
-      return;
+    try {
+      await api(`/tasks/${editingTask.id}`, {
+        method: 'PATCH',
+        body: { label: newTitle, description: editDescription.trim() || null, elapsed_seconds: secs }
+      });
+      closeEditModal();
+      scheduleRefresh();
+    } catch (e) {
+      fail(e);
     }
-
-    tasks = tasks.map(t =>
-      t.id === editingTask!.id
-        ? {
-            ...t,
-            label: newTitle,
-            description: editDescription.trim() || null,
-            elapsed_time: newSeconds,
-            startTime: t.is_running ? Date.now() : null
-          }
-        : t
-    );
-
-    closeEditModal();
   }
 
-  async function resetAllTimers() {
-    if (tasks.length === 0) {
-      alert('No tasks to reset.');
-      return;
-    }
-
-    if (!confirm('Are you sure you want to reset all timers to 00:00:00?')) {
-      return;
-    }
-
-    if (!session) return;
-
-    const { error } = await supabase
-      .from('tasks')
-      .update({
-        elapsed_time: 0,
-        is_running: false,
-        start_time: null
-      })
-      .eq('user_id', session.user.id);
-
-    if (error) {
-      console.error('Error resetting all timers:', error);
-      return;
-    }
-
-    tasks = tasks.map(t => ({
-      ...t,
-      elapsed_time: 0,
-      is_running: false,
-      startTime: null
-    }));
-    for (const id of Object.keys(editBuffers)) {
-      editBuffers[id].time = formatTime(0);
-    }
-    editBuffers = editBuffers;
-  }
-
+  // ---- Exports (client-side, over the in-memory list) ----
   function tasksToCsv(): string {
-    const header = ['Task', 'Description', 'Story Points'];
-    const rows = [header];
-
-    tasks.forEach(task => {
-      const storyPoints = getCurrentElapsedTime(task) / 3600;
-      rows.push([task.label, task.description || '', storyPoints.toFixed(2)]);
-    });
-
+    const rows = [['Task', 'Description', 'Story Points']];
+    for (const t of tasks) {
+      rows.push([t.label, t.description || '', secondsToStoryPoints(elapsed(t, now)).toFixed(2)]);
+    }
     return rows
-      .map(row =>
-        row
-          .map(field => {
-            const value = String(field ?? '');
-            const escaped = value.replace(/"/g, '""');
-            return `"${escaped}"`;
-          })
-          .join(',')
-      )
+      .map((row) => row.map((f) => `"${String(f ?? '').replace(/"/g, '""')}"`).join(','))
       .join('\r\n');
   }
 
@@ -693,85 +454,53 @@
       alert('No tasks to export yet.');
       return;
     }
-
-    const csvContent = tasksToCsv();
-    const datePart = new Date().toISOString().slice(0, 10);
-    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const blob = new Blob([tasksToCsv()], { type: 'text/csv;charset=utf-8;' });
     const url = URL.createObjectURL(blob);
-
     const link = document.createElement('a');
     link.href = url;
-    link.download = `tasks-${datePart}.csv`;
+    link.download = `tasks-${new Date().toISOString().slice(0, 10)}.csv`;
     document.body.appendChild(link);
     link.click();
     document.body.removeChild(link);
     URL.revokeObjectURL(url);
   }
 
-  // Daily Report format kept identical to the desktop app (Google Chat friendly):
-  // bold header + only tasks that have recorded time.
   function tasksToMarkdown(): string {
     const datePart = new Date().toISOString().slice(0, 10);
     const lines = [`*Daily Report ${datePart}*`];
-
-    tasks
-      .filter(task => getCurrentElapsedTime(task) > 0)
-      .forEach(task => {
-        const storyPoints = getCurrentElapsedTime(task) / 3600;
-        let line = `- [${storyPoints.toFixed(2)}] ${task.label}`;
-        if (task.description && task.description.trim()) {
-          line += ` - ${task.description.trim()}`;
-        }
-        lines.push(line);
-      });
-
+    for (const t of tasks) {
+      const secs = elapsed(t, now);
+      if (secs <= 0) continue;
+      let line = `- [${secondsToStoryPoints(secs).toFixed(2)}] ${t.label}`;
+      if (t.description && t.description.trim()) line += ` - ${t.description.trim()}`;
+      lines.push(line);
+    }
     return lines.join('\n');
   }
 
   async function exportTasksAsMarkdown() {
-    const tasksWithTime = tasks.filter(t => getCurrentElapsedTime(t) > 0);
-    if (!tasksWithTime.length) {
+    const withTime = tasks.filter((t) => elapsed(t, now) > 0);
+    if (!withTime.length) {
       alert(tasks.length ? 'No tasks with recorded time to export.' : 'No tasks to export yet.');
       return;
     }
-
-    const markdownContent = tasksToMarkdown();
-
+    const content = tasksToMarkdown();
     try {
-      if (navigator.clipboard && navigator.clipboard.writeText) {
-        await navigator.clipboard.writeText(markdownContent);
-        alert('Daily report copied to clipboard!');
+      if (navigator.clipboard?.writeText) {
+        await navigator.clipboard.writeText(content);
       } else {
-        const textArea = document.createElement('textarea');
-        textArea.value = markdownContent;
-        textArea.style.position = 'fixed';
-        textArea.style.left = '-999999px';
-        document.body.appendChild(textArea);
-        textArea.select();
+        const ta = document.createElement('textarea');
+        ta.value = content;
+        ta.style.position = 'fixed';
+        ta.style.left = '-999999px';
+        document.body.appendChild(ta);
+        ta.select();
         document.execCommand('copy');
-        document.body.removeChild(textArea);
-        alert('Daily report copied to clipboard!');
+        document.body.removeChild(ta);
       }
-    } catch (error) {
-      console.error('Failed to copy to clipboard:', error);
-      alert('Failed to copy to clipboard. Please try again.');
-    }
-  }
-
-  function handleVisibilityChange() {
-    if (!document.hidden) {
-      // Page became visible - update all running timers
-      tasks = tasks.map(task => task); // Trigger reactivity
-    }
-  }
-
-  async function handleLogout() {
-    const { error } = await signOut();
-    if (error) {
-      console.error('Error signing out:', error);
-      alert('Failed to sign out');
-    } else {
-      goto('/login');
+      alert('Daily report copied to clipboard!');
+    } catch (e) {
+      fail(e);
     }
   }
 </script>
@@ -781,9 +510,7 @@
     <header class="mb-6">
       <div class="flex items-center justify-between">
         <div class="flex-1">
-          <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 text-center sm:text-left">
-            Task Timer
-          </h1>
+          <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 text-center sm:text-left">Task Timer</h1>
           <p class="text-center sm:text-left text-gray-500 dark:text-gray-400 mt-1">
             {timerMode === 'parallel'
               ? 'Add tasks and track your time. Multiple timers can run at once.'
@@ -813,49 +540,22 @@
           >
             {editMode ? 'Exit Edit Mode' : 'Edit Mode'}
           </button>
-          <button
-            on:click={resetAllTimers}
-            class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-orange-600 rounded-lg shadow-sm hover:bg-orange-700 transition-colors"
-            type="button"
-          >
-            Reset All
-          </button>
-          <button
-            on:click={exportTasksAsCsv}
-            class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-emerald-600 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors"
-            type="button"
-          >
-            Export CSV
-          </button>
-          <button
-            on:click={exportTasksAsMarkdown}
-            class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg shadow-sm hover:bg-purple-700 transition-colors"
-            type="button"
-          >
-            Export Markdown
-          </button>
-          <button
-            on:click={handleLogout}
-            class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-gray-600 rounded-lg shadow-sm hover:bg-gray-700 transition-colors"
-            type="button"
-            title="Sign out"
-          >
-            Sign Out
-          </button>
+          <button on:click={resetAllTimers} class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-orange-600 rounded-lg shadow-sm hover:bg-orange-700 transition-colors" type="button">Reset All</button>
+          <button on:click={exportTasksAsCsv} class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-emerald-600 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors" type="button">Export CSV</button>
+          <button on:click={exportTasksAsMarkdown} class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg shadow-sm hover:bg-purple-700 transition-colors" type="button">Export Markdown</button>
+          <form method="POST" action="/logout" class="inline">
+            <button type="submit" class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-gray-600 rounded-lg shadow-sm hover:bg-gray-700 transition-colors" title="Sign out">Sign Out</button>
+          </form>
         </div>
       </div>
       <div class="mt-4 grid grid-cols-2 gap-2 sm:hidden">
         <button
           on:click={toggleTimerMode}
-          class="col-span-2 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-lg shadow-sm border transition-colors {timerMode === 'parallel'
+          class="inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-lg shadow-sm border transition-colors {timerMode === 'parallel'
             ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
             : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'}"
           type="button"
-          title="Switch Focus / Parallel timer mode"
         >
-          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
-          </svg>
           {timerMode === 'parallel' ? 'Parallel' : 'Focus'}
         </button>
         <button
@@ -867,35 +567,12 @@
         >
           {editMode ? 'Exit Edit Mode' : 'Edit Mode'}
         </button>
-        <button
-          on:click={resetAllTimers}
-          class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-orange-600 rounded-lg shadow-sm hover:bg-orange-700 transition-colors"
-          type="button"
-        >
-          Reset All
-        </button>
-        <button
-          on:click={exportTasksAsCsv}
-          class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-emerald-600 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors"
-          type="button"
-        >
-          Export CSV
-        </button>
-        <button
-          on:click={exportTasksAsMarkdown}
-          class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg shadow-sm hover:bg-purple-700 transition-colors"
-          type="button"
-        >
-          Export Markdown
-        </button>
-        <button
-          on:click={handleLogout}
-          class="col-span-2 inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-gray-600 rounded-lg shadow-sm hover:bg-gray-700 transition-colors"
-          type="button"
-          title="Sign out"
-        >
-          Sign Out
-        </button>
+        <button on:click={resetAllTimers} class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-orange-600 rounded-lg shadow-sm hover:bg-orange-700 transition-colors" type="button">Reset All</button>
+        <button on:click={exportTasksAsCsv} class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-emerald-600 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors" type="button">Export CSV</button>
+        <button on:click={exportTasksAsMarkdown} class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg shadow-sm hover:bg-purple-700 transition-colors" type="button">Export Markdown</button>
+        <form method="POST" action="/logout" class="inline">
+          <button type="submit" class="w-full inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-gray-600 rounded-lg shadow-sm hover:bg-gray-700 transition-colors">Sign Out</button>
+        </form>
       </div>
     </header>
 
@@ -906,174 +583,75 @@
         placeholder="Enter new task name..."
         class="flex-1 p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
       />
-      <button
-        type="submit"
-        class="p-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition duration-200 shadow-sm"
-      >
-        Add Task
-      </button>
+      <button type="submit" class="p-3 bg-blue-600 text-white rounded-lg font-semibold hover:bg-blue-700 transition duration-200 shadow-sm">Add Task</button>
     </form>
 
     <div class="mb-6 p-4 bg-gradient-to-r from-blue-50 to-indigo-50 dark:from-blue-950/30 dark:to-indigo-950/30 rounded-lg border-2 border-blue-200 dark:border-blue-900" class:animate-pulse={pulse8Hour}>
       <div class="text-center">
         <p class="text-sm font-semibold text-gray-600 dark:text-gray-400 mb-2">Total Time</p>
-        <p class="text-4xl font-mono font-bold text-blue-700 dark:text-blue-300">{formatTime(totalTime)}</p>
+        <p class="text-4xl font-mono font-bold text-blue-700 dark:text-blue-300">{formatTime(totalSeconds)}</p>
       </div>
     </div>
 
     <div class="space-y-4">
       {#if tasks.length === 0}
-        <p class="text-gray-500 dark:text-gray-400 text-center">
-          No tasks added yet. Add one above to get started!
-        </p>
+        <p class="text-gray-500 dark:text-gray-400 text-center">No tasks added yet. Add one above to get started!</p>
       {:else}
-        {#each tasks as task (task.id)}
-          {@const index = tasks.findIndex(t => t.id === task.id)}
+        {#each tasks as task, index (task.id)}
           {#if editMode && editBuffers[task.id]}
-            <!-- Inline edit card -->
-            <div
-              class="flex flex-col sm:flex-row items-start sm:items-center justify-between bg-amber-50 dark:bg-amber-950/20 p-4 rounded-lg shadow-sm border-2 border-amber-300 dark:border-amber-900/50 transition duration-200"
-            >
+            <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between bg-amber-50 dark:bg-amber-950/20 p-4 rounded-lg shadow-sm border-2 border-amber-300 dark:border-amber-900/50 transition duration-200">
               <div class="flex-1 mb-3 sm:mb-0 w-full space-y-2">
-                <input
-                  type="text"
-                  bind:value={editBuffers[task.id].label}
-                  on:blur={() => saveInlineTitle(task)}
-                  on:keydown={blurOnEnter}
-                  placeholder="Task title"
-                  maxlength="200"
-                  class="w-full p-2 text-lg font-medium border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-blue-500 dark:focus:border-blue-400"
-                />
-                <input
-                  type="text"
-                  bind:value={editBuffers[task.id].description}
-                  on:blur={() => saveInlineDescription(task)}
-                  on:keydown={blurOnEnter}
-                  placeholder="Description (optional)"
-                  class="w-full p-2 text-sm text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-blue-500 dark:focus:border-blue-400"
-                />
-                <input
-                  type="text"
-                  bind:value={editBuffers[task.id].time}
-                  on:blur={() => saveInlineTime(task)}
-                  on:keydown={blurOnEnter}
-                  placeholder="HH:MM:SS or minutes"
-                  class="w-full p-2 text-xl font-mono border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-blue-500 dark:focus:border-blue-400"
-                />
+                <input type="text" bind:value={editBuffers[task.id].label} on:blur={() => saveInlineTitle(task)} on:keydown={blurOnEnter} placeholder="Task title" maxlength="200" class="w-full p-2 text-lg font-medium border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400" />
+                <input type="text" bind:value={editBuffers[task.id].description} on:blur={() => saveInlineDescription(task)} on:keydown={blurOnEnter} placeholder="Description (optional)" class="w-full p-2 text-sm text-gray-600 dark:text-gray-300 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400" />
+                <input type="text" bind:value={editBuffers[task.id].time} on:blur={() => saveInlineTime(task)} on:keydown={blurOnEnter} placeholder="HH:MM:SS or minutes" class="w-full p-2 text-xl font-mono border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400" />
               </div>
               <div class="flex space-x-2 w-full sm:w-auto mt-2 sm:mt-0">
-                <button
-                  on:click={() => moveTaskUp(task.id)}
-                  disabled={index === 0}
-                  class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold {index === 0 ? 'opacity-50 cursor-not-allowed' : ''}"
-                  title="Move up"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
-                  </svg>
+                <button on:click={() => moveTaskUp(task.id)} disabled={index === 0} class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center {index === 0 ? 'opacity-50 cursor-not-allowed' : ''}" title="Move up">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" /></svg>
                 </button>
-                <button
-                  on:click={() => moveTaskDown(task.id)}
-                  disabled={index === tasks.length - 1}
-                  class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold {index === tasks.length - 1 ? 'opacity-50 cursor-not-allowed' : ''}"
-                  title="Move down"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                  </svg>
+                <button on:click={() => moveTaskDown(task.id)} disabled={index === tasks.length - 1} class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center {index === tasks.length - 1 ? 'opacity-50 cursor-not-allowed' : ''}" title="Move down">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
                 </button>
-                <button
-                  on:click={() => resetTimer(task.id)}
-                  class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-orange-500 hover:bg-orange-600 transition duration-200 flex items-center justify-center text-sm font-semibold"
-                  title="Reset"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
+                <button on:click={() => resetTimer(task.id)} class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-orange-500 hover:bg-orange-600 transition duration-200 flex items-center justify-center text-sm font-semibold" title="Reset">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                 </button>
-                <button
-                  on:click={() => deleteTask(task.id, true)}
-                  class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-red-500 hover:bg-red-600 transition duration-200 flex items-center justify-center text-sm font-semibold"
-                  title="Delete (no confirmation)"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
+                <button on:click={() => deleteTask(task.id, true)} class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-red-500 hover:bg-red-600 transition duration-200 flex items-center justify-center text-sm font-semibold" title="Delete (no confirmation)">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                 </button>
               </div>
             </div>
           {:else}
-            <!-- Normal card (click to toggle, drag to reorder) -->
             <div
-              class="flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 dark:bg-gray-800/70 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 cursor-grab active:cursor-grabbing select-none hover:bg-gray-100 dark:hover:bg-gray-800 transition duration-200 {task.is_running ? 'ring-2 ring-green-400 dark:ring-green-500' : ''} {draggingId === task.id ? 'opacity-60 ring-2 ring-blue-300 dark:ring-blue-500' : ''}"
+              class="flex flex-col sm:flex-row items-start sm:items-center justify-between bg-gray-50 dark:bg-gray-800/70 p-4 rounded-lg shadow-sm border border-gray-200 dark:border-gray-700 cursor-grab active:cursor-grabbing select-none hover:bg-gray-100 dark:hover:bg-gray-800 transition duration-200 {task.isRunning ? 'ring-2 ring-green-400 dark:ring-green-500' : ''} {draggingId === task.id ? 'opacity-60 ring-2 ring-blue-300 dark:ring-blue-500' : ''}"
               draggable={true}
               on:dragstart={(e) => handleDragStart(e, task.id)}
               on:dragover={(e) => handleDragOver(e, task.id)}
-              on:drop={(e) => handleDrop(e, task.id)}
+              on:drop={handleDrop}
               on:dragend={handleDragEnd}
-              on:click={() => toggleTimer(task.id)}
-              on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && toggleTimer(task.id)}
+              on:click={() => toggleTimer(task)}
+              on:keydown={(e) => (e.key === 'Enter' || e.key === ' ') && toggleTimer(task)}
               role="button"
               tabindex="0"
             >
               <div class="flex-1 mb-3 sm:mb-0">
                 <span class="text-lg font-medium text-gray-900 dark:text-gray-100 break-words">{task.label}</span>
-                <span class="text-3xl font-mono text-gray-700 dark:text-gray-300 block mt-1">
-                  {formatTime(getCurrentElapsedTime(task) + (tick ? 0 : 0))}
-                </span>
+                <span class="text-3xl font-mono text-gray-700 dark:text-gray-300 block mt-1">{formatTime(elapsed(task, now))}</span>
               </div>
-              <div
-                class="flex space-x-2 w-full sm:w-auto"
-                on:click|stopPropagation
-                on:keydown|stopPropagation
-                role="none"
-              >
-                <button
-                  on:click={() => moveTaskUp(task.id)}
-                  disabled={index === 0}
-                  class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold {index === 0 ? 'opacity-50 cursor-not-allowed' : ''}"
-                  title="Move up"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" />
-                  </svg>
+              <div class="flex space-x-2 w-full sm:w-auto" on:click|stopPropagation on:keydown|stopPropagation role="none">
+                <button on:click={() => moveTaskUp(task.id)} disabled={index === 0} class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center {index === 0 ? 'opacity-50 cursor-not-allowed' : ''}" title="Move up">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7" /></svg>
                 </button>
-                <button
-                  on:click={() => moveTaskDown(task.id)}
-                  disabled={index === tasks.length - 1}
-                  class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold {index === tasks.length - 1 ? 'opacity-50 cursor-not-allowed' : ''}"
-                  title="Move down"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" />
-                  </svg>
+                <button on:click={() => moveTaskDown(task.id)} disabled={index === tasks.length - 1} class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center {index === tasks.length - 1 ? 'opacity-50 cursor-not-allowed' : ''}" title="Move down">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7" /></svg>
                 </button>
-                <button
-                  on:click={() => resetTimer(task.id)}
-                  class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-orange-500 hover:bg-orange-600 transition duration-200 flex items-center justify-center text-sm font-semibold"
-                  title="Reset"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
-                  </svg>
+                <button on:click={() => resetTimer(task.id)} class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-orange-500 hover:bg-orange-600 transition duration-200 flex items-center justify-center text-sm font-semibold" title="Reset">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" /></svg>
                 </button>
-                <button
-                  on:click={() => openEditModal(task.id)}
-                  class="w-1/3 sm:w-24 p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold"
-                  title="Edit task"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-                  </svg>
+                <button on:click={() => openEditModal(task)} class="w-1/3 sm:w-24 p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center text-sm font-semibold" title="Edit task">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" /></svg>
                 </button>
-                <button
-                  on:click={() => deleteTask(task.id)}
-                  class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-gray-400 hover:bg-gray-500 transition duration-200 flex items-center justify-center text-sm font-semibold"
-                  title="Delete"
-                >
-                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
-                  </svg>
+                <button on:click={() => deleteTask(task.id)} class="w-1/3 sm:w-20 p-2 rounded-lg text-white bg-gray-400 hover:bg-gray-500 transition duration-200 flex items-center justify-center text-sm font-semibold" title="Delete">
+                  <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" /></svg>
                 </button>
               </div>
             </div>
@@ -1085,80 +663,27 @@
 </div>
 
 {#if showEditModal}
-  <div
-    class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4"
-    on:click={closeEditModal}
-    on:keydown={(e) => e.key === 'Escape' ? closeEditModal() : null}
-    role="dialog"
-    aria-modal="true"
-    aria-labelledby="edit-modal-title"
-  >
-    <div
-      class="bg-white dark:bg-gray-900 rounded-lg shadow-xl max-w-md w-full p-6 ring-1 ring-black/5 dark:ring-white/10"
-      on:click|stopPropagation
-    >
+  <div class="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center z-50 p-4" on:click={closeEditModal} on:keydown={(e) => e.key === 'Escape' && closeEditModal()} role="dialog" aria-modal="true" aria-labelledby="edit-modal-title" tabindex="-1">
+    <div class="bg-white dark:bg-gray-900 rounded-lg shadow-xl max-w-md w-full p-6 ring-1 ring-black/5 dark:ring-white/10" on:click|stopPropagation on:keydown|stopPropagation role="document">
       <h2 id="edit-modal-title" class="text-2xl font-bold text-gray-900 dark:text-gray-100 mb-4">Edit Task</h2>
-
       <div class="space-y-4">
         <div>
-          <label for="edit-title" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Task Title
-          </label>
-          <input
-            id="edit-title"
-            type="text"
-            bind:value={editTitle}
-            class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
-            placeholder="Enter task title"
-            maxlength="200"
-          />
+          <label for="edit-title" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Task Title</label>
+          <input id="edit-title" type="text" bind:value={editTitle} maxlength="200" class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400" placeholder="Enter task title" />
         </div>
-
         <div>
-          <label for="edit-description" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Description (optional)
-          </label>
-          <textarea
-            id="edit-description"
-            bind:value={editDescription}
-            class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
-            placeholder="Enter task description"
-            rows="3"
-          ></textarea>
+          <label for="edit-description" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Description (optional)</label>
+          <textarea id="edit-description" bind:value={editDescription} rows="3" class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400" placeholder="Enter task description"></textarea>
         </div>
-
         <div>
-          <label for="edit-time" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
-            Time
-          </label>
-          <input
-            id="edit-time"
-            type="text"
-            bind:value={editTime}
-            class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400"
-            placeholder="HH:MM:SS or minutes (e.g. 90)"
-          />
-          <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">
-            Use HH:MM:SS (e.g. 01:30:00) or minutes (e.g. 90 for 1.5 hours)
-          </p>
+          <label for="edit-time" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Time</label>
+          <input id="edit-time" type="text" bind:value={editTime} class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400" placeholder="HH:MM:SS or minutes (e.g. 90)" />
+          <p class="text-xs text-gray-500 dark:text-gray-400 mt-2">Use HH:MM:SS (e.g. 01:30:00) or minutes (e.g. 90 for 1.5 hours)</p>
         </div>
       </div>
-
       <div class="flex justify-end gap-3 mt-6">
-        <button
-          on:click={closeEditModal}
-          class="px-4 py-2 text-sm font-semibold text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-800 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors"
-          type="button"
-        >
-          Cancel
-        </button>
-        <button
-          on:click={saveEditTask}
-          class="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors"
-          type="button"
-        >
-          Save
-        </button>
+        <button on:click={closeEditModal} class="px-4 py-2 text-sm font-semibold text-gray-700 dark:text-gray-200 bg-gray-100 dark:bg-gray-800 rounded-lg hover:bg-gray-200 dark:hover:bg-gray-700 transition-colors" type="button">Cancel</button>
+        <button on:click={saveEditTask} class="px-4 py-2 text-sm font-semibold text-white bg-blue-600 rounded-lg hover:bg-blue-700 transition-colors" type="button">Save</button>
       </div>
     </div>
   </div>

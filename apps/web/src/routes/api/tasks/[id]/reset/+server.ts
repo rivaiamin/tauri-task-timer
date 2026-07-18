@@ -1,8 +1,8 @@
 import { json, error, type RequestHandler } from '@sveltejs/kit';
 import { resolveActor, requireScope } from '$lib/server/actor';
-import { stopTimer } from '$lib/server/taskService';
+import { resetTask } from '$lib/server/taskService';
 
-// POST /api/tasks/:id/stop — stop a timer, accumulating elapsed time.
+// POST /api/tasks/:id/reset — reset a single task's elapsed time to 0.
 export const POST: RequestHandler = async (event) => {
   const actor = await resolveActor(event);
   requireScope(actor, 'tasks:write');
@@ -10,7 +10,7 @@ export const POST: RequestHandler = async (event) => {
   const id = Number(event.params.id);
   if (!Number.isInteger(id)) throw error(400, 'Invalid task id');
 
-  const task = stopTimer(actor.userId, id);
+  const task = resetTask(actor.userId, id);
   if (!task) throw error(404, 'Task not found');
   return json(task);
 };

@@ -1,9 +1,12 @@
-// Domain layer for task/timer operations, scoped by user. Used by the REST API
-// (and later the MCP server). The web UI keeps its own optimistic copy of this
-// logic for snappiness; both share the pure math in `shared` so they stay aligned.
-import { supabaseAdmin } from '$lib/supabaseServer';
+// Domain layer for task/timer operations, scoped by user, on local SQLite.
+// Used by the REST API (browser + AI agents). Pure timer math lives in `shared`.
+import { and, asc, eq, ne } from 'drizzle-orm';
 import { currentElapsedSeconds } from 'shared';
-import type { DatabaseTask } from 'shared';
+import { db, schema } from './db';
+import { publish } from './events';
+import type { Task } from './db/schema';
+
+const { tasks, userSettings } = schema;
 
 export type TimerMode = 'focus' | 'parallel';
 
@@ -12,152 +15,209 @@ export interface TaskDTO {
   label: string;
   description: string | null;
   position: number;
-  is_running: boolean;
-  start_time: string | null;
-  elapsed_time: number;
-  current_elapsed_seconds: number;
+  isRunning: boolean;
+  startTime: number | null; // epoch ms
+  elapsedSeconds: number; // stored (accumulated)
+  currentElapsedSeconds: number; // stored + live
 }
 
-function startMs(startTime: string | null): number | null {
-  return startTime ? new Date(startTime).getTime() : null;
-}
-
-function toDTO(t: DatabaseTask): TaskDTO {
+function toDTO(row: Task): TaskDTO {
+  const startTimeMs = row.startTime ? row.startTime.getTime() : null;
   return {
-    id: t.id,
-    label: t.label,
-    description: t.description ?? null,
-    position: t.position,
-    is_running: t.is_running,
-    start_time: t.start_time,
-    elapsed_time: t.elapsed_time,
-    current_elapsed_seconds: currentElapsedSeconds(t.elapsed_time, t.is_running, startMs(t.start_time))
+    id: row.id,
+    label: row.label,
+    description: row.description ?? null,
+    position: row.position,
+    isRunning: row.isRunning,
+    startTime: startTimeMs,
+    elapsedSeconds: row.elapsedTime,
+    currentElapsedSeconds: currentElapsedSeconds(row.elapsedTime, row.isRunning, startTimeMs)
   };
 }
 
-export async function getTimerMode(userId: string): Promise<TimerMode> {
-  const { data } = await supabaseAdmin
-    .from('user_settings')
-    .select('timer_mode')
-    .eq('user_id', userId)
-    .maybeSingle();
-  return (data?.timer_mode as TimerMode) ?? 'focus';
+function getOwnedRow(userId: string, taskId: number): Task | undefined {
+  return db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+    .get();
 }
 
-export async function setTimerMode(userId: string, mode: TimerMode): Promise<{ timer_mode: TimerMode }> {
-  const { error } = await supabaseAdmin
-    .from('user_settings')
-    .upsert(
-      { user_id: userId, timer_mode: mode, updated_at: new Date().toISOString() },
-      { onConflict: 'user_id' }
-    );
-  if (error) throw new Error(error.message);
+export function getTimerMode(userId: string): TimerMode {
+  const row = db
+    .select({ mode: userSettings.timerMode })
+    .from(userSettings)
+    .where(eq(userSettings.userId, userId))
+    .get();
+  return (row?.mode as TimerMode) ?? 'focus';
+}
+
+export function setTimerMode(userId: string, mode: TimerMode): { timer_mode: TimerMode } {
+  db.insert(userSettings)
+    .values({ userId, timerMode: mode, updatedAt: new Date() })
+    .onConflictDoUpdate({ target: userSettings.userId, set: { timerMode: mode, updatedAt: new Date() } })
+    .run();
   return { timer_mode: mode };
 }
 
-export async function listTasks(userId: string): Promise<{ tasks: TaskDTO[]; total_elapsed_seconds: number }> {
-  const { data, error } = await supabaseAdmin
-    .from('tasks')
-    .select('*')
-    .eq('user_id', userId)
-    .order('position', { ascending: true });
-  if (error) throw new Error(error.message);
-
-  const tasks = (data ?? []).map(toDTO);
-  const total = tasks.reduce((sum, t) => sum + t.current_elapsed_seconds, 0);
-  return { tasks, total_elapsed_seconds: total };
+export function listTasks(userId: string): { tasks: TaskDTO[]; totalElapsedSeconds: number } {
+  const rows = db.select().from(tasks).where(eq(tasks.userId, userId)).orderBy(asc(tasks.position)).all();
+  const dtos = rows.map(toDTO);
+  const total = dtos.reduce((sum, t) => sum + t.currentElapsedSeconds, 0);
+  return { tasks: dtos, totalElapsedSeconds: total };
 }
 
-export async function createTask(userId: string, label: string, description: string | null): Promise<TaskDTO> {
-  const { count } = await supabaseAdmin
-    .from('tasks')
-    .select('*', { count: 'exact', head: true })
-    .eq('user_id', userId);
-
-  const { data, error } = await supabaseAdmin
-    .from('tasks')
-    .insert({
-      user_id: userId,
+export function createTask(userId: string, label: string, description: string | null): TaskDTO {
+  const count = db.select().from(tasks).where(eq(tasks.userId, userId)).all().length;
+  const now = new Date();
+  const row = db
+    .insert(tasks)
+    .values({
+      userId,
       label,
       description: description ?? null,
-      elapsed_time: 0,
-      position: count ?? 0,
-      is_running: false
+      elapsedTime: 0,
+      position: count,
+      isRunning: false,
+      createdAt: now,
+      updatedAt: now
     })
-    .select()
-    .single();
-  if (error) throw new Error(error.message);
-  return toDTO(data);
+    .returning()
+    .get();
+  publish(userId);
+  return toDTO(row);
 }
 
-async function getOwnedTask(userId: string, taskId: number): Promise<DatabaseTask | null> {
-  const { data, error } = await supabaseAdmin
-    .from('tasks')
-    .select('*')
-    .eq('id', taskId)
-    .eq('user_id', userId)
-    .maybeSingle();
-  if (error) throw new Error(error.message);
-  return (data as DatabaseTask | null) ?? null;
+function stopRow(userId: string, row: Task): void {
+  const elapsed = currentElapsedSeconds(
+    row.elapsedTime,
+    row.isRunning,
+    row.startTime ? row.startTime.getTime() : null
+  );
+  db.update(tasks)
+    .set({ isRunning: false, elapsedTime: elapsed, startTime: null, updatedAt: new Date() })
+    .where(and(eq(tasks.id, row.id), eq(tasks.userId, userId)))
+    .run();
 }
 
-async function stopRow(userId: string, task: DatabaseTask): Promise<void> {
-  const elapsed = currentElapsedSeconds(task.elapsed_time, task.is_running, startMs(task.start_time));
-  const { error } = await supabaseAdmin
-    .from('tasks')
-    .update({ is_running: false, elapsed_time: elapsed, start_time: null })
-    .eq('id', task.id)
-    .eq('user_id', userId);
-  if (error) throw new Error(error.message);
-}
+export function startTimer(userId: string, taskId: number, exclusive?: boolean): TaskDTO | null {
+  const row = getOwnedRow(userId, taskId);
+  if (!row) return null;
 
-/**
- * Start a task's timer. `exclusive` controls focus vs parallel behavior; when
- * omitted it defaults to the user's stored timer mode (focus => exclusive).
- * Returns null if the task doesn't exist / isn't owned by the user.
- */
-export async function startTimer(userId: string, taskId: number, exclusive?: boolean): Promise<TaskDTO | null> {
-  const task = await getOwnedTask(userId, taskId);
-  if (!task) return null;
-
-  const isExclusive = exclusive ?? ((await getTimerMode(userId)) === 'focus');
+  const isExclusive = exclusive ?? getTimerMode(userId) === 'focus';
   if (isExclusive) {
-    const { data: running, error } = await supabaseAdmin
-      .from('tasks')
-      .select('*')
-      .eq('user_id', userId)
-      .eq('is_running', true)
-      .neq('id', taskId);
-    if (error) throw new Error(error.message);
-    for (const row of (running ?? []) as DatabaseTask[]) {
-      await stopRow(userId, row);
-    }
+    const running = db
+      .select()
+      .from(tasks)
+      .where(and(eq(tasks.userId, userId), eq(tasks.isRunning, true), ne(tasks.id, taskId)))
+      .all();
+    for (const r of running) stopRow(userId, r);
   }
 
-  const { data, error } = await supabaseAdmin
-    .from('tasks')
-    .update({ is_running: true, start_time: new Date().toISOString() })
-    .eq('id', taskId)
-    .eq('user_id', userId)
-    .select()
-    .single();
-  if (error) throw new Error(error.message);
-  return toDTO(data);
+  const updated = db
+    .update(tasks)
+    .set({ isRunning: true, startTime: new Date(), updatedAt: new Date() })
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+    .returning()
+    .get();
+  publish(userId);
+  return toDTO(updated);
 }
 
-/** Stop a task's timer, accumulating elapsed time. Null if not found. */
-export async function stopTimer(userId: string, taskId: number): Promise<TaskDTO | null> {
-  const task = await getOwnedTask(userId, taskId);
-  if (!task) return null;
+export function stopTimer(userId: string, taskId: number): TaskDTO | null {
+  const row = getOwnedRow(userId, taskId);
+  if (!row) return null;
+  const elapsed = currentElapsedSeconds(
+    row.elapsedTime,
+    row.isRunning,
+    row.startTime ? row.startTime.getTime() : null
+  );
+  const updated = db
+    .update(tasks)
+    .set({ isRunning: false, elapsedTime: elapsed, startTime: null, updatedAt: new Date() })
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+    .returning()
+    .get();
+  publish(userId);
+  return toDTO(updated);
+}
 
-  const elapsed = currentElapsedSeconds(task.elapsed_time, task.is_running, startMs(task.start_time));
-  const { data, error } = await supabaseAdmin
-    .from('tasks')
-    .update({ is_running: false, elapsed_time: elapsed, start_time: null })
-    .eq('id', taskId)
-    .eq('user_id', userId)
-    .select()
-    .single();
-  if (error) throw new Error(error.message);
-  return toDTO(data);
+export function resetTask(userId: string, taskId: number): TaskDTO | null {
+  const row = getOwnedRow(userId, taskId);
+  if (!row) return null;
+  const updated = db
+    .update(tasks)
+    .set({ isRunning: false, elapsedTime: 0, startTime: null, updatedAt: new Date() })
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+    .returning()
+    .get();
+  publish(userId);
+  return toDTO(updated);
+}
+
+export function resetAll(userId: string): { tasks: TaskDTO[]; totalElapsedSeconds: number } {
+  db.update(tasks)
+    .set({ isRunning: false, elapsedTime: 0, startTime: null, updatedAt: new Date() })
+    .where(eq(tasks.userId, userId))
+    .run();
+  publish(userId);
+  return listTasks(userId);
+}
+
+export function deleteTask(userId: string, taskId: number): boolean {
+  const res = db
+    .delete(tasks)
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+    .run();
+  if (res.changes > 0) publish(userId);
+  return res.changes > 0;
+}
+
+export interface TaskUpdate {
+  label?: string;
+  description?: string | null;
+  elapsedSeconds?: number;
+}
+
+export function updateTask(userId: string, taskId: number, changes: TaskUpdate): TaskDTO | null {
+  const row = getOwnedRow(userId, taskId);
+  if (!row) return null;
+
+  const set: Partial<Task> = { updatedAt: new Date() };
+  if (changes.label !== undefined) set.label = changes.label;
+  if (changes.description !== undefined) set.description = changes.description;
+  if (changes.elapsedSeconds !== undefined) {
+    set.elapsedTime = changes.elapsedSeconds;
+    // If running, rebase the current run so live time continues from the new value.
+    if (row.isRunning) set.startTime = new Date();
+  }
+
+  const updated = db
+    .update(tasks)
+    .set(set)
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+    .returning()
+    .get();
+  publish(userId);
+  return toDTO(updated);
+}
+
+/** Set positions to match the given id order (only the user's own tasks). */
+export function reorderTasks(userId: string, orderedIds: number[]): { tasks: TaskDTO[]; totalElapsedSeconds: number } {
+  const owned = db.select({ id: tasks.id }).from(tasks).where(eq(tasks.userId, userId)).all();
+  const ownedIds = new Set(owned.map((r) => r.id));
+
+  db.transaction((tx) => {
+    let pos = 0;
+    for (const id of orderedIds) {
+      if (!ownedIds.has(id)) continue;
+      tx.update(tasks)
+        .set({ position: pos, updatedAt: new Date() })
+        .where(and(eq(tasks.id, id), eq(tasks.userId, userId)))
+        .run();
+      pos++;
+    }
+  });
+  publish(userId);
+  return listTasks(userId);
 }
