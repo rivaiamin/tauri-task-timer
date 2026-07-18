@@ -20,6 +20,9 @@ document.addEventListener("DOMContentLoaded", () => {
   const resetAllMobileButton = document.getElementById("reset-all-mobile");
   const editModeToggle = document.getElementById("edit-mode-toggle");
   const editModeToggleMobile = document.getElementById("edit-mode-toggle-mobile");
+  const timerModeToggle = document.getElementById("timer-mode-toggle");
+  const timerModeToggleMobile = document.getElementById("timer-mode-toggle-mobile");
+  const appSubtitle = document.getElementById("app-subtitle");
 
   if (window.__TAURI__) {
     const appWindow = getCurrentWindow();
@@ -38,6 +41,9 @@ document.addEventListener("DOMContentLoaded", () => {
   let tasks = [];
   let totalTimerInterval = null;
   let editMode = false;
+  // "focus" = only one timer runs at a time (starting one stops the others).
+  // "parallel" = any number of timers can run at once. Persisted per device.
+  let timerMode = "focus";
   let dragState = {
     draggingId: null,
     overId: null,
@@ -61,6 +67,35 @@ document.addEventListener("DOMContentLoaded", () => {
       }
     });
     renderTasks();
+  }
+
+  function setTimerMode(value) {
+    timerMode = value === "parallel" ? "parallel" : "focus";
+    try {
+      localStorage.setItem("taskTimerMode", timerMode);
+    } catch (error) {
+      console.error("Failed to persist timer mode:", error);
+    }
+
+    const isParallel = timerMode === "parallel";
+    [timerModeToggle, timerModeToggleMobile].forEach((btn) => {
+      if (!btn) return;
+      const label = btn.querySelector("span");
+      if (label) label.textContent = isParallel ? "Parallel" : "Focus";
+      btn.classList.toggle("bg-blue-600", isParallel);
+      btn.classList.toggle("text-white", isParallel);
+      btn.classList.toggle("border-blue-600", isParallel);
+      btn.classList.toggle("hover:bg-blue-700", isParallel);
+      btn.classList.toggle("bg-white", !isParallel);
+      btn.classList.toggle("dark:bg-gray-900", !isParallel);
+      btn.classList.toggle("text-gray-700", !isParallel);
+    });
+
+    if (appSubtitle) {
+      appSubtitle.textContent = isParallel
+        ? "Add tasks and track your time. Multiple timers can run at once."
+        : "Add tasks and track your time. Only one timer runs at a time.";
+    }
   }
 
   function renderTasks() {
@@ -288,7 +323,9 @@ document.addEventListener("DOMContentLoaded", () => {
 
     const isStarting = !taskToToggle.isRunning;
 
-    if (isStarting) {
+    // In focus mode, starting a timer stops all others. In parallel mode,
+    // multiple timers may run at once, so we leave the others running.
+    if (isStarting && timerMode === "focus") {
       tasks.forEach((task) => {
         if (task.isRunning) {
           // Save accumulated time before stopping
@@ -873,6 +910,9 @@ document.addEventListener("DOMContentLoaded", () => {
   exportMarkdownMobileButton?.addEventListener("click", exportTasksAsMarkdown);
   editModeToggle?.addEventListener("click", () => setEditMode(!editMode));
   editModeToggleMobile?.addEventListener("click", () => setEditMode(!editMode));
+  const toggleTimerMode = () => setTimerMode(timerMode === "focus" ? "parallel" : "focus");
+  timerModeToggle?.addEventListener("click", toggleTimerMode);
+  timerModeToggleMobile?.addEventListener("click", toggleTimerMode);
 
   taskList.addEventListener("click", (event) => {
     // Check if a button was clicked (stop propagation to prevent card toggle)
@@ -1047,6 +1087,7 @@ document.addEventListener("DOMContentLoaded", () => {
   (async () => {
     tasks = await loadTasks();
     setEditMode(false);
+    setTimerMode(localStorage.getItem("taskTimerMode") === "parallel" ? "parallel" : "focus");
 
     // Start total timer interval if any timers are already running (e.g., after page reload)
     const hasRunningTimer = tasks.some(task => task.isRunning);
