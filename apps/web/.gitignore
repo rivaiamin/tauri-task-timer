@@ -21,3 +21,9 @@ Thumbs.db
 # Vite
 vite.config.js.timestamp-*
 vite.config.ts.timestamp-*
+
+# Local SQLite database (and WAL/SHM sidecars)
+local.db
+local.db-*
+*.sqlite
+*.sqlite-*
