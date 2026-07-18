@@ -66,17 +66,17 @@
   }
 </script>
 
-<div class="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 p-4">
-  <div class="max-w-md w-full bg-white rounded-xl shadow-lg p-8">
+<div class="min-h-screen flex items-center justify-center bg-gradient-to-br from-blue-50 to-indigo-100 dark:from-gray-950 dark:to-gray-900 p-4">
+  <div class="max-w-md w-full bg-white dark:bg-gray-900 rounded-xl shadow-lg p-8 ring-1 ring-black/5 dark:ring-white/10">
     <div class="text-center mb-8">
-      <h1 class="text-3xl font-bold text-gray-900 mb-2">Create Account</h1>
-      <p class="text-gray-600">Sign up to start tracking your tasks</p>
+      <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 mb-2">Create Account</h1>
+      <p class="text-gray-600 dark:text-gray-400">Sign up to start tracking your tasks</p>
     </div>
 
     {#if success}
-      <div class="mb-4 p-4 bg-green-50 border border-green-200 rounded-lg">
-        <p class="text-sm text-green-800 font-semibold mb-2">Account created successfully!</p>
-        <p class="text-sm text-green-700">
+      <div class="mb-4 p-4 bg-green-50 dark:bg-green-950/40 border border-green-200 dark:border-green-900 rounded-lg">
+        <p class="text-sm text-green-800 dark:text-green-300 font-semibold mb-2">Account created successfully!</p>
+        <p class="text-sm text-green-700 dark:text-green-400">
           Please check your email to confirm your account before signing in.
         </p>
       </div>
@@ -90,14 +90,14 @@
       </div>
     {:else}
       {#if error}
-        <div class="mb-4 p-3 bg-red-50 border border-red-200 rounded-lg">
-          <p class="text-sm text-red-800">{error}</p>
+        <div class="mb-4 p-3 bg-red-50 dark:bg-red-950/40 border border-red-200 dark:border-red-900 rounded-lg">
+          <p class="text-sm text-red-800 dark:text-red-300">{error}</p>
         </div>
       {/if}
 
       <form on:submit={handleSubmit} class="space-y-6">
         <div>
-          <label for="email" class="block text-sm font-medium text-gray-700 mb-2">
+          <label for="email" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
             Email
           </label>
           <input
@@ -106,14 +106,14 @@
             bind:value={email}
             required
             autocomplete="email"
-            class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent"
             placeholder="you@example.com"
             disabled={loading}
           />
         </div>
 
         <div>
-          <label for="password" class="block text-sm font-medium text-gray-700 mb-2">
+          <label for="password" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
             Password
           </label>
           <input
@@ -123,15 +123,15 @@
             required
             autocomplete="new-password"
             minlength="6"
-            class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent"
             placeholder="At least 6 characters"
             disabled={loading}
           />
-          <p class="mt-1 text-xs text-gray-500">Must be at least 6 characters long</p>
+          <p class="mt-1 text-xs text-gray-500 dark:text-gray-400">Must be at least 6 characters long</p>
         </div>
 
         <div>
-          <label for="confirmPassword" class="block text-sm font-medium text-gray-700 mb-2">
+          <label for="confirmPassword" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">
             Confirm Password
           </label>
           <input
@@ -140,7 +140,7 @@
             bind:value={confirmPassword}
             required
             autocomplete="new-password"
-            class="w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+            class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 placeholder:text-gray-400 dark:placeholder:text-gray-500 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 focus:border-transparent"
             placeholder="Confirm your password"
             disabled={loading}
           />
@@ -160,9 +160,9 @@
       </form>
 
       <div class="mt-6 text-center">
-        <p class="text-sm text-gray-600">
+        <p class="text-sm text-gray-600 dark:text-gray-400">
           Already have an account?{' '}
-          <a href="/login" class="text-blue-600 hover:text-blue-700 font-semibold">
+          <a href="/login" class="text-blue-600 dark:text-blue-400 hover:text-blue-700 dark:hover:text-blue-300 font-semibold">
             Sign in
           </a>
         </p>
