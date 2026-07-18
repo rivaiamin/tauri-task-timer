@@ -7,8 +7,9 @@ two independent apps and a shared package.
 - **Browser app** (`apps/desktop`) — standalone timer, no account required.
   Vanilla HTML/CSS/JS, persists to `localStorage`, deployed as a static site to
   GitHub Pages. (Originally a Tauri desktop app — see [Desktop / Tauri note](#desktop--tauri-note).)
-- **Web app** (`apps/web`) — SvelteKit app with accounts, cloud sync, and
-  real-time updates backed by Supabase.
+- **Web app** (`apps/web`) — SvelteKit app with accounts and live updates,
+  backed by a **local SQLite** database. Exposes a REST + SSE API that both the
+  dashboard and AI agents can drive (see `docs/ai-control.md`).
 - **Shared package** (`packages/shared`) — TypeScript types and utilities used by
   both apps.
 
@@ -19,9 +20,9 @@ apps/
   desktop/          # standalone browser timer (vanilla JS, localStorage)
     src/            # index.html, main.js, styles.css
     build.js        # copies src/ -> dist/ for static hosting
-  web/              # SvelteKit + Supabase web app
-    src/            # routes, lib (auth, supabase client, encryption)
-    supabase/       # SQL migrations (schema, RLS, functions)
+  web/              # SvelteKit + local SQLite web app
+    src/            # routes (+ api/*), lib/server (db, auth, taskService)
+    drizzle/        # generated SQLite migrations
 packages/
   shared/           # shared TS types (Task, DatabaseTask) + utils
     src/            #   formatTime, escapeHTML
@@ -46,14 +47,16 @@ A single-file-per-concern static app — no build framework, no backend.
 ### Web app (`apps/web`, package `sv-task-timer`)
 
 - Stack: [SvelteKit](https://svelte.dev/docs/kit) + [Vite](https://vite.dev/),
-  Tailwind v4, TypeScript, [Zod](https://zod.dev/).
-- Backend: [Supabase](https://supabase.com/) — auth, Postgres, and real-time
-  task sync. Row-Level Security and helper functions live in
-  `apps/web/supabase/migrations/`.
+  Tailwind v4, TypeScript, [Zod](https://zod.dev/). Runs on `adapter-node`.
+- Backend: **local SQLite** via [Drizzle ORM](https://orm.drizzle.team/) +
+  `better-sqlite3`. Session-cookie auth (argon2 + a `sessions` table). All data
+  access goes through the server; migrations live in `apps/web/drizzle/`.
+- API: a REST surface under `/api/*` (tasks CRUD, start/stop/reset/reorder,
+  timer-mode, key management) plus live updates over SSE at `/api/stream`.
+  Requests authenticate by **session cookie** (the browser) **or `Bearer` API
+  key** (AI agents). See `docs/ai-control.md`.
 - Routes: `/` (redirects based on session), `/login`, `/register`,
-  `/dashboard` (the timer UI with realtime sync).
-- Extras: server-side encrypted webhooks and shareable view links (see the
-  schema and `src/lib/encryption/`).
+  `/dashboard` (the timer UI).
 
 ### Shared package (`packages/shared`, package `shared`)
 
@@ -79,10 +82,12 @@ pnpm install
 ### Web
 
 ```bash
+pnpm --filter sv-task-timer db:migrate   # create/update the local SQLite db
 pnpm --filter sv-task-timer dev
 ```
 
-Requires a `.env` in `apps/web` (see [Environment](#environment)).
+Config is optional (see [Environment](#environment)); the database defaults to
+`apps/web/local.db`.
 
 ### Browser app
 
@@ -110,18 +115,18 @@ pnpm --filter task-timer-desktop build      # browser app -> apps/desktop/dist
 
 `.github/workflows/deploy.yml` runs on pushes to `main`: it builds
 `apps/desktop` with `node build.js` and publishes `apps/desktop/dist` to GitHub
-Pages. The web app is deployed separately (SvelteKit adapter-auto).
+Pages. The web app is deployed separately as a persistent Node server
+(SvelteKit `adapter-node`), since it uses a local SQLite file via the native
+`better-sqlite3` driver. Run `db:migrate` as part of the deploy.
 
 ## Environment
 
-The web app reads Supabase and encryption settings from `apps/web/.env`
-(template in `apps/web/.env.example`):
+The web app reads optional settings from `apps/web/.env` (template in
+`apps/web/.env.example`):
 
 ```env
-PUBLIC_SUPABASE_URL=
-PUBLIC_SUPABASE_PUBLISHABLE_KEY=
-SUPABASE_SERVICE_ROLE_KEY=
-ENCRYPTION_KEY=
+# Path to the local SQLite database file (optional; defaults to local.db)
+DATABASE_PATH=local.db
 ```
 
 ## Desktop / Tauri note
@@ -129,10 +134,10 @@ ENCRYPTION_KEY=
 This project started as a [Tauri](https://tauri.app/) desktop app; the browser
 app still carries Tauri-compatible markup (`data-tauri-drag-region`,
 `window.__TAURI__` guards) and `task-timer-desktop` still lists `@tauri-apps/cli`.
-The Rust/Tauri backend (`apps/desktop/src-tauri/`) is **not present in the
-current working tree**, so `tauri dev` / `tauri build` will not run as-is — the
-app currently ships as a static web build to GitHub Pages. Restore `src-tauri/`
-(or check out an earlier commit) to build a native desktop binary again.
+The Rust/Tauri backend (`apps/desktop/src-tauri/`) has been **removed**, so
+`tauri dev` / `tauri build` will not run as-is — the app ships as a static web
+build to GitHub Pages. Restore `src-tauri/` (or check out a commit before its
+removal) to build a native desktop binary again.
 
 ## More docs
 
