@@ -160,8 +160,9 @@ create table user_settings (
 - **Phase 0 — Refactor (no behavior change).** Extract `taskService` from the
   dashboard; move timer mode to `user_settings`. Dashboard calls the service.
   Foundation for everything else. *(Recommended first step.)*
-- **Phase 1 — REST API + `api_keys`.** Endpoints above + key issuance UI. Drive
-  it with `curl`. Ships independently.
+- **Phase 1 — REST API + `api_keys`.** ✅ *Implemented* — see
+  [Using the API](#using-the-api-phase-1) below. (Key issuance is CLI/SQL for now;
+  a settings-page UI is still open.)
 - **Phase 2 — MCP server.** Thin wrapper over the REST API exposing tools; point
   Claude/agents at it. Now it's AI-native.
 - **Phase 3 — Intent + notifications.** Higher-level tools (`start_working_on`),
@@ -178,7 +179,56 @@ create table user_settings (
 - **Desktop unification** — should the desktop app switch to Supabase-backed
   storage when signed in, so it's controllable too? (Larger change.)
 
+## Using the API (Phase 1)
+
+Implemented endpoints (all require `Authorization: Bearer <key>`, JSON in/out):
+
+| Method | Path | Scope | Body |
+|---|---|---|---|
+| GET | `/api/tasks` | `tasks:read` | — |
+| POST | `/api/tasks` | `tasks:write` | `{ label, description? }` |
+| POST | `/api/tasks/:id/start` | `tasks:write` | `{ exclusive? }` |
+| POST | `/api/tasks/:id/stop` | `tasks:write` | — |
+| GET | `/api/settings/timer-mode` | `tasks:read` | — |
+| PUT | `/api/settings/timer-mode` | `tasks:write` | `{ timer_mode }` |
+
+**Setup**
+1. Apply migrations `005_user_settings.sql` and `006_api_keys.sql` to your
+   Supabase project.
+2. Ensure the server has `PUBLIC_SUPABASE_URL` and `SUPABASE_SERVICE_ROLE_KEY`
+   set (see `.env.example`).
+3. Mint a key from the Supabase SQL editor (returns the raw key **once**):
+   ```sql
+   select mint_api_key('you@example.com', 'claude-agent');
+   -- => sk_live_abcd...   (store it; only its hash is kept)
+   ```
+
+**Examples**
+```bash
+KEY=sk_live_...
+BASE=https://your-app.example.com
+
+curl -H "Authorization: Bearer $KEY" $BASE/api/tasks
+
+curl -X POST -H "Authorization: Bearer $KEY" -H 'Content-Type: application/json' \
+  -d '{"label":"Write RFC"}' $BASE/api/tasks
+
+curl -X POST -H "Authorization: Bearer $KEY" $BASE/api/tasks/42/start
+curl -X POST -H "Authorization: Bearer $KEY" $BASE/api/tasks/42/stop
+```
+
+Any write lands in Supabase → the user's open dashboard reflects it within ~1s
+via realtime. Revoke a key with `update api_keys set revoked = true where id = …`.
+
+**Not yet done in this slice:** reset/reset-all/update/delete endpoints, a report
+endpoint, rate limiting, a key-management UI, and adopting the shared timer math
+inside the dashboard (the UI still uses its own copy). Tracked for the next pass.
+
 ## Related code
+
+- REST API: `apps/web/src/routes/api/**`, guard `apps/web/src/lib/server/auth.ts`,
+  domain `apps/web/src/lib/server/taskService.ts`.
+- Pure timer math: `packages/shared/src/timer.ts`.
 
 - Timer logic to extract: `apps/web/src/routes/dashboard/+page.svelte`
   (`toggleTimer`, `startTimer`, `stopTimer`, `resetTimer`, `getCurrentElapsedTime`).
