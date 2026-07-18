@@ -543,6 +543,7 @@
           <button on:click={resetAllTimers} class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-orange-600 rounded-lg shadow-sm hover:bg-orange-700 transition-colors" type="button">Reset All</button>
           <button on:click={exportTasksAsCsv} class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-emerald-600 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors" type="button">Export CSV</button>
           <button on:click={exportTasksAsMarkdown} class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg shadow-sm hover:bg-purple-700 transition-colors" type="button">Export Markdown</button>
+          <a href="/dashboard/keys" class="inline-flex items-center px-3 py-2 text-sm font-semibold rounded-lg shadow-sm border bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors" title="Manage API keys">API Keys</a>
           <form method="POST" action="/logout" class="inline">
             <button type="submit" class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-gray-600 rounded-lg shadow-sm hover:bg-gray-700 transition-colors" title="Sign out">Sign Out</button>
           </form>
@@ -570,6 +571,7 @@
         <button on:click={resetAllTimers} class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-orange-600 rounded-lg shadow-sm hover:bg-orange-700 transition-colors" type="button">Reset All</button>
         <button on:click={exportTasksAsCsv} class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-emerald-600 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors" type="button">Export CSV</button>
         <button on:click={exportTasksAsMarkdown} class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg shadow-sm hover:bg-purple-700 transition-colors" type="button">Export Markdown</button>
+        <a href="/dashboard/keys" class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold rounded-lg shadow-sm border bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors">API Keys</a>
         <form method="POST" action="/logout" class="inline">
           <button type="submit" class="w-full inline-flex items-center justify-center px-3 py-2 text-sm font-semibold text-white bg-gray-600 rounded-lg shadow-sm hover:bg-gray-700 transition-colors">Sign Out</button>
         </form>
