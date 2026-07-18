@@ -22,6 +22,10 @@
   let editMode = false;
   let editBuffers: Record<string, { label: string; description: string; time: string }> = {};
 
+  // Timer mode: "focus" = one timer at a time, "parallel" = multiple at once.
+  // Persisted per device in localStorage (matches the desktop app).
+  let timerMode: 'focus' | 'parallel' = 'focus';
+
   // Drag-and-drop state
   let draggingId: number | null = null;
   let dragOverId: number | null = null;
@@ -57,6 +61,8 @@
   onMount(async () => {
     session = await getSession();
     if (!session) return;
+
+    timerMode = localStorage.getItem('taskTimerMode') === 'parallel' ? 'parallel' : 'focus';
 
     await loadTasks();
 
@@ -243,8 +249,9 @@
 
     const isStarting = !taskToToggle.is_running;
 
-    // Stop all other running timers
-    if (isStarting) {
+    // In focus mode, starting a timer stops all others. In parallel mode,
+    // multiple timers may run at once, so leave the others running.
+    if (isStarting && timerMode === 'focus') {
       for (const task of tasks) {
         if (task.is_running && task.id !== id) {
           await stopTimer(task.id);
@@ -476,6 +483,15 @@
     const asNumber = Number(input.replace(',', '.'));
     if (!isFinite(asNumber) || asNumber < 0) return null;
     return Math.round(asNumber * 60);
+  }
+
+  function toggleTimerMode() {
+    timerMode = timerMode === 'focus' ? 'parallel' : 'focus';
+    try {
+      localStorage.setItem('taskTimerMode', timerMode);
+    } catch (error) {
+      console.error('Failed to persist timer mode:', error);
+    }
   }
 
   // ---- Inline edit mode ----
@@ -769,10 +785,25 @@
             Task Timer
           </h1>
           <p class="text-center sm:text-left text-gray-500 dark:text-gray-400 mt-1">
-            Add tasks and track your time. Only one timer can run at a time.
+            {timerMode === 'parallel'
+              ? 'Add tasks and track your time. Multiple timers can run at once.'
+              : 'Add tasks and track your time. Only one timer runs at a time.'}
           </p>
         </div>
         <div class="hidden sm:flex items-center gap-2 ml-4">
+          <button
+            on:click={toggleTimerMode}
+            class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-lg shadow-sm border transition-colors {timerMode === 'parallel'
+              ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
+              : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'}"
+            type="button"
+            title="Switch between Focus (one timer at a time) and Parallel (multiple timers at once)"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            {timerMode === 'parallel' ? 'Parallel' : 'Focus'}
+          </button>
           <button
             on:click={toggleEditMode}
             class="inline-flex items-center px-3 py-2 text-sm font-semibold rounded-lg shadow-sm border transition-colors {editMode
@@ -814,6 +845,19 @@
         </div>
       </div>
       <div class="mt-4 grid grid-cols-2 gap-2 sm:hidden">
+        <button
+          on:click={toggleTimerMode}
+          class="col-span-2 inline-flex items-center justify-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-lg shadow-sm border transition-colors {timerMode === 'parallel'
+            ? 'bg-blue-600 text-white border-blue-600 hover:bg-blue-700'
+            : 'bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800'}"
+          type="button"
+          title="Switch Focus / Parallel timer mode"
+        >
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+          </svg>
+          {timerMode === 'parallel' ? 'Parallel' : 'Focus'}
+        </button>
         <button
           on:click={toggleEditMode}
           class="inline-flex items-center justify-center px-3 py-2 text-sm font-semibold rounded-lg shadow-sm border transition-colors {editMode

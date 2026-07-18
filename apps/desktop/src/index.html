@@ -17,12 +17,24 @@
           <h1 class="text-2xl sm:text-3xl font-bold text-gray-900 dark:text-gray-100 tracking-tight">
             Task Timer
           </h1>
-          <p class="text-gray-500 dark:text-gray-400 mt-1.5 text-sm sm:text-base max-w-md">
-            Add tasks and track your time. Only one timer can run at a time.
+          <p id="app-subtitle" class="text-gray-500 dark:text-gray-400 mt-1.5 text-sm sm:text-base max-w-md">
+            Add tasks and track your time. Only one timer runs at a time.
           </p>
         </div>
         <div class="hidden sm:flex flex-wrap items-center gap-2 sm:gap-3">
           <div class="flex items-center gap-2 sm:gap-3 flex-1 sm:flex-initial min-w-0">
+            <button
+              id="timer-mode-toggle"
+              class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 hover:border-gray-400 dark:hover:border-gray-600 transition-colors shadow-sm"
+              type="button"
+              title="Switch between Focus (one timer at a time) and Parallel (multiple timers at once)"
+            >
+              <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+              </svg>
+              <span id="timer-mode-label">Focus</span>
+            </button>
+            <div class="hidden sm:block w-px h-6 bg-gray-200 dark:bg-gray-800" aria-hidden="true"></div>
             <button
               id="edit-mode-toggle"
               class="inline-flex items-center gap-2 px-4 py-2.5 text-sm font-semibold rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 hover:border-gray-400 dark:hover:border-gray-600 transition-colors shadow-sm"
@@ -74,6 +86,17 @@
           </div>
         </div>
         <div class="sm:hidden mt-3 grid grid-cols-2 gap-2">
+          <button
+            id="timer-mode-toggle-mobile"
+            class="col-span-2 inline-flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-semibold rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+            type="button"
+            title="Switch Focus / Parallel timer mode"
+          >
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
+            </svg>
+            <span id="timer-mode-label-mobile">Focus</span>
+          </button>
           <button
             id="edit-mode-toggle-mobile"
             class="col-span-2 inline-flex items-center justify-center gap-2 px-3 py-2.5 text-sm font-semibold rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
