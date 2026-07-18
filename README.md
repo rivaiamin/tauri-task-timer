@@ -26,7 +26,7 @@ apps/
   web/              # SvelteKit + local SQLite web app
     src/            # routes (+ api/*), lib/server (db, auth, taskService)
     drizzle/        # generated SQLite migrations
-  mcp/              # MCP server (stdio) wrapping the web API for AI agents
+  mcp/              # MCP server (stdio + HTTP) wrapping the web API for agents
 packages/
   shared/           # shared TS types (Task, DatabaseTask) + utils
     src/            #   formatTime, escapeHTML
@@ -67,6 +67,24 @@ A single-file-per-concern static app — no build framework, no backend.
 Consumed by both apps via `"shared": "workspace:*"`. Exposes the `Task` /
 `DatabaseTask` types and the `formatTime` and `escapeHTML` helpers. Source is
 imported directly (no build step).
+
+## AI control (API & MCP)
+
+The web app can be driven programmatically — by scripts or AI agents — using the
+same operations as the dashboard.
+
+1. **Mint an API key** at `/dashboard/keys` (the raw key is shown once).
+2. **REST + SSE API** under `/api/*` — send `Authorization: Bearer <key>`. Full
+   reference with examples: **[`docs/api.md`](docs/api.md)**.
+3. **MCP server** for Claude Desktop / Claude Code (stdio) or remote (HTTP):
+
+   ```bash
+   pnpm --filter task-timer-mcp build
+   ```
+
+   Then configure your client per **[`apps/mcp/README.md`](apps/mcp/README.md)**.
+
+Design and rationale live in **[`docs/ai-control.md`](docs/ai-control.md)**.
 
 ## Prerequisites
 
@@ -145,6 +163,9 @@ removal) to build a native desktop binary again.
 
 ## More docs
 
+- **API & AI-control guide**: [`docs/api.md`](docs/api.md)
+- **AI-control architecture**: [`docs/ai-control.md`](docs/ai-control.md)
+- MCP server setup: [`apps/mcp/README.md`](apps/mcp/README.md)
 - Browser/desktop app details: `apps/desktop/README.md`
 - Web app details: `apps/web/README.md`
 - Architecture/migration notes: `migration.md`

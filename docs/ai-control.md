@@ -192,6 +192,10 @@ create table user_settings (
 
 ## Using the API (Phase 1)
 
+> **Full, current reference:** [`docs/api.md`](./api.md) — auth, every endpoint
+> with bodies/responses, SSE, curl quickstart, and the MCP pointer. The summary
+> below is kept for context.
+
 Implemented endpoints (all require `Authorization: Bearer <key>`, JSON in/out):
 
 | Method | Path | Scope | Body |
