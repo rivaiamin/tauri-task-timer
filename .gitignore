@@ -2,3 +2,4 @@
 node_modules
 
 apps/*/node_modules
+.tokensave

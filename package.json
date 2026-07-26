@@ -4,11 +4,13 @@
     "version": "0.1.0",
     "type": "module",
     "scripts": {
-      "dev:desktop": "pnpm --filter desktop dev",
-      "dev:web": "pnpm --filter web dev",
-      "build:desktop": "pnpm --filter desktop build",
-      "build:web": "pnpm --filter web build",
-      "build:all": "pnpm build:desktop && pnpm build:web"
+      "dev:desktop": "pnpm --filter task-timer-desktop preview",
+      "dev:web": "pnpm --filter sv-task-timer dev",
+      "dev:mcp": "pnpm --filter task-timer-mcp dev",
+      "build:desktop": "pnpm --filter task-timer-desktop build",
+      "build:web": "pnpm --filter sv-task-timer build",
+      "build:mcp": "pnpm --filter task-timer-mcp build",
+      "build:all": "pnpm build:desktop && pnpm build:web && pnpm build:mcp"
     },
     "devDependencies": {
       "@tauri-apps/cli": "^2.9.4"

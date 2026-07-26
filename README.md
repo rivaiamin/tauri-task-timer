@@ -121,10 +121,8 @@ pnpm --filter task-timer-desktop build      # copies src/ -> dist/
 pnpm --filter task-timer-desktop preview    # build + serve dist/ via http-server
 ```
 
-> Note: the root `package.json` convenience scripts (`dev:desktop`, `dev:web`,
-> `build:*`) currently filter by `desktop`/`web`, which do not match the package
-> names above and will not resolve. Use the `--filter <package-name>` commands in
-> this README until those scripts are updated.
+> Root shortcuts: `pnpm dev:web`, `pnpm build:web`, `pnpm build:all`, etc. in
+> `package.json` — or use `--filter <package-name>` directly as above.
 
 ## Build
 
