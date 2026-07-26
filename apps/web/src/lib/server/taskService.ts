@@ -4,6 +4,7 @@ import { and, asc, eq, ne } from 'drizzle-orm';
 import { currentElapsedSeconds, buildMarkdownReport, buildCsvReport } from 'shared';
 import { db, schema } from './db';
 import { publish } from './events';
+import * as jira from './jira';
 import type { Task } from './db/schema';
 
 const { tasks, userSettings } = schema;
@@ -16,6 +17,7 @@ export interface TaskDTO {
   description: string | null;
   position: number;
   isRunning: boolean;
+  done: boolean;
   startTime: number | null; // epoch ms
   elapsedSeconds: number; // stored (accumulated)
   currentElapsedSeconds: number; // stored + live
@@ -29,6 +31,7 @@ function toDTO(row: Task): TaskDTO {
     description: row.description ?? null,
     position: row.position,
     isRunning: row.isRunning,
+    done: row.done,
     startTime: startTimeMs,
     elapsedSeconds: row.elapsedTime,
     currentElapsedSeconds: currentElapsedSeconds(row.elapsedTime, row.isRunning, startTimeMs)
@@ -88,7 +91,8 @@ export function createTask(userId: string, label: string, description: string | 
   return toDTO(row);
 }
 
-function stopRow(userId: string, row: Task): void {
+// Stop one running row; returns the run's elapsed delta (seconds) for worklogging.
+function stopRow(userId: string, row: Task): number {
   const elapsed = currentElapsedSeconds(
     row.elapsedTime,
     row.isRunning,
@@ -98,6 +102,7 @@ function stopRow(userId: string, row: Task): void {
     .set({ isRunning: false, elapsedTime: elapsed, startTime: null, updatedAt: new Date() })
     .where(and(eq(tasks.id, row.id), eq(tasks.userId, userId)))
     .run();
+  return elapsed - row.elapsedTime;
 }
 
 export function startTimer(userId: string, taskId: number, exclusive?: boolean): TaskDTO | null {
@@ -111,7 +116,11 @@ export function startTimer(userId: string, taskId: number, exclusive?: boolean):
       .from(tasks)
       .where(and(eq(tasks.userId, userId), eq(tasks.isRunning, true), ne(tasks.id, taskId)))
       .all();
-    for (const r of running) stopRow(userId, r);
+    for (const r of running) {
+      const delta = stopRow(userId, r);
+      // Focus switch: log the interrupted run and send the issue back to To Do.
+      void jira.onSwitchStop(r, delta, r.startTime ? r.startTime.getTime() : null);
+    }
   }
 
   const updated = db
@@ -121,24 +130,18 @@ export function startTimer(userId: string, taskId: number, exclusive?: boolean):
     .returning()
     .get();
   publish(userId);
+  void jira.onStart(updated);
   return toDTO(updated);
 }
 
 export function stopTimer(userId: string, taskId: number): TaskDTO | null {
   const row = getOwnedRow(userId, taskId);
   if (!row) return null;
-  const elapsed = currentElapsedSeconds(
-    row.elapsedTime,
-    row.isRunning,
-    row.startTime ? row.startTime.getTime() : null
-  );
-  const updated = db
-    .update(tasks)
-    .set({ isRunning: false, elapsedTime: elapsed, startTime: null, updatedAt: new Date() })
-    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
-    .returning()
-    .get();
+  const startMs = row.startTime ? row.startTime.getTime() : null;
+  const delta = stopRow(userId, row);
+  const updated = getOwnedRow(userId, taskId)!;
   publish(userId);
+  void jira.onStop(row, delta, startMs); // worklog only; keep the issue's status
   return toDTO(updated);
 }
 
@@ -177,6 +180,7 @@ export interface TaskUpdate {
   label?: string;
   description?: string | null;
   elapsedSeconds?: number;
+  done?: boolean;
 }
 
 export function updateTask(userId: string, taskId: number, changes: TaskUpdate): TaskDTO | null {
@@ -192,6 +196,21 @@ export function updateTask(userId: string, taskId: number, changes: TaskUpdate):
     if (row.isRunning) set.startTime = new Date();
   }
 
+  // Marking a task done (false→true): stop any live run and record its delta so the
+  // JIRA hook can worklog it, then move the issue to Cek lokal.
+  let doneDelta = 0;
+  let doneStartMs: number | null = null;
+  const becameDone = changes.done !== undefined && changes.done !== row.done;
+  if (changes.done !== undefined) set.done = changes.done;
+  if (becameDone && changes.done && row.isRunning) {
+    doneStartMs = row.startTime ? row.startTime.getTime() : null;
+    const elapsed = currentElapsedSeconds(row.elapsedTime, row.isRunning, doneStartMs);
+    doneDelta = elapsed - row.elapsedTime;
+    set.isRunning = false;
+    set.elapsedTime = elapsed;
+    set.startTime = null;
+  }
+
   const updated = db
     .update(tasks)
     .set(set)
@@ -199,6 +218,7 @@ export function updateTask(userId: string, taskId: number, changes: TaskUpdate):
     .returning()
     .get();
   publish(userId);
+  if (becameDone && changes.done) void jira.onDone(row, doneDelta, doneStartMs);
   return toDTO(updated);
 }
 

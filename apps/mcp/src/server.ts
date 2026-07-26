@@ -105,19 +105,22 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
     'update_task',
     {
       title: 'Update task',
-      description: 'Update a task label, description, and/or elapsed time (seconds).',
+      description:
+        'Update a task label, description, elapsed time (seconds), and/or done flag. Marking done moves the linked JIRA issue to Cek lokal.',
       inputSchema: {
         task_id: z.number().int(),
         label: z.string().min(1).optional(),
         description: z.string().nullable().optional(),
-        elapsed_seconds: z.number().int().min(0).optional()
+        elapsed_seconds: z.number().int().min(0).optional(),
+        done: z.boolean().optional()
       }
     },
-    ({ task_id, label, description, elapsed_seconds }) => {
+    ({ task_id, label, description, elapsed_seconds, done }) => {
       const body: Record<string, unknown> = {};
       if (label !== undefined) body.label = label;
       if (description !== undefined) body.description = description;
       if (elapsed_seconds !== undefined) body.elapsed_seconds = elapsed_seconds;
+      if (done !== undefined) body.done = done;
       return api(`/tasks/${task_id}`, 'PATCH', body);
     }
   );

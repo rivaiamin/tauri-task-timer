@@ -32,6 +32,7 @@ export const tasks = sqliteTable(
     elapsedTime: integer('elapsed_time').notNull().default(0),
     position: integer('position').notNull().default(0),
     isRunning: integer('is_running', { mode: 'boolean' }).notNull().default(false),
+    done: integer('done', { mode: 'boolean' }).notNull().default(false),
     startTime: integer('start_time', { mode: 'timestamp_ms' }),
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()

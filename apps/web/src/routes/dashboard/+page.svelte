@@ -11,6 +11,7 @@
     description: string | null;
     position: number;
     isRunning: boolean;
+    done: boolean;
     startTime: number | null;
     elapsedSeconds: number;
     currentElapsedSeconds: number;
@@ -182,6 +183,15 @@
       } else {
         await api(`/tasks/${task.id}/start`, { method: 'POST', body: { exclusive: timerMode === 'focus' } });
       }
+      scheduleRefresh();
+    } catch (e) {
+      fail(e);
+    }
+  }
+
+  async function toggleDone(task: TaskDTO, done: boolean) {
+    try {
+      await api(`/tasks/${task.id}`, { method: 'PATCH', body: { done } });
       scheduleRefresh();
     } catch (e) {
       fail(e);
@@ -624,9 +634,19 @@
               role="button"
               tabindex="0"
             >
-              <div class="flex-1 mb-3 sm:mb-0">
-                <span class="text-lg font-medium text-gray-900 dark:text-gray-100 break-words">{task.label}</span>
-                <span class="text-3xl font-mono text-gray-700 dark:text-gray-300 block mt-1">{formatTime(elapsed(task, now))}</span>
+              <div class="flex-1 mb-3 sm:mb-0 flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={task.done}
+                  on:click|stopPropagation
+                  on:change={(e) => toggleDone(task, e.currentTarget.checked)}
+                  class="mt-1.5 h-5 w-5 shrink-0 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500 cursor-pointer"
+                  title="Mark done (moves the linked JIRA issue to Cek lokal)"
+                />
+                <div>
+                  <span class="text-lg font-medium text-gray-900 dark:text-gray-100 break-words {task.done ? 'line-through text-gray-400 dark:text-gray-500' : ''}">{task.label}</span>
+                  <span class="text-3xl font-mono text-gray-700 dark:text-gray-300 block mt-1">{formatTime(elapsed(task, now))}</span>
+                </div>
               </div>
               <div class="flex space-x-2 w-full sm:w-auto" on:click|stopPropagation on:keydown|stopPropagation role="none">
                 <button on:click={() => moveTaskUp(task.id)} disabled={index === 0} class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center {index === 0 ? 'opacity-50 cursor-not-allowed' : ''}" title="Move up">
