@@ -35,12 +35,22 @@ endpoint and authenticates with a per-user API key.
 
 ### Claude Code
 
+Copy `.env.example` to `.env`, set `BASE_URL` and `API_KEY`, then:
+
+```bash
+make claude-add
+```
+
+Or manually:
+
 ```bash
 claude mcp add task-timer \
   --env BASE_URL=http://localhost:4320 \
   --env API_KEY=sk_live_your_key_here \
   -- node /absolute/path/to/apps/mcp/dist/index.js
 ```
+
+To re-register: `make claude-remove` then `make claude-add`.
 
 ## Remote (Streamable HTTP)
 

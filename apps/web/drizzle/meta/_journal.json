@@ -8,6 +8,13 @@
       "when": 1784352258533,
       "tag": "0000_common_leopardon",
       "breakpoints": true
+    },
+    {
+      "idx": 1,
+      "version": "6",
+      "when": 1785052956916,
+      "tag": "0001_shocking_madrox",
+      "breakpoints": true
     }
   ]
 }

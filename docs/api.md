@@ -46,6 +46,7 @@ key cannot mint or list other keys.
   "description": null,
   "position": 0,
   "isRunning": true,
+  "done": false,                // marked finished (moves the JIRA issue to Cek lokal)
   "startTime": 1784354591461,   // epoch ms of the current run, or null
   "elapsedSeconds": 120,        // accumulated (saved) seconds
   "currentElapsedSeconds": 135  // accumulated + live time while running
@@ -66,7 +67,7 @@ List responses wrap tasks with a total:
 |---|---|---|---|---|
 | GET | `/api/tasks` | read | — | `{ tasks, totalElapsedSeconds }` |
 | POST | `/api/tasks` | write | `{ label, description? }` | Task (201) |
-| PATCH | `/api/tasks/:id` | write | `{ label?, description?, elapsed_seconds? }` | Task |
+| PATCH | `/api/tasks/:id` | write | `{ label?, description?, elapsed_seconds?, done? }` | Task |
 | DELETE | `/api/tasks/:id` | write | — | `204` |
 | POST | `/api/tasks/reorder` | write | `{ ids: number[] }` (all ids in new order) | `{ tasks, … }` |
 
@@ -112,6 +113,31 @@ curl -H "Authorization: Bearer $KEY" "$BASE/api/report?format=markdown"
 | GET | `/api/keys` | — | `{ keys: [...] }` (no hashes) |
 | POST | `/api/keys` | `{ name? }` | `{ id, key, keyPrefix, name }` — `key` shown once (201) |
 | DELETE | `/api/keys/:id` | — | `204` |
+
+## JIRA sync (optional)
+
+If a JIRA API token is present on the server, timer events drive an AIMSIS JIRA
+issue for you — no need to open the (slow) JIRA UI. The issue **key is parsed** from
+each task's label or description (first `US-1234` / `AIM-56`-style match); there's no
+key field.
+
+| Timer event | JIRA effect |
+|---|---|
+| **start** a task | issue → **In Progress** |
+| focus-mode **switch** (start B, auto-stops A) | A → **To Do** + worklog for A's run |
+| **stop** a task | worklog for the run (status unchanged) |
+| mark **`done`** (PATCH `{done:true}`) | stops any live run + final worklog, issue → **Cek lokal** |
+
+Details:
+
+- **Credentials:** `JIRA_EMAIL` + `JIRA_TOKEN` (server env, or the file at
+  `JIRA_ENV_FILE`, default `~/.aimsis/jira.env`). Site defaults to
+  `https://aimsis.atlassian.net` (override `JIRA_SITE`). Status names are
+  overridable via `JIRA_STATUS_TODO` / `JIRA_STATUS_INPROGRESS` / `JIRA_STATUS_DONE`.
+- **Silent when unconfigured:** with no token, every hook is a no-op — the timer
+  works normally and touches nothing.
+- **Fire-and-forget:** JIRA calls never block or fail a timer operation; a failed
+  call is logged and dropped (no retry). Worklogs under 60s are skipped (JIRA minimum).
 
 ## Live updates (SSE)
 

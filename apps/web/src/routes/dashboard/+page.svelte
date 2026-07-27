@@ -11,6 +11,7 @@
     description: string | null;
     position: number;
     isRunning: boolean;
+    done: boolean;
     startTime: number | null;
     elapsedSeconds: number;
     currentElapsedSeconds: number;
@@ -182,6 +183,15 @@
       } else {
         await api(`/tasks/${task.id}/start`, { method: 'POST', body: { exclusive: timerMode === 'focus' } });
       }
+      scheduleRefresh();
+    } catch (e) {
+      fail(e);
+    }
+  }
+
+  async function toggleDone(task: TaskDTO, done: boolean) {
+    try {
+      await api(`/tasks/${task.id}`, { method: 'PATCH', body: { done } });
       scheduleRefresh();
     } catch (e) {
       fail(e);
@@ -497,16 +507,17 @@
 <div class="min-h-screen p-4 sm:p-8 bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
   <div class="max-w-2xl mx-auto bg-white dark:bg-gray-900 rounded-xl shadow-lg p-6 sm:p-8 ring-1 ring-black/5 dark:ring-white/10">
     <header class="mb-6">
-      <div class="flex items-center justify-between">
-        <div class="flex-1">
-          <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 text-center sm:text-left">Task Timer</h1>
-          <p class="text-center sm:text-left text-gray-500 dark:text-gray-400 mt-1">
-            {timerMode === 'parallel'
-              ? 'Add tasks and track your time. Multiple timers can run at once.'
-              : 'Add tasks and track your time. Only one timer runs at a time.'}
-          </p>
-        </div>
-        <div class="hidden sm:flex items-center gap-2 ml-4">
+      <div>
+        <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 text-center sm:text-left">Task Timer</h1>
+        <p class="text-center sm:text-left text-gray-500 dark:text-gray-400 mt-1">
+          {timerMode === 'parallel'
+            ? 'Add tasks and track your time. Multiple timers can run at once.'
+            : 'Add tasks and track your time. Only one timer runs at a time.'}
+        </p>
+      </div>
+
+      <div class="hidden sm:flex flex-wrap items-center gap-x-4 gap-y-2 mt-5">
+        <div class="flex items-center gap-2" role="group" aria-label="Timer modes">
           <button
             on:click={toggleTimerMode}
             class="inline-flex items-center gap-1.5 px-3 py-2 text-sm font-semibold rounded-lg shadow-sm border transition-colors {timerMode === 'parallel'
@@ -515,7 +526,7 @@
             type="button"
             title="Switch between Focus (one timer at a time) and Parallel (multiple timers at once)"
           >
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z" />
             </svg>
             {timerMode === 'parallel' ? 'Parallel' : 'Focus'}
@@ -529,12 +540,55 @@
           >
             {editMode ? 'Exit Edit Mode' : 'Edit Mode'}
           </button>
-          <button on:click={resetAllTimers} class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-orange-600 rounded-lg shadow-sm hover:bg-orange-700 transition-colors" type="button">Reset All</button>
-          <button on:click={exportTasksAsCsv} class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-emerald-600 rounded-lg shadow-sm hover:bg-emerald-700 transition-colors" type="button">Export CSV</button>
-          <button on:click={exportTasksAsMarkdown} class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-purple-600 rounded-lg shadow-sm hover:bg-purple-700 transition-colors" type="button">Export Markdown</button>
-          <a href="/dashboard/keys" class="inline-flex items-center px-3 py-2 text-sm font-semibold rounded-lg shadow-sm border bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors" title="Manage API keys">API Keys</a>
+        </div>
+
+        <div class="h-6 w-px bg-gray-200 dark:bg-gray-700" aria-hidden="true"></div>
+
+        <button
+          on:click={resetAllTimers}
+          class="inline-flex items-center px-3 py-2 text-sm font-semibold text-orange-700 dark:text-orange-300 bg-orange-50 dark:bg-orange-950/40 border border-orange-200 dark:border-orange-900/60 rounded-lg shadow-sm hover:bg-orange-100 dark:hover:bg-orange-950/60 transition-colors"
+          type="button"
+        >
+          Reset All
+        </button>
+
+        <div class="h-6 w-px bg-gray-200 dark:bg-gray-700" aria-hidden="true"></div>
+
+        <div class="inline-flex rounded-lg shadow-sm border border-gray-300 dark:border-gray-700 overflow-hidden" role="group" aria-label="Export report">
+          <button
+            on:click={exportTasksAsCsv}
+            class="inline-flex items-center px-3 py-2 text-sm font-semibold border-r border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+            type="button"
+          >
+            CSV
+          </button>
+          <button
+            on:click={exportTasksAsMarkdown}
+            class="inline-flex items-center px-3 py-2 text-sm font-semibold bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+            type="button"
+          >
+            Markdown
+          </button>
+        </div>
+
+        <div class="flex-1 min-w-4" aria-hidden="true"></div>
+
+        <div class="flex items-center gap-2" role="group" aria-label="Account">
+          <a
+            href="/dashboard/keys"
+            class="inline-flex items-center px-3 py-2 text-sm font-semibold rounded-lg shadow-sm border bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+            title="Manage API keys"
+          >
+            API Keys
+          </a>
           <form method="POST" action="/logout" class="inline">
-            <button type="submit" class="inline-flex items-center px-3 py-2 text-sm font-semibold text-white bg-gray-600 rounded-lg shadow-sm hover:bg-gray-700 transition-colors" title="Sign out">Sign Out</button>
+            <button
+              type="submit"
+              class="inline-flex items-center px-3 py-2 text-sm font-semibold rounded-lg shadow-sm border bg-white dark:bg-gray-900 text-gray-600 dark:text-gray-400 border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors"
+              title="Sign out"
+            >
+              Sign Out
+            </button>
           </form>
         </div>
       </div>
@@ -624,9 +678,19 @@
               role="button"
               tabindex="0"
             >
-              <div class="flex-1 mb-3 sm:mb-0">
-                <span class="text-lg font-medium text-gray-900 dark:text-gray-100 break-words">{task.label}</span>
-                <span class="text-3xl font-mono text-gray-700 dark:text-gray-300 block mt-1">{formatTime(elapsed(task, now))}</span>
+              <div class="flex-1 mb-3 sm:mb-0 flex items-start gap-3">
+                <input
+                  type="checkbox"
+                  checked={task.done}
+                  on:click|stopPropagation
+                  on:change={(e) => toggleDone(task, e.currentTarget.checked)}
+                  class="mt-1.5 h-5 w-5 shrink-0 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500 cursor-pointer"
+                  title="Mark done (moves the linked JIRA issue to Cek lokal)"
+                />
+                <div>
+                  <span class="text-lg font-medium text-gray-900 dark:text-gray-100 break-words {task.done ? 'line-through text-gray-400 dark:text-gray-500' : ''}">{task.label}</span>
+                  <span class="text-3xl font-mono text-gray-700 dark:text-gray-300 block mt-1">{formatTime(elapsed(task, now))}</span>
+                </div>
               </div>
               <div class="flex space-x-2 w-full sm:w-auto" on:click|stopPropagation on:keydown|stopPropagation role="none">
                 <button on:click={() => moveTaskUp(task.id)} disabled={index === 0} class="p-2 rounded-lg text-gray-800 dark:text-gray-200 bg-white dark:bg-gray-900 border border-gray-300 dark:border-gray-700 hover:bg-gray-50 dark:hover:bg-gray-800 transition duration-200 flex items-center justify-center {index === 0 ? 'opacity-50 cursor-not-allowed' : ''}" title="Move up">

@@ -7,7 +7,8 @@ const patchSchema = z
   .object({
     label: z.string().trim().min(1).max(200).optional(),
     description: z.string().trim().max(2000).nullable().optional(),
-    elapsed_seconds: z.number().int().min(0).optional()
+    elapsed_seconds: z.number().int().min(0).optional(),
+    done: z.boolean().optional()
   })
   .refine((v) => Object.keys(v).length > 0, { message: 'No fields to update' });
 
@@ -25,7 +26,8 @@ export const PATCH: RequestHandler = async (event) => {
   const task = updateTask(actor.userId, id, {
     label: parsed.data.label,
     description: parsed.data.description,
-    elapsedSeconds: parsed.data.elapsed_seconds
+    elapsedSeconds: parsed.data.elapsed_seconds,
+    done: parsed.data.done
   });
   if (!task) throw error(404, 'Task not found');
   return json(task);
