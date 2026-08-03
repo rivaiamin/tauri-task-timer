@@ -23,7 +23,8 @@ export const POST: RequestHandler = async (event) => {
   const parsed = createSchema.safeParse(await event.request.json().catch(() => null));
   if (!parsed.success) throw error(400, parsed.error.issues.map((i) => i.message).join('; '));
 
-  return json(createTask(actor.userId, parsed.data.label, parsed.data.description ?? null), {
+  const task = await createTask(actor.userId, parsed.data.label, parsed.data.description ?? null);
+  return json(task, {
     status: 201
   });
 };

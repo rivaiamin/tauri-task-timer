@@ -70,7 +70,14 @@ export function listTasks(userId: string): { tasks: TaskDTO[]; totalElapsedSecon
   return { tasks: dtos, totalElapsedSeconds: total };
 }
 
-export function createTask(userId: string, label: string, description: string | null): TaskDTO {
+export async function createTask(userId: string, label: string, description: string | null): Promise<TaskDTO> {
+  let finalDescription = description ?? null;
+  try {
+    finalDescription = await jira.onCreate(label, finalDescription);
+  } catch (err) {
+    console.error('[taskService] jira.onCreate error:', err instanceof Error ? err.message : err);
+  }
+
   const count = db.select().from(tasks).where(eq(tasks.userId, userId)).all().length;
   const now = new Date();
   const row = db
@@ -78,7 +85,7 @@ export function createTask(userId: string, label: string, description: string | 
     .values({
       userId,
       label,
-      description: description ?? null,
+      description: finalDescription,
       elapsedTime: 0,
       position: count,
       isRunning: false,

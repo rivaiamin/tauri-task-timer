@@ -78,18 +78,25 @@ async function jiraFetch(path: string, method = 'GET', body?: unknown): Promise<
   const creds = loadCreds();
   if (!creds) throw new Error('jira: unconfigured');
   const auth = Buffer.from(`${creds.email}:${creds.token}`).toString('base64');
-  const res = await fetch(`${site()}/rest/api/3${path}`, {
-    method,
-    headers: {
-      authorization: `Basic ${auth}`,
-      accept: 'application/json',
-      ...(body !== undefined ? { 'content-type': 'application/json' } : {})
-    },
-    body: body !== undefined ? JSON.stringify(body) : undefined
-  });
-  if (!res.ok) throw new Error(`jira ${method} ${path} -> ${res.status} ${await res.text()}`);
-  const ct = res.headers.get('content-type') ?? '';
-  return ct.includes('application/json') ? res.json() : null;
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 5000);
+  try {
+    const res = await fetch(`${site()}/rest/api/3${path}`, {
+      method,
+      headers: {
+        authorization: `Basic ${auth}`,
+        accept: 'application/json',
+        ...(body !== undefined ? { 'content-type': 'application/json' } : {})
+      },
+      body: body !== undefined ? JSON.stringify(body) : undefined,
+      signal: controller.signal
+    });
+    if (!res.ok) throw new Error(`jira ${method} ${path} -> ${res.status} ${await res.text()}`);
+    const ct = res.headers.get('content-type') ?? '';
+    return ct.includes('application/json') ? res.json() : null;
+  } finally {
+    clearTimeout(timeoutId);
+  }
 }
 
 async function transitionTo(key: string, statusName: string): Promise<void> {
@@ -114,6 +121,30 @@ async function run(task: Linkable, fn: (key: string) => Promise<void>): Promise<
   } catch (err) {
     console.error('[jira] sync failed (dropped):', err instanceof Error ? err.message : err);
   }
+}
+
+/** Fetch issue summary (title) from JIRA by key. Returns null if unconfigured or request fails. */
+export async function fetchIssueTitle(key: string): Promise<string | null> {
+  if (!loadCreds()) return null;
+  try {
+    const data = await jiraFetch(`/issue/${key}?fields=summary`);
+    return typeof data?.fields?.summary === 'string' ? data.fields.summary : null;
+  } catch (err) {
+    console.error('[jira] fetch issue title failed (dropped):', err instanceof Error ? err.message : err);
+    return null;
+  }
+}
+
+/** Task created → if JIRA ticket code is detected, fetch JIRA title and return description. */
+export async function onCreate(label: string, description: string | null): Promise<string | null> {
+  if (!loadCreds()) return description;
+  const key = parseIssueKey(label, description);
+  if (!key) return description;
+  const title = await fetchIssueTitle(key);
+  if (!title) return description;
+  if (!description || !description.trim()) return title;
+  if (description.includes(title)) return description;
+  return `${title}\n\n${description}`;
 }
 
 /** Timer started → move the issue to In Progress. */
