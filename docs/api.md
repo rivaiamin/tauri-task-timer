@@ -123,6 +123,7 @@ key field.
 
 | Timer event | JIRA effect |
 |---|---|
+| **create** a task | auto-fetches JIRA issue title and sets as task description |
 | **start** a task | issue → **In Progress** |
 | focus-mode **switch** (start B, auto-stops A) | A → **To Do** + worklog for A's run |
 | **stop** a task | worklog for the run (status unchanged) |
