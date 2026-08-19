@@ -107,7 +107,7 @@ async function transitionTo(key: string, statusName: string): Promise<void> {
 }
 
 async function logWork(key: string, seconds: number, startedMs: number | null): Promise<void> {
-  if (!seconds || seconds < 60) return; // JIRA rejects worklogs under a minute.
+  if (!Number.isFinite(seconds) || seconds <= 0) return;
   const started = jiraTimestamp(startedMs ?? Date.now() - seconds * 1000);
   await jiraFetch(`/issue/${key}/worklog`, 'POST', { timeSpentSeconds: Math.round(seconds), started });
 }
