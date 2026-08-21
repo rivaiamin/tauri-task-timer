@@ -10,7 +10,13 @@ const config = {
 	kit: {
 		// Node adapter: required because the app talks to a local SQLite file via
 		// the native better-sqlite3 module, so it needs a persistent Node server.
-		adapter: adapter()
+		adapter: adapter(),
+		csrf: {
+	  	  trustedOrigins: [
+                    'http://task-timer.test',
+                    'https://task-timer.test'
+       		  ]
+	        }
 	}
 };
 
