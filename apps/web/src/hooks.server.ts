@@ -18,7 +18,7 @@ export const handle: Handle = async ({ event, resolve }) => {
   const { session, user } = validateSessionToken(token);
   if (session && user) {
     // Refresh the cookie's expiry to match the (possibly slid) session.
-    setSessionCookie(event.cookies, token, session.expiresAt);
+    setSessionCookie(event.cookies, token, session.expiresAt, event.url.protocol === 'https:');
     event.locals.user = user;
     event.locals.session = session;
   } else {

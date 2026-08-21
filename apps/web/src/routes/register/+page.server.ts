@@ -20,7 +20,7 @@ const schema = z
   });
 
 export const actions: Actions = {
-  default: async ({ request, cookies }) => {
+  default: async ({ request, cookies, url }) => {
     const form = Object.fromEntries(await request.formData());
     const parsed = schema.safeParse(form);
     if (!parsed.success) {
@@ -42,7 +42,7 @@ export const actions: Actions = {
     }
 
     const { token, expiresAt } = createSession(user.id);
-    setSessionCookie(cookies, token, expiresAt);
+    setSessionCookie(cookies, token, expiresAt, url.protocol === 'https:');
     throw redirect(302, '/dashboard');
   }
 };

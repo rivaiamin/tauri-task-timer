@@ -1,7 +1,6 @@
 import { createHash, randomBytes } from 'node:crypto';
 import type { Cookies } from '@sveltejs/kit';
 import { eq } from 'drizzle-orm';
-import { dev } from '$app/environment';
 import { db, schema } from '../db';
 
 export const SESSION_COOKIE = 'session';
@@ -69,12 +68,17 @@ export function invalidateSession(id: string): void {
   db.delete(schema.sessions).where(eq(schema.sessions.id, id)).run();
 }
 
-export function setSessionCookie(cookies: Cookies, token: string, expiresAt: Date): void {
+export function setSessionCookie(
+  cookies: Cookies,
+  token: string,
+  expiresAt: Date,
+  secure: boolean
+): void {
   cookies.set(SESSION_COOKIE, token, {
     path: '/',
     httpOnly: true,
     sameSite: 'lax',
-    secure: !dev,
+    secure,
     expires: expiresAt
   });
 }
