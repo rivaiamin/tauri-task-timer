@@ -15,6 +15,13 @@
       "when": 1785052956916,
       "tag": "0001_shocking_madrox",
       "breakpoints": true
+    },
+    {
+      "idx": 2,
+      "version": "6",
+      "when": 1788097279244,
+      "tag": "0002_chubby_roulette",
+      "breakpoints": true
     }
   ]
 }
