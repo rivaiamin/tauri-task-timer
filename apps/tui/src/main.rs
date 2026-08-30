@@ -1,4 +1,5 @@
 mod config;
+mod db;
 mod timer;
 
 fn main() {
