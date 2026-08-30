@@ -1,4 +1,5 @@
-import { sqliteTable, text, integer, index } from 'drizzle-orm/sqlite-core';
+import { sql } from 'drizzle-orm';
+import { sqliteTable, text, integer, index, uniqueIndex } from 'drizzle-orm/sqlite-core';
 
 // Users (replaces Supabase auth.users). Passwords stored as argon2 hashes.
 export const users = sqliteTable('users', {
@@ -28,6 +29,9 @@ export const tasks = sqliteTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     label: text('label').notNull(),
+    workDate: text('work_date')
+      .notNull()
+      .default(sql`(date('now'))`),
     description: text('description'),
     elapsedTime: integer('elapsed_time').notNull().default(0),
     position: integer('position').notNull().default(0),
@@ -41,7 +45,12 @@ export const tasks = sqliteTable(
       .notNull()
       .$defaultFn(() => new Date())
   },
-  (t) => [index('idx_tasks_user').on(t.userId), index('idx_tasks_position').on(t.userId, t.position)]
+  (t) => [
+    index('idx_tasks_user').on(t.userId),
+    index('idx_tasks_position').on(t.userId, t.position),
+    index('idx_tasks_user_date').on(t.userId, t.workDate),
+    uniqueIndex('idx_tasks_user_date_label').on(t.userId, t.workDate, t.label)
+  ]
 );
 
 export const userSettings = sqliteTable('user_settings', {
