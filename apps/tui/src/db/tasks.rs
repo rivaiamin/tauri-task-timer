@@ -191,3 +191,122 @@ pub fn delete_task(conn: &Connection, user_id: &str, task_id: i64) -> Result<boo
     )?;
     Ok(n > 0)
 }
+
+pub fn update_task(
+    conn: &Connection,
+    user_id: &str,
+    task_id: i64,
+    label: Option<&str>,
+    description: Option<&str>,
+) -> Result<Option<Task>> {
+    let Some(row) = get_task(conn, user_id, task_id)? else {
+        return Ok(None);
+    };
+    let now = now_ms();
+    let new_label = label
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(&row.label);
+    let new_desc = description.or(row.description.as_deref());
+    match conn.execute(
+        "UPDATE tasks SET label = ?1, description = ?2, updated_at = ?3 WHERE id = ?4 AND user_id = ?5",
+        params![new_label, new_desc, now, task_id, user_id],
+    ) {
+        Ok(_) => get_task(conn, user_id, task_id),
+        Err(e) if is_unique(&e) => bail!("a task with that title already exists this day"),
+        Err(e) => Err(e.into()),
+    }
+}
+
+pub fn reorder_swap(conn: &Connection, user_id: &str, a: i64, b: i64) -> Result<()> {
+    let now = now_ms();
+    let pa: i64 = conn.query_row(
+        "SELECT position FROM tasks WHERE id = ?1 AND user_id = ?2",
+        params![a, user_id],
+        |r| r.get(0),
+    )?;
+    let pb: i64 = conn.query_row(
+        "SELECT position FROM tasks WHERE id = ?1 AND user_id = ?2",
+        params![b, user_id],
+        |r| r.get(0),
+    )?;
+    conn.execute(
+        "UPDATE tasks SET position = ?1, updated_at = ?2 WHERE id = ?3 AND user_id = ?4",
+        params![pb, now, a, user_id],
+    )?;
+    conn.execute(
+        "UPDATE tasks SET position = ?1, updated_at = ?2 WHERE id = ?3 AND user_id = ?4",
+        params![pa, now, b, user_id],
+    )?;
+    Ok(())
+}
+
+fn is_unique(e: &rusqlite::Error) -> bool {
+    matches!(
+        e.sqlite_error_code(),
+        Some(rusqlite::ErrorCode::ConstraintViolation)
+    )
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use rusqlite::Connection;
+
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL);
+             CREATE TABLE tasks (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               user_id TEXT NOT NULL,
+               label TEXT NOT NULL,
+               work_date TEXT NOT NULL DEFAULT (date('now')),
+               description TEXT,
+               elapsed_time INTEGER NOT NULL DEFAULT 0,
+               position INTEGER NOT NULL DEFAULT 0,
+               is_running INTEGER NOT NULL DEFAULT 0,
+               done INTEGER NOT NULL DEFAULT 0,
+               start_time INTEGER,
+               created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL
+             );
+             CREATE UNIQUE INDEX idx_tasks_user_date_label ON tasks (user_id, work_date, label);
+             INSERT INTO users VALUES ('u1', 'a@b.c', 'x', 0);",
+        )
+        .unwrap();
+        conn
+    }
+
+    #[test]
+    fn create_same_label_same_day_returns_existing() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-08-30", "US-1", Some("first")).unwrap();
+        let b = create_task(&conn, "u1", "2026-08-30", "US-1", Some("ignored")).unwrap();
+        assert_eq!(a.id, b.id);
+        assert_eq!(b.description.as_deref(), Some("first"));
+        assert_eq!(list_tasks(&conn, "u1", "2026-08-30").unwrap().len(), 1);
+    }
+
+    #[test]
+    fn create_same_label_new_day_copies_description() {
+        let conn = setup();
+        create_task(&conn, "u1", "2026-08-29", "US-1", Some("from yesterday")).unwrap();
+        let b = create_task(&conn, "u1", "2026-08-30", "US-1", None).unwrap();
+        assert_eq!(b.description.as_deref(), Some("from yesterday"));
+        assert_ne!(b.work_date, "2026-08-29");
+    }
+
+    #[test]
+    fn focus_start_stops_other_running_same_day() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-08-30", "A", None).unwrap();
+        let b = create_task(&conn, "u1", "2026-08-30", "B", None).unwrap();
+        start_timer(&conn, "u1", a.id, true).unwrap();
+        start_timer(&conn, "u1", b.id, true).unwrap();
+        let a2 = get_task(&conn, "u1", a.id).unwrap().unwrap();
+        let b2 = get_task(&conn, "u1", b.id).unwrap().unwrap();
+        assert!(!a2.is_running);
+        assert!(b2.is_running);
+    }
+}
