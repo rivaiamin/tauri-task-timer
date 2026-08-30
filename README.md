@@ -175,10 +175,11 @@ removal) to build a native desktop binary again.
 
 ## More docs
 
+- **TUI product plan** (PRD, epics, tasks, tech spec, ERD): [`docs/tui/README.md`](docs/tui/README.md)
 - **API & AI-control guide**: [`docs/api.md`](docs/api.md)
 - **AI-control architecture**: [`docs/ai-control.md`](docs/ai-control.md)
 - MCP server setup: [`apps/mcp/README.md`](apps/mcp/README.md)
-- TUI: [`apps/tui/README.md`](apps/tui/README.md)
+- TUI setup: [`apps/tui/README.md`](apps/tui/README.md)
 - Browser/desktop app details: `apps/desktop/README.md`
 - Web app details: `apps/web/README.md`
 - Architecture/migration notes: `migration.md`
