@@ -1,0 +1,17 @@
+pub const HELP: &[(&str, &str)] = &[
+    ("j / k", "move selection"),
+    ("J / K", "reorder selected task"),
+    ("h / l  or  ← / →", "previous / next day"),
+    ("Space", "start or stop timer"),
+    ("n", "new task"),
+    ("e", "edit label / description"),
+    ("d", "delete task"),
+    ("r", "reset selected timer"),
+    ("R", "reset all timers today"),
+    ("m", "toggle focus / parallel"),
+    ("?", "this help"),
+    ("q", "quit"),
+    ("Esc", "close overlay / cancel"),
+    ("Tab", "next field in form"),
+    ("Enter", "save form"),
+];
