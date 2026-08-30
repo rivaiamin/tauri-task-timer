@@ -80,11 +80,13 @@ export async function createTask(userId: string, label: string, description: str
 
   const count = db.select().from(tasks).where(eq(tasks.userId, userId)).all().length;
   const now = new Date();
+  const workDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
   const row = db
     .insert(tasks)
     .values({
       userId,
       label,
+      workDate,
       description: finalDescription,
       elapsedTime: 0,
       position: count,
