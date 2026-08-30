@@ -1,0 +1,71 @@
+It's a TUI for the task timer but more with advanced features. Goal of this app are to focus on this terminal to check the task and manage timer so it's easier for multitasking.
+Here's the user story or spec:
+- Task
+  - task can be unlinked or linked to third-party like JIRA
+  - saved into databases with these field:
+    - code
+    - title
+    - description
+    - link
+    - created_at
+    - updated_at
+    - status
+    - start_time
+    - end_time
+    - total_time
+    - notes
+    - tags
+    - is_running
+    - is_completed
+    - is_cancelled
+    - is_deleted
+    - is_archived
+    - is_pinned
+    - is_important
+  - task_comments: can be a discussion, comment or feedback
+    - task_id (foreign key)
+    - subject (for comment and commit message title)
+    - summary (for comment and commit message description)
+    - branch 
+    - PR (optional)
+  - task_integrations: for third party data like JIRA, Bitbucket, or GCP error groups)
+    - task_id
+    - group (jira, gcp, bitbucket)
+    - field
+    - value
+- Task timer page:
+  - Duplicate from current task timer 
+  - It will show tasks per day
+  - It will show current day as default
+  - user can see previous day task
+  - same title task will handle as continue task instead of create new
+  - task counter will always reset each day
+- Tasks archive page:
+  - All non-finished task will be here
+  - We can refetch and filter
+- Jira Integration
+  - quick sync from current sprint:
+    - fetch unassigned current sprint
+    - fetch undone task (as reporter)
+    - fetch undne task (as assignee)
+    - fetch update into undone task
+    - fetch task by ID
+    - get task detail
+    - comment task
+    - move task status
+- Git/bitbucket integration
+  - Get all commit related
+  - fetch PR comment as task comments
+  - check PR & Deployment status
+- AI Agent
+  - can Interact through the most effective, and efficient and direct short interaction (Graphql, or anything better)
+    - create task
+    - assign task
+    - update task status
+    - update time tracker
+    - add comment
+  - AI Agent can update status and time tracker of the JIRA task, and with chained JIRA integration, it will directly update the JIRA
+  - Can interact with timer with hook
+    - on start it will start timer
+    - on waiting user response will pause the timer
+    - on session end it will automatically stop the timer

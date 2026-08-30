@@ -7,10 +7,12 @@
       "dev:desktop": "pnpm --filter task-timer-desktop preview",
       "dev:web": "pnpm --filter sv-task-timer dev",
       "dev:mcp": "pnpm --filter task-timer-mcp dev",
+      "dev:tui": "cargo run -p task-timer-tui",
       "build:desktop": "pnpm --filter task-timer-desktop build",
       "build:web": "pnpm --filter sv-task-timer build",
       "build:mcp": "pnpm --filter task-timer-mcp build",
-      "build:all": "pnpm build:desktop && pnpm build:web && pnpm build:mcp"
+      "build:tui": "cargo build -p task-timer-tui --release",
+      "build:all": "pnpm build:desktop && pnpm build:web && pnpm build:mcp && pnpm build:tui"
     },
     "devDependencies": {
       "@tauri-apps/cli": "^2.9.4"

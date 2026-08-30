@@ -13,6 +13,8 @@ two independent apps and a shared package.
 - **MCP server** (`apps/mcp`) — a Model Context Protocol server (stdio + remote
   HTTP) that lets AI agents (Claude Desktop / Claude Code) drive the timer via
   the web API.
+- **TUI** (`apps/tui`) — Rust + ratatui daily timer, shares the web app's SQLite
+  file. No server required.
 - **Shared package** (`packages/shared`) — TypeScript types and utilities used by
   both apps.
 
@@ -27,6 +29,7 @@ apps/
     src/            # routes (+ api/*), lib/server (db, auth, taskService)
     drizzle/        # generated SQLite migrations
   mcp/              # MCP server (stdio + HTTP) wrapping the web API for agents
+  tui/              # Rust ratatui daily timer (shares web SQLite)
 packages/
   shared/           # shared TS types (Task, DatabaseTask) + utils
     src/            #   formatTime, escapeHTML
@@ -121,8 +124,19 @@ pnpm --filter task-timer-desktop build      # copies src/ -> dist/
 pnpm --filter task-timer-desktop preview    # build + serve dist/ via http-server
 ```
 
-> Root shortcuts: `pnpm dev:web`, `pnpm build:web`, `pnpm build:all`, etc. in
+> Root shortcuts: `pnpm dev:web`, `pnpm dev:tui`, `pnpm build:web`, `pnpm build:all`, etc. in
 > `package.json` — or use `--filter <package-name>` directly as above.
+
+### TUI
+
+Rust + ratatui. Shares `apps/web/local.db`. Config: `~/.config/task-timer-tui/config.toml`.
+
+```bash
+pnpm --filter sv-task-timer db:migrate
+pnpm dev:tui
+```
+
+See [`apps/tui/README.md`](apps/tui/README.md).
 
 ## Build
 
@@ -164,6 +178,7 @@ removal) to build a native desktop binary again.
 - **API & AI-control guide**: [`docs/api.md`](docs/api.md)
 - **AI-control architecture**: [`docs/ai-control.md`](docs/ai-control.md)
 - MCP server setup: [`apps/mcp/README.md`](apps/mcp/README.md)
+- TUI: [`apps/tui/README.md`](apps/tui/README.md)
 - Browser/desktop app details: `apps/desktop/README.md`
 - Web app details: `apps/web/README.md`
 - Architecture/migration notes: `migration.md`
