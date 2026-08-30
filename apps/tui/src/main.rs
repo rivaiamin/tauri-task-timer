@@ -1,3 +1,6 @@
+mod config;
+mod timer;
+
 fn main() {
-    eprintln!("task-timer-tui scaffold");
+    let _ = (config::default_path(), timer::now_ms());
 }
