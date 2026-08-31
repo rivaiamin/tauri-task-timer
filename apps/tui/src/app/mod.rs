@@ -6,6 +6,7 @@ use crossterm::event::{self, Event, KeyCode, KeyEvent, KeyEventKind, KeyModifier
 use rusqlite::Connection;
 use std::time::{Duration as StdDuration, Instant};
 
+use crate::clipboard;
 use crate::db;
 use crate::db::tasks::{self, Task};
 use crate::jira;
@@ -44,6 +45,7 @@ pub struct App {
     pub timer_mode: String,
     pub overlay: Overlay,
     pub status: String,
+    clipboard: Option<arboard::Clipboard>,
 }
 
 impl App {
@@ -62,6 +64,7 @@ impl App {
             timer_mode,
             overlay: Overlay::None,
             status: String::new(),
+            clipboard: None,
         };
         app.reload()?;
         Ok(app)
@@ -144,7 +147,7 @@ impl App {
             return;
         }
         let markdown = report::build_markdown_report(&report_tasks, &self.date_str());
-        match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(markdown)) {
+        match clipboard::set_text(&mut self.clipboard, markdown) {
             Ok(()) => self.status = "markdown report copied to clipboard".into(),
             Err(e) => self.status = format!("clipboard error: {e}"),
         }
