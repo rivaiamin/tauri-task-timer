@@ -7,13 +7,26 @@ pub struct Task {
     pub id: i64,
     pub label: String,
     pub description: Option<String>,
+    pub code: Option<String>,
+    pub link: Option<String>,
+    pub status: String,
+    pub notes: Option<String>,
+    pub tags: Option<String>,
     pub elapsed_time: i64,
+    pub total_time: i64,
     #[allow(dead_code)]
     pub position: i64,
     pub is_running: bool,
     #[allow(dead_code)]
     pub done: bool,
+    pub is_completed: bool,
+    pub is_cancelled: bool,
+    pub is_deleted: bool,
+    pub is_archived: bool,
+    pub is_pinned: bool,
+    pub is_important: bool,
     pub start_time: Option<i64>,
+    pub end_time: Option<i64>,
     pub work_date: String,
 }
 
@@ -28,17 +41,30 @@ fn map_row(row: &rusqlite::Row) -> rusqlite::Result<Task> {
         id: row.get(0)?,
         label: row.get(1)?,
         description: row.get(2)?,
-        elapsed_time: row.get(3)?,
-        position: row.get(4)?,
-        is_running: row.get::<_, i64>(5)? != 0,
-        done: row.get::<_, i64>(6)? != 0,
-        start_time: row.get(7)?,
-        work_date: row.get(8)?,
+        code: row.get(3)?,
+        link: row.get(4)?,
+        status: row.get(5)?,
+        notes: row.get(6)?,
+        tags: row.get(7)?,
+        elapsed_time: row.get(8)?,
+        total_time: row.get(9)?,
+        position: row.get(10)?,
+        is_running: row.get::<_, i64>(11)? != 0,
+        done: row.get::<_, i64>(12)? != 0,
+        is_completed: row.get::<_, i64>(13)? != 0,
+        is_cancelled: row.get::<_, i64>(14)? != 0,
+        is_deleted: row.get::<_, i64>(15)? != 0,
+        is_archived: row.get::<_, i64>(16)? != 0,
+        is_pinned: row.get::<_, i64>(17)? != 0,
+        is_important: row.get::<_, i64>(18)? != 0,
+        start_time: row.get(19)?,
+        end_time: row.get(20)?,
+        work_date: row.get(21)?,
     })
 }
 
 const COLS: &str =
-    "id, label, description, elapsed_time, position, is_running, done, start_time, work_date";
+    "id, label, description, code, link, status, notes, tags, elapsed_time, total_time, position, is_running, done, is_completed, is_cancelled, is_deleted, is_archived, is_pinned, is_important, start_time, end_time, work_date";
 
 pub fn list_tasks(conn: &Connection, user_id: &str, work_date: &str) -> Result<Vec<Task>> {
     let mut stmt = conn.prepare(&format!(
@@ -284,11 +310,24 @@ mod tests {
                label TEXT NOT NULL,
                work_date TEXT NOT NULL DEFAULT (date('now')),
                description TEXT,
+               code TEXT,
+               link TEXT,
+               status TEXT NOT NULL DEFAULT 'todo',
+               notes TEXT,
+               tags TEXT,
                elapsed_time INTEGER NOT NULL DEFAULT 0,
+               total_time INTEGER NOT NULL DEFAULT 0,
                position INTEGER NOT NULL DEFAULT 0,
                is_running INTEGER NOT NULL DEFAULT 0,
                done INTEGER NOT NULL DEFAULT 0,
+               is_completed INTEGER NOT NULL DEFAULT 0,
+               is_cancelled INTEGER NOT NULL DEFAULT 0,
+               is_deleted INTEGER NOT NULL DEFAULT 0,
+               is_archived INTEGER NOT NULL DEFAULT 0,
+               is_pinned INTEGER NOT NULL DEFAULT 0,
+               is_important INTEGER NOT NULL DEFAULT 0,
                start_time INTEGER,
+               end_time INTEGER,
                created_at INTEGER NOT NULL,
                updated_at INTEGER NOT NULL
              );
