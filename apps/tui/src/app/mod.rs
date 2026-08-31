@@ -8,7 +8,7 @@ use std::time::{Duration as StdDuration, Instant};
 
 use crate::db;
 use crate::db::tasks::{self, Task};
-use crate::timer::now_ms;
+use crate::timer::{format_time, now_ms, parse_time_input};
 
 pub use keymap::HELP;
 
@@ -16,6 +16,7 @@ pub use keymap::HELP;
 pub enum Field {
     Label,
     Description,
+    Elapsed,
 }
 
 pub enum Overlay {
@@ -28,6 +29,7 @@ pub enum Overlay {
         field: Field,
         label: String,
         description: String,
+        elapsed: String,
     },
 }
 
@@ -138,15 +140,17 @@ impl App {
             field: Field::Label,
             label: String::new(),
             description: String::new(),
+            elapsed: "00:00:00".into(),
         };
     }
 
     fn open_edit(&mut self) {
-        let Some((id, label, description)) = self.selected_task().map(|t| {
+        let Some((id, label, description, elapsed)) = self.selected_task().map(|t| {
             (
                 t.id,
                 t.label.clone(),
                 t.description.clone().unwrap_or_default(),
+                format_time(t.current_elapsed(now_ms())),
             )
         }) else {
             return;
@@ -156,18 +160,31 @@ impl App {
             field: Field::Label,
             label,
             description,
+            elapsed,
         };
     }
 
     fn submit_form(&mut self) -> Result<()> {
-        let (edit_id, label, description) = match &self.overlay {
+        let (edit_id, label, description, elapsed) = match &self.overlay {
             Overlay::Form {
                 edit_id,
                 label,
                 description,
+                elapsed,
                 ..
-            } => (*edit_id, label.clone(), description.clone()),
+            } => (*edit_id, label.clone(), description.clone(), elapsed.clone()),
             _ => return Ok(()),
+        };
+        if label.trim().is_empty() {
+            self.status = "label is required".into();
+            return Ok(());
+        }
+        let elapsed_secs = match parse_time_input(&elapsed) {
+            Some(s) => s,
+            None => {
+                self.status = "invalid time — use HH:MM:SS or minutes (e.g. 1.5)".into();
+                return Ok(());
+            }
         };
         if let Some(id) = edit_id {
             tasks::update_task(
@@ -176,6 +193,7 @@ impl App {
                 id,
                 Some(&label),
                 Some(&description),
+                Some(elapsed_secs),
             )?;
         } else {
             let desc = if description.is_empty() {
@@ -185,6 +203,16 @@ impl App {
             };
             let date = self.date_str();
             let created = tasks::create_task(&self.conn, &self.user_id, &date, &label, desc)?;
+            if elapsed_secs > 0 {
+                tasks::update_task(
+                    &self.conn,
+                    &self.user_id,
+                    created.id,
+                    None,
+                    None,
+                    Some(elapsed_secs),
+                )?;
+            }
             self.reload()?;
             if let Some(i) = self.tasks.iter().position(|t| t.id == created.id) {
                 self.selected = i;
@@ -229,6 +257,7 @@ impl App {
             field,
             label,
             description,
+            elapsed,
             ..
         } = &mut self.overlay
         else {
@@ -238,13 +267,15 @@ impl App {
             KeyCode::Tab | KeyCode::BackTab => {
                 *field = match field {
                     Field::Label => Field::Description,
-                    Field::Description => Field::Label,
+                    Field::Description => Field::Elapsed,
+                    Field::Elapsed => Field::Label,
                 };
             }
             KeyCode::Backspace => {
                 let buf = match field {
                     Field::Label => label,
                     Field::Description => description,
+                    Field::Elapsed => elapsed,
                 };
                 buf.pop();
             }
@@ -254,6 +285,7 @@ impl App {
                 let buf = match field {
                     Field::Label => label,
                     Field::Description => description,
+                    Field::Elapsed => elapsed,
                 };
                 buf.push(c);
             }

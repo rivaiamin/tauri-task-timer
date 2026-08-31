@@ -4,7 +4,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("h / l  or  ← / →", "previous / next day"),
     ("Space", "start or stop timer"),
     ("n", "new task"),
-    ("e", "edit label / description"),
+    ("e", "edit task (label, description, time)"),
     ("d", "delete task"),
     ("r", "reset selected timer"),
     ("R", "reset all timers today"),

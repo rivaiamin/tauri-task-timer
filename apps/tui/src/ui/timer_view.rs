@@ -85,7 +85,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
             field,
             label,
             description,
-        } => draw_form(frame, edit_id.is_some(), *field, label, description),
+            elapsed,
+        } => draw_form(frame, edit_id.is_some(), *field, label, description, elapsed),
     }
 }
 
@@ -125,8 +126,15 @@ fn draw_confirm(frame: &mut Frame, msg: &str) {
     frame.render_widget(p, area);
 }
 
-fn draw_form(frame: &mut Frame, editing: bool, field: Field, label: &str, description: &str) {
-    let area = centered(frame.area(), 56, 9);
+fn draw_form(
+    frame: &mut Frame,
+    editing: bool,
+    field: Field,
+    label: &str,
+    description: &str,
+    elapsed: &str,
+) {
+    let area = centered(frame.area(), 56, 12);
     frame.render_widget(Clear, area);
     let title = if editing { " edit task " } else { " new task " };
     let block = Block::default().borders(Borders::ALL).title(title);
@@ -142,41 +150,43 @@ fn draw_form(frame: &mut Frame, editing: bool, field: Field, label: &str, descri
             Constraint::Length(1),
             Constraint::Length(1),
             Constraint::Length(1),
+            Constraint::Length(1),
+            Constraint::Length(1),
         ])
         .split(inner);
 
-    let label_style = if field == Field::Label {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::UNDERLINED)
-    } else {
-        Style::default()
-    };
-    let desc_style = if field == Field::Description {
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::UNDERLINED)
-    } else {
-        Style::default()
+    let active = |f: Field| {
+        if field == f {
+            Style::default()
+                .fg(Color::Cyan)
+                .add_modifier(Modifier::UNDERLINED)
+        } else {
+            Style::default()
+        }
     };
     frame.render_widget(
         Paragraph::new("label").style(Style::default().fg(Color::DarkGray)),
         rows[0],
     );
-    frame.render_widget(Paragraph::new(label).style(label_style), rows[1]);
+    frame.render_widget(Paragraph::new(label).style(active(Field::Label)), rows[1]);
     frame.render_widget(
         Paragraph::new("description").style(Style::default().fg(Color::DarkGray)),
         rows[2],
     );
     frame.render_widget(
         Paragraph::new(description)
-            .style(desc_style)
+            .style(active(Field::Description))
             .wrap(Wrap { trim: false }),
         rows[3],
     );
     frame.render_widget(
+        Paragraph::new("elapsed (HH:MM:SS or minutes)").style(Style::default().fg(Color::DarkGray)),
+        rows[4],
+    );
+    frame.render_widget(Paragraph::new(elapsed).style(active(Field::Elapsed)), rows[5]);
+    frame.render_widget(
         Paragraph::new("Tab: field  Enter: save  Esc: cancel")
             .style(Style::default().fg(Color::DarkGray)),
-        rows[5],
+        rows[7],
     );
 }

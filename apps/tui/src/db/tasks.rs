@@ -198,19 +198,40 @@ pub fn update_task(
     task_id: i64,
     label: Option<&str>,
     description: Option<&str>,
+    elapsed_seconds: Option<i64>,
 ) -> Result<Option<Task>> {
     let Some(row) = get_task(conn, user_id, task_id)? else {
         return Ok(None);
     };
+    if let Some(s) = elapsed_seconds {
+        if s < 0 {
+            bail!("elapsed time must be >= 0");
+        }
+    }
     let now = now_ms();
     let new_label = label
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(&row.label);
     let new_desc = description.or(row.description.as_deref());
+    let new_elapsed = elapsed_seconds.unwrap_or(row.elapsed_time);
+    let new_start = if elapsed_seconds.is_some() && row.is_running {
+        Some(now)
+    } else {
+        row.start_time
+    };
     match conn.execute(
-        "UPDATE tasks SET label = ?1, description = ?2, updated_at = ?3 WHERE id = ?4 AND user_id = ?5",
-        params![new_label, new_desc, now, task_id, user_id],
+        "UPDATE tasks SET label = ?1, description = ?2, elapsed_time = ?3, start_time = ?4, updated_at = ?5
+         WHERE id = ?6 AND user_id = ?7",
+        params![
+            new_label,
+            new_desc,
+            new_elapsed,
+            new_start,
+            now,
+            task_id,
+            user_id
+        ],
     ) {
         Ok(_) => get_task(conn, user_id, task_id),
         Err(e) if is_unique(&e) => bail!("a task with that title already exists this day"),
