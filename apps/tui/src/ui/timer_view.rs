@@ -9,7 +9,8 @@ use crate::app::{App, Field, Overlay, HELP};
 use crate::timer::{format_time, now_ms};
 
 pub fn draw(frame: &mut Frame, app: &App) {
-    let [header, body, footer] = vsplit(frame.area(), 3, 3);
+    let footer_h = if app.status.is_empty() { 3 } else { 4 };
+    let [header, body, footer] = vsplit(frame.area(), 3, footer_h);
 
     let running = app.running_label().unwrap_or("—");
     let title = format!(
@@ -60,20 +61,22 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(list, body);
 
     let hints = " n:new  Space:start/stop  e:edit  d:del  r:reset  R:reset all  x:export  ←/→:day  j/k:move  J/K:reorder  m:mode  ?:help  q:quit ";
-    let foot_text = if app.status.is_empty() {
-        hints.to_string()
+    let (status_area, hints_area) = if app.status.is_empty() {
+        (None, footer)
     } else {
-        format!(" {} ", app.status)
+        let chunks = Layout::default()
+            .direction(Direction::Vertical)
+            .constraints([Constraint::Length(1), Constraint::Fill(1)])
+            .split(footer);
+        (Some(chunks[0]), chunks[1])
     };
-    let foot_style = if app.status.is_empty() {
-        Style::default()
-    } else {
-        Style::default().fg(Color::Red)
-    };
-    let foot = Paragraph::new(foot_text)
-        .style(foot_style)
-        .block(Block::default().borders(Borders::ALL));
-    frame.render_widget(foot, footer);
+    if let Some(area) = status_area {
+        let status = Paragraph::new(format!(" {} ", app.status))
+            .style(Style::default().fg(Color::Yellow));
+        frame.render_widget(status, area);
+    }
+    let foot = Paragraph::new(hints).block(Block::default().borders(Borders::ALL));
+    frame.render_widget(foot, hints_area);
 
     match &app.overlay {
         Overlay::None => {}

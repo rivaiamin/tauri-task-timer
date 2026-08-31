@@ -13,6 +13,8 @@ use crate::jira;
 use crate::report::{self, ReportTask};
 use crate::timer::{format_time, now_ms, parse_time_input};
 
+const STATUS_TTL: StdDuration = StdDuration::from_secs(3);
+
 pub use keymap::HELP;
 
 #[derive(Clone, Copy, PartialEq, Eq)]
@@ -45,6 +47,7 @@ pub struct App {
     pub timer_mode: String,
     pub overlay: Overlay,
     pub status: String,
+    status_until: Option<Instant>,
     clipboard: Option<arboard::Clipboard>,
 }
 
@@ -64,6 +67,7 @@ impl App {
             timer_mode,
             overlay: Overlay::None,
             status: String::new(),
+            status_until: None,
             clipboard: None,
         };
         app.reload()?;
@@ -105,8 +109,22 @@ impl App {
         Ok(())
     }
 
+    fn set_status(&mut self, msg: impl Into<String>) {
+        self.status = msg.into();
+        self.status_until = Some(Instant::now() + STATUS_TTL);
+    }
+
     fn err_status(&mut self, e: anyhow::Error) {
-        self.status = e.to_string();
+        self.set_status(e.to_string());
+    }
+
+    fn tick_status(&mut self) {
+        if let Some(until) = self.status_until {
+            if Instant::now() >= until {
+                self.status.clear();
+                self.status_until = None;
+            }
+        }
     }
 
     fn shift_day(&mut self, days: i64) -> Result<()> {
@@ -122,7 +140,7 @@ impl App {
             "focus".into()
         };
         db::user::set_timer_mode(&self.conn, &self.user_id, &self.timer_mode, now_ms())?;
-        self.status = format!("mode: {}", self.timer_mode);
+        self.set_status(format!("mode: {}", self.timer_mode));
         Ok(())
     }
 
@@ -139,17 +157,17 @@ impl App {
             .collect();
         let has_time = report_tasks.iter().any(|t| t.elapsed_seconds > 0);
         if !has_time {
-            self.status = if self.tasks.is_empty() {
-                "no tasks to export".into()
+            self.set_status(if self.tasks.is_empty() {
+                "no tasks to export"
             } else {
-                "no tasks with recorded time".into()
-            };
+                "no tasks with recorded time"
+            });
             return;
         }
         let markdown = report::build_markdown_report(&report_tasks, &self.date_str());
         match clipboard::set_text(&mut self.clipboard, markdown) {
-            Ok(()) => self.status = "markdown report copied to clipboard".into(),
-            Err(e) => self.status = format!("clipboard error: {e}"),
+            Ok(()) => self.set_status("markdown report copied to clipboard"),
+            Err(e) => self.set_status(format!("clipboard error: {e}")),
         }
     }
 
@@ -213,13 +231,13 @@ impl App {
             _ => return Ok(()),
         };
         if label.trim().is_empty() {
-            self.status = "label is required".into();
+            self.set_status("label is required");
             return Ok(());
         }
         let elapsed_secs = match parse_time_input(&elapsed) {
             Some(s) => s,
             None => {
-                self.status = "invalid time — use HH:MM:SS or minutes (e.g. 1.5)".into();
+                self.set_status("invalid time — use HH:MM:SS or minutes (e.g. 1.5)");
                 return Ok(());
             }
         };
@@ -262,11 +280,14 @@ impl App {
                 self.selected = i;
             }
             self.overlay = Overlay::None;
-            self.status = jira_error.unwrap_or_default();
+            if let Some(msg) = jira_error {
+                self.set_status(msg);
+            }
             return Ok(());
         }
         self.overlay = Overlay::None;
         self.status.clear();
+        self.status_until = None;
         self.reload()
     }
 
@@ -432,6 +453,7 @@ impl App {
         let result = (|| {
             let mut last_reload = Instant::now();
             loop {
+                self.tick_status();
                 terminal.draw(|f| crate::ui::draw(f, self))?;
                 let timeout = StdDuration::from_millis(250);
                 if event::poll(timeout)? {
