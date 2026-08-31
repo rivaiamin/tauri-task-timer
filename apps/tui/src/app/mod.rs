@@ -8,6 +8,7 @@ use std::time::{Duration as StdDuration, Instant};
 
 use crate::db;
 use crate::db::tasks::{self, Task};
+use crate::jira;
 use crate::timer::{format_time, now_ms, parse_time_input};
 
 pub use keymap::HELP;
@@ -172,7 +173,12 @@ impl App {
                 description,
                 elapsed,
                 ..
-            } => (*edit_id, label.clone(), description.clone(), elapsed.clone()),
+            } => (
+                *edit_id,
+                label.clone(),
+                description.clone(),
+                elapsed.clone(),
+            ),
             _ => return Ok(()),
         };
         if label.trim().is_empty() {
@@ -196,10 +202,17 @@ impl App {
                 Some(elapsed_secs),
             )?;
         } else {
-            let desc = if description.is_empty() {
+            let mut final_description = description.clone();
+            let mut jira_error = None;
+            match jira::description_for_task(&label, &description) {
+                Ok(Some(value)) => final_description = value,
+                Ok(None) => {}
+                Err(err) => jira_error = Some(format!("JIRA lookup failed: {err}")),
+            }
+            let desc = if final_description.trim().is_empty() {
                 None
             } else {
-                Some(description.as_str())
+                Some(final_description.as_str())
             };
             let date = self.date_str();
             let created = tasks::create_task(&self.conn, &self.user_id, &date, &label, desc)?;
@@ -218,7 +231,7 @@ impl App {
                 self.selected = i;
             }
             self.overlay = Overlay::None;
-            self.status.clear();
+            self.status = jira_error.unwrap_or_default();
             return Ok(());
         }
         self.overlay = Overlay::None;
