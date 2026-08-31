@@ -32,12 +32,25 @@ export const tasks = sqliteTable(
     workDate: text('work_date')
       .notNull()
       .default(sql`(date('now'))`),
+    code: text('code'),
     description: text('description'),
+    link: text('link'),
+    status: text('status').notNull().default('todo'),
+    notes: text('notes'),
+    tags: text('tags', { mode: 'json' }).$type<string[]>(),
     elapsedTime: integer('elapsed_time').notNull().default(0),
+    totalTime: integer('total_time').notNull().default(0),
     position: integer('position').notNull().default(0),
     isRunning: integer('is_running', { mode: 'boolean' }).notNull().default(false),
     done: integer('done', { mode: 'boolean' }).notNull().default(false),
+    isCompleted: integer('is_completed', { mode: 'boolean' }).notNull().default(false),
+    isCancelled: integer('is_cancelled', { mode: 'boolean' }).notNull().default(false),
+    isDeleted: integer('is_deleted', { mode: 'boolean' }).notNull().default(false),
+    isArchived: integer('is_archived', { mode: 'boolean' }).notNull().default(false),
+    isPinned: integer('is_pinned', { mode: 'boolean' }).notNull().default(false),
+    isImportant: integer('is_important', { mode: 'boolean' }).notNull().default(false),
     startTime: integer('start_time', { mode: 'timestamp_ms' }),
+    endTime: integer('end_time', { mode: 'timestamp_ms' }),
     createdAt: integer('created_at', { mode: 'timestamp_ms' })
       .notNull()
       .$defaultFn(() => new Date()),
@@ -51,6 +64,44 @@ export const tasks = sqliteTable(
     index('idx_tasks_user_date').on(t.userId, t.workDate),
     uniqueIndex('idx_tasks_user_date_label').on(t.userId, t.workDate, t.label)
   ]
+);
+
+export const taskComments = sqliteTable(
+  'task_comments',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    taskId: integer('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    subject: text('subject'),
+    summary: text('summary'),
+    branch: text('branch'),
+    pr: text('pr'),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .$defaultFn(() => new Date())
+  },
+  (t) => [index('idx_task_comments_task').on(t.taskId)]
+);
+
+export const taskIntegrations = sqliteTable(
+  'task_integrations',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    taskId: integer('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    group: text('group').notNull(),
+    field: text('field').notNull(),
+    value: text('value'),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .$defaultFn(() => new Date())
+  },
+  (t) => [index('idx_task_integrations_task').on(t.taskId)]
 );
 
 export const userSettings = sqliteTable('user_settings', {
@@ -86,4 +137,6 @@ export const apiKeys = sqliteTable('api_keys', {
 export type User = typeof users.$inferSelect;
 export type Session = typeof sessions.$inferSelect;
 export type Task = typeof tasks.$inferSelect;
+export type TaskComment = typeof taskComments.$inferSelect;
+export type TaskIntegration = typeof taskIntegrations.$inferSelect;
 export type ApiKeyRow = typeof apiKeys.$inferSelect;
