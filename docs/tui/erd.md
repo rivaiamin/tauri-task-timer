@@ -2,9 +2,9 @@
 
 **Last updated:** 2026-08-31
 
-## Current schema (E1 shipped)
+## Current schema (E2 implemented)
 
-Source: `apps/web/src/lib/server/db/schema.ts`, migrations `0000`–`0002`.
+Source: `apps/web/src/lib/server/db/schema.ts`, migrations `0000`–`0003`.
 
 ```mermaid
 erDiagram
@@ -133,6 +133,8 @@ erDiagram
         text group
         text field
         text value
+        int created_at
+        int updated_at
     }
 ```
 
@@ -147,10 +149,7 @@ erDiagram
 
 ### `tags` storage (TBD)
 
-- **Option A:** JSON text column on `tasks` (simplest)
-- **Option B:** `task_tags` join table (normalized)
-
-Decision tracked in [prd.md](./prd.md) open questions.
+- JSON text column on `tasks` is used for E2 (simplest).
 
 ---
 
@@ -178,7 +177,7 @@ Daily scope: each `(user_id, work_date, label)` is one row. "Continue" on a new 
 | Base tables | `0000_common_leopardon.sql` | pre-TUI |
 | `done` column | `0001_shocking_madrox.sql` | pre-TUI |
 | `work_date` + indexes | `0002_chubby_roulette.sql` | E1 |
-| Extended columns + new tables | `0003_*` (TBD) | E2 |
+| Extended columns + new tables | `0003_flat_layla_miller.sql` | E2 |
 
 **Rule:** all migrations live in `apps/web/drizzle/`. TUI never owns migrations.
 

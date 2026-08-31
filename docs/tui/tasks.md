@@ -44,34 +44,34 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 
 ### Schema (`apps/web`)
 
-- [ ] Add task columns (code, link, status, notes, tags, flags, end_time, total_time)
-- [ ] Create `task_comments`, `task_integrations`
-- [ ] Drizzle migration + `schema.ts`
-- [ ] Update [erd.md](./erd.md)
+- [x] Add task columns (code, link, status, notes, tags, flags, end_time, total_time)
+- [x] Create `task_comments`, `task_integrations`
+- [x] Drizzle migration + `schema.ts`
+- [x] Update [erd.md](./erd.md)
 
 ### Web (`apps/web`)
 
-- [ ] `taskService`: CRUD for comments and integrations
-- [ ] REST: `/api/tasks/[id]/comments`, integration endpoints
-- [ ] Zod schemas for new fields
+- [x] `taskService`: CRUD for comments and integrations
+- [x] REST: `/api/tasks/[id]/comments`, integration endpoints
+- [x] Zod schemas for new fields
 - [ ] SSE payload includes new entities
 
 ### TUI (`apps/tui`)
 
-- [ ] Extend `Task` struct + SQL in `db/tasks.rs`
-- [ ] `db/comments.rs`, `db/integrations.rs`
+- [x] Extend `Task` struct + SQL in `db/tasks.rs`
+- [x] `db/comments.rs`, `db/integrations.rs`
 - [ ] Edit/detail UI for new fields
-- [ ] Tests
+- [x] Tests
 
 ### MCP (`apps/mcp`)
 
-- [ ] Extend `create_task` / `update_task` parameters
-- [ ] New tool: `add_comment`
+- [x] Extend `create_task` / `update_task` parameters
+- [x] New tool: `add_comment`
 - [ ] Update `apps/mcp/README.md`
 
 ### Shared (`packages/shared`)
 
-- [ ] Update `Task` / `DatabaseTask` types
+- [x] Update `Task` / `DatabaseTask` types
 
 ---
 

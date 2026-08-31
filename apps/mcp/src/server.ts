@@ -64,13 +64,39 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
   );
 
   tool(
+    'add_comment',
+    {
+      title: 'Add task comment',
+      description: 'Attach a comment or delivery reference to a task.',
+      inputSchema: {
+        task_id: z.number().int(),
+        subject: z.string().nullable().optional(),
+        summary: z.string().nullable().optional(),
+        branch: z.string().nullable().optional(),
+        pr: z.string().nullable().optional()
+      }
+    },
+    ({ task_id, subject, summary, branch, pr }) =>
+      api(`/tasks/${task_id}/comments`, 'POST', { subject, summary, branch, pr })
+  );
+
+  tool(
     'create_task',
     {
       title: 'Create task',
       description: 'Create a new task.',
-      inputSchema: { label: z.string().min(1).describe('Task name'), description: z.string().optional() }
+      inputSchema: {
+        label: z.string().min(1).describe('Task name'),
+        description: z.string().optional(),
+        code: z.string().nullable().optional(),
+        link: z.string().url().nullable().optional(),
+        status: z.string().optional(),
+        notes: z.string().nullable().optional(),
+        tags: z.array(z.string()).nullable().optional()
+      }
     },
-    ({ label, description }) => api('/tasks', 'POST', { label, description })
+    ({ label, description, code, link, status, notes, tags }) =>
+      api('/tasks', 'POST', { label, description, code, link, status, notes, tags })
   );
 
   tool(
@@ -113,14 +139,36 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
         description: z.string().nullable().optional(),
         elapsed_seconds: z.number().int().min(0).optional(),
         done: z.boolean().optional()
+        ,code: z.string().nullable().optional()
+        ,link: z.string().url().nullable().optional()
+        ,status: z.string().optional()
+        ,notes: z.string().nullable().optional()
+        ,tags: z.array(z.string()).nullable().optional()
+        ,is_completed: z.boolean().optional()
+        ,is_cancelled: z.boolean().optional()
+        ,is_deleted: z.boolean().optional()
+        ,is_archived: z.boolean().optional()
+        ,is_pinned: z.boolean().optional()
+        ,is_important: z.boolean().optional()
       }
     },
-    ({ task_id, label, description, elapsed_seconds, done }) => {
+    ({ task_id, label, description, elapsed_seconds, done, code, link, status, notes, tags, is_completed, is_cancelled, is_deleted, is_archived, is_pinned, is_important }) => {
       const body: Record<string, unknown> = {};
       if (label !== undefined) body.label = label;
       if (description !== undefined) body.description = description;
       if (elapsed_seconds !== undefined) body.elapsed_seconds = elapsed_seconds;
       if (done !== undefined) body.done = done;
+      if (code !== undefined) body.code = code;
+      if (link !== undefined) body.link = link;
+      if (status !== undefined) body.status = status;
+      if (notes !== undefined) body.notes = notes;
+      if (tags !== undefined) body.tags = tags;
+      if (is_completed !== undefined) body.is_completed = is_completed;
+      if (is_cancelled !== undefined) body.is_cancelled = is_cancelled;
+      if (is_deleted !== undefined) body.is_deleted = is_deleted;
+      if (is_archived !== undefined) body.is_archived = is_archived;
+      if (is_pinned !== undefined) body.is_pinned = is_pinned;
+      if (is_important !== undefined) body.is_important = is_important;
       return api(`/tasks/${task_id}`, 'PATCH', body);
     }
   );
