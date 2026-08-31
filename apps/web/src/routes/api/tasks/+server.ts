@@ -16,7 +16,12 @@ export const GET: RequestHandler = async (event) => {
 
 const createSchema = z.object({
   label: z.string().trim().min(1).max(200),
-  description: z.string().trim().max(2000).optional()
+  description: z.string().trim().max(2000).optional(),
+  code: z.string().trim().max(100).nullable().optional(),
+  link: z.string().url().max(2000).nullable().optional(),
+  status: z.string().trim().max(50).optional(),
+  notes: z.string().max(10000).nullable().optional(),
+  tags: z.array(z.string().trim().min(1).max(50)).max(50).nullable().optional()
 });
 
 // POST /api/tasks — create a task. Body: { label, description? }
@@ -27,7 +32,10 @@ export const POST: RequestHandler = async (event) => {
   const parsed = createSchema.safeParse(await event.request.json().catch(() => null));
   if (!parsed.success) throw error(400, parsed.error.issues.map((i) => i.message).join('; '));
 
-  const task = await createTask(actor.userId, parsed.data.label, parsed.data.description ?? null);
+  const task = await createTask(actor.userId, {
+    ...parsed.data,
+    description: parsed.data.description ?? null
+  });
   return json(task, {
     status: 201
   });

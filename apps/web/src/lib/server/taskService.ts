@@ -7,7 +7,7 @@ import { publish } from './events';
 import * as jira from './jira';
 import type { Task } from './db/schema';
 
-const { tasks, userSettings } = schema;
+const { tasks, taskComments, taskIntegrations, userSettings } = schema;
 
 export type TimerMode = 'focus' | 'parallel';
 
@@ -15,9 +15,21 @@ export interface TaskDTO {
   id: number;
   label: string;
   description: string | null;
+  code: string | null;
+  link: string | null;
+  status: string;
+  notes: string | null;
+  tags: string[] | null;
   position: number;
   isRunning: boolean;
   done: boolean;
+  isCompleted: boolean;
+  isCancelled: boolean;
+  isDeleted: boolean;
+  isArchived: boolean;
+  isPinned: boolean;
+  isImportant: boolean;
+  totalTime: number;
   startTime: number | null; // epoch ms
   elapsedSeconds: number; // stored (accumulated)
   currentElapsedSeconds: number; // stored + live
@@ -29,9 +41,21 @@ function toDTO(row: Task): TaskDTO {
     id: row.id,
     label: row.label,
     description: row.description ?? null,
+    code: row.code ?? null,
+    link: row.link ?? null,
+    status: row.status,
+    notes: row.notes ?? null,
+    tags: row.tags ?? null,
     position: row.position,
     isRunning: row.isRunning,
     done: row.done,
+    isCompleted: row.isCompleted,
+    isCancelled: row.isCancelled,
+    isDeleted: row.isDeleted,
+    isArchived: row.isArchived,
+    isPinned: row.isPinned,
+    isImportant: row.isImportant,
+    totalTime: row.totalTime,
     startTime: startTimeMs,
     elapsedSeconds: row.elapsedTime,
     currentElapsedSeconds: currentElapsedSeconds(row.elapsedTime, row.isRunning, startTimeMs)
@@ -76,7 +100,18 @@ export function listTasks(
   return { tasks: dtos, totalElapsedSeconds: total };
 }
 
-export async function createTask(userId: string, label: string, description: string | null): Promise<TaskDTO> {
+export interface TaskCreate {
+  label: string;
+  description: string | null;
+  code?: string | null;
+  link?: string | null;
+  status?: string;
+  notes?: string | null;
+  tags?: string[] | null;
+}
+
+export async function createTask(userId: string, input: TaskCreate): Promise<TaskDTO> {
+  const { label, description } = input;
   let finalDescription = description ?? null;
   try {
     finalDescription = await jira.onCreate(label, finalDescription);
@@ -93,7 +128,12 @@ export async function createTask(userId: string, label: string, description: str
       userId,
       label,
       workDate,
+      code: input.code ?? null,
       description: finalDescription,
+      link: input.link ?? null,
+      status: input.status ?? 'todo',
+      notes: input.notes ?? null,
+      tags: input.tags ?? null,
       elapsedTime: 0,
       position: count,
       isRunning: false,
@@ -182,6 +222,38 @@ export function resetAll(userId: string): { tasks: TaskDTO[]; totalElapsedSecond
   return listTasks(userId);
 }
 
+export function listComments(userId: string, taskId: number) {
+  if (!getOwnedRow(userId, taskId)) return null;
+  return db.select().from(taskComments).where(eq(taskComments.taskId, taskId)).all();
+}
+
+export function addComment(userId: string, taskId: number, input: {
+  subject?: string | null; summary?: string | null; branch?: string | null; pr?: string | null;
+}) {
+  if (!getOwnedRow(userId, taskId)) return null;
+  const row = db.insert(taskComments).values({ taskId, ...input }).returning().get();
+  publish(userId);
+  return row;
+}
+
+export function listIntegrations(userId: string, taskId: number) {
+  if (!getOwnedRow(userId, taskId)) return null;
+  return db.select().from(taskIntegrations).where(eq(taskIntegrations.taskId, taskId)).all();
+}
+
+export function upsertIntegration(userId: string, taskId: number, group: string, field: string, value: string | null) {
+  if (!getOwnedRow(userId, taskId)) return null;
+  const existing = db.select().from(taskIntegrations)
+    .where(and(eq(taskIntegrations.taskId, taskId), eq(taskIntegrations.group, group), eq(taskIntegrations.field, field)))
+    .get();
+  const now = new Date();
+  const row = existing
+    ? db.update(taskIntegrations).set({ value, updatedAt: now }).where(eq(taskIntegrations.id, existing.id)).returning().get()
+    : db.insert(taskIntegrations).values({ taskId, group, field, value, createdAt: now, updatedAt: now }).returning().get();
+  publish(userId);
+  return row;
+}
+
 export function deleteTask(userId: string, taskId: number): boolean {
   const res = db
     .delete(tasks)
@@ -196,6 +268,17 @@ export interface TaskUpdate {
   description?: string | null;
   elapsedSeconds?: number;
   done?: boolean;
+  code?: string | null;
+  link?: string | null;
+  status?: string;
+  notes?: string | null;
+  tags?: string[] | null;
+  isCompleted?: boolean;
+  isCancelled?: boolean;
+  isDeleted?: boolean;
+  isArchived?: boolean;
+  isPinned?: boolean;
+  isImportant?: boolean;
 }
 
 export function updateTask(userId: string, taskId: number, changes: TaskUpdate): TaskDTO | null {
@@ -205,6 +288,17 @@ export function updateTask(userId: string, taskId: number, changes: TaskUpdate):
   const set: Partial<Task> = { updatedAt: new Date() };
   if (changes.label !== undefined) set.label = changes.label;
   if (changes.description !== undefined) set.description = changes.description;
+  if (changes.code !== undefined) set.code = changes.code;
+  if (changes.link !== undefined) set.link = changes.link;
+  if (changes.status !== undefined) set.status = changes.status;
+  if (changes.notes !== undefined) set.notes = changes.notes;
+  if (changes.tags !== undefined) set.tags = changes.tags;
+  if (changes.isCompleted !== undefined) set.isCompleted = changes.isCompleted;
+  if (changes.isCancelled !== undefined) set.isCancelled = changes.isCancelled;
+  if (changes.isDeleted !== undefined) set.isDeleted = changes.isDeleted;
+  if (changes.isArchived !== undefined) set.isArchived = changes.isArchived;
+  if (changes.isPinned !== undefined) set.isPinned = changes.isPinned;
+  if (changes.isImportant !== undefined) set.isImportant = changes.isImportant;
   if (changes.elapsedSeconds !== undefined) {
     set.elapsedTime = changes.elapsedSeconds;
     // If running, rebase the current run so live time continues from the new value.
