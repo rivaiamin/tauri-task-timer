@@ -59,7 +59,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let list = List::new(items).block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
     frame.render_widget(list, body);
 
-    let hints = " n:new  Space:start/stop  e:edit  d:del  r:reset  R:reset all  ←/→:day  j/k:move  J/K:reorder  m:mode  ?:help  q:quit ";
+    let hints = " n:new  Space:start/stop  e:edit  d:del  r:reset  R:reset all  x:export  ←/→:day  j/k:move  J/K:reorder  m:mode  ?:help  q:quit ";
     let foot_text = if app.status.is_empty() {
         hints.to_string()
     } else {
@@ -86,7 +86,14 @@ pub fn draw(frame: &mut Frame, app: &App) {
             label,
             description,
             elapsed,
-        } => draw_form(frame, edit_id.is_some(), *field, label, description, elapsed),
+        } => draw_form(
+            frame,
+            edit_id.is_some(),
+            *field,
+            label,
+            description,
+            elapsed,
+        ),
     }
 }
 
@@ -183,7 +190,10 @@ fn draw_form(
         Paragraph::new("elapsed (HH:MM:SS or minutes)").style(Style::default().fg(Color::DarkGray)),
         rows[4],
     );
-    frame.render_widget(Paragraph::new(elapsed).style(active(Field::Elapsed)), rows[5]);
+    frame.render_widget(
+        Paragraph::new(elapsed).style(active(Field::Elapsed)),
+        rows[5],
+    );
     frame.render_widget(
         Paragraph::new("Tab: field  Enter: save  Esc: cancel")
             .style(Style::default().fg(Color::DarkGray)),

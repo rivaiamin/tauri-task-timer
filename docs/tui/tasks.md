@@ -19,7 +19,8 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 - [x] `config.rs`, `db/`, `timer.rs`, `app/`, `ui/`
 - [x] Port taskService timer ops to `db/tasks.rs`
 - [x] Keymap + `?` help + modals
-- [x] Unit tests (timer math, dedup)
+- [x] Export markdown report (`report.rs`, `x` key, clipboard)
+- [x] Unit tests (timer math, dedup, report)
 - [ ] Operator sign-off: elapsed matches web
 - [ ] Merge `feat/tui-mvp` → `main`
 

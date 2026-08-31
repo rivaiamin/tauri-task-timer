@@ -5,6 +5,7 @@ edition = "2021"
 
 [dependencies]
 anyhow = "1"
+arboard = "3"
 chrono = { version = "0.4", default-features = false, features = ["clock", "std"] }
 crossterm = "0.28"
 directories = "5"

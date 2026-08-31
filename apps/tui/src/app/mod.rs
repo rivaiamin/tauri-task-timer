@@ -9,6 +9,7 @@ use std::time::{Duration as StdDuration, Instant};
 use crate::db;
 use crate::db::tasks::{self, Task};
 use crate::jira;
+use crate::report::{self, ReportTask};
 use crate::timer::{format_time, now_ms, parse_time_input};
 
 pub use keymap::HELP;
@@ -120,6 +121,33 @@ impl App {
         db::user::set_timer_mode(&self.conn, &self.user_id, &self.timer_mode, now_ms())?;
         self.status = format!("mode: {}", self.timer_mode);
         Ok(())
+    }
+
+    fn export_markdown(&mut self) {
+        let now = now_ms();
+        let report_tasks: Vec<ReportTask<'_>> = self
+            .tasks
+            .iter()
+            .map(|t| ReportTask {
+                label: &t.label,
+                description: t.description.as_deref(),
+                elapsed_seconds: t.current_elapsed(now),
+            })
+            .collect();
+        let has_time = report_tasks.iter().any(|t| t.elapsed_seconds > 0);
+        if !has_time {
+            self.status = if self.tasks.is_empty() {
+                "no tasks to export".into()
+            } else {
+                "no tasks with recorded time".into()
+            };
+            return;
+        }
+        let markdown = report::build_markdown_report(&report_tasks, &self.date_str());
+        match arboard::Clipboard::new().and_then(|mut cb| cb.set_text(markdown)) {
+            Ok(()) => self.status = "markdown report copied to clipboard".into(),
+            Err(e) => self.status = format!("clipboard error: {e}"),
+        }
     }
 
     fn start_stop(&mut self) -> Result<()> {
@@ -390,6 +418,7 @@ impl App {
             }
             KeyCode::Char('R') => self.overlay = Overlay::ConfirmResetAll,
             KeyCode::Char('m') => self.toggle_mode()?,
+            KeyCode::Char('x') => self.export_markdown(),
             _ => {}
         }
         Ok(false)

@@ -16,6 +16,11 @@ pub fn current_elapsed_seconds(
     }
 }
 
+/// Story points: 1 hour of tracked time = 1 point.
+pub fn seconds_to_story_points(seconds: i64) -> f64 {
+    seconds as f64 / 3600.0
+}
+
 pub fn format_time(total_seconds: i64) -> String {
     let s = total_seconds.max(0);
     format!("{:02}:{:02}:{:02}", s / 3600, (s % 3600) / 60, s % 60)

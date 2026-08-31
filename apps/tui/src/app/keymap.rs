@@ -9,6 +9,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("r", "reset selected timer"),
     ("R", "reset all timers today"),
     ("m", "toggle focus / parallel"),
+    ("x", "export markdown report to clipboard"),
     ("?", "this help"),
     ("q", "quit"),
     ("Esc", "close overlay / cancel"),

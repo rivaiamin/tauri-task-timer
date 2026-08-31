@@ -40,4 +40,4 @@ reloads every second.
 ## Keys
 
 Press `?` in the app for the full map. Daily view, vim-style navigation,
-`n`/`e`/`d` for CRUD, Space to start/stop.
+`n`/`e`/`d` for CRUD, Space to start/stop, `x` to copy the daily markdown report.

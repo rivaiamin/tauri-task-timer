@@ -51,6 +51,7 @@ Shipped on `feat/tui-mvp`.
 | FR-8 | `?` help; modal create/edit | P0 |
 | FR-9 | Config: `database_path`, `user_email` | P0 |
 | FR-10 | CLI: `--config`, `--date`, `--db` | P1 |
+| FR-11 | Export markdown daily report to clipboard (`x`) | P1 |
 
 **Web note (deferred to E7):** dashboard still shows all tasks, ignores `work_date`.
 

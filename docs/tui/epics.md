@@ -27,6 +27,7 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 - [x] Continue-by-title copies description
 - [x] Focus mode stops other tasks same day
 - [x] `cargo test -p task-timer-tui` passes
+- [x] Export markdown report to clipboard (`x`; matches web/MCP format)
 - [ ] Merge `feat/tui-mvp` → `main`
 
 ---

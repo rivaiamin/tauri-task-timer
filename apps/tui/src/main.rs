@@ -2,6 +2,7 @@ mod app;
 mod config;
 mod db;
 mod jira;
+mod report;
 mod timer;
 mod ui;
 
