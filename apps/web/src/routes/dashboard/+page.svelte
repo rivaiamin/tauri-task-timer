@@ -146,7 +146,7 @@
 
   async function refresh() {
     try {
-      const d = await api('/tasks');
+      const d = await api(`/tasks?date=${currentWorkDate()}`);
       tasks = d.tasks;
     } catch (e) {
       console.error('refresh failed', e);
@@ -156,6 +156,11 @@
   function scheduleRefresh() {
     if (refreshTimer) clearTimeout(refreshTimer);
     refreshTimer = setTimeout(refresh, 120);
+  }
+
+  function currentWorkDate(): string {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
 
   function fail(e: unknown) {

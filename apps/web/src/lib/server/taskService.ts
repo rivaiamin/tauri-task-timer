@@ -63,8 +63,14 @@ export function setTimerMode(userId: string, mode: TimerMode): { timer_mode: Tim
   return { timer_mode: mode };
 }
 
-export function listTasks(userId: string): { tasks: TaskDTO[]; totalElapsedSeconds: number } {
-  const rows = db.select().from(tasks).where(eq(tasks.userId, userId)).orderBy(asc(tasks.position)).all();
+export function listTasks(
+  userId: string,
+  workDate?: string
+): { tasks: TaskDTO[]; totalElapsedSeconds: number } {
+  const where = workDate
+    ? and(eq(tasks.userId, userId), eq(tasks.workDate, workDate))
+    : eq(tasks.userId, userId);
+  const rows = db.select().from(tasks).where(where).orderBy(asc(tasks.position)).all();
   const dtos = rows.map(toDTO);
   const total = dtos.reduce((sum, t) => sum + t.currentElapsedSeconds, 0);
   return { tasks: dtos, totalElapsedSeconds: total };
