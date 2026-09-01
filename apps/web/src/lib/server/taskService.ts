@@ -142,7 +142,7 @@ export async function createTask(userId: string, input: TaskCreate): Promise<Tas
     })
     .returning()
     .get();
-  publish(userId);
+  publish(userId, { entity: 'task', taskId: row.id, action: 'create' });
   return toDTO(row);
 }
 
@@ -184,7 +184,7 @@ export function startTimer(userId: string, taskId: number, exclusive?: boolean):
     .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
     .returning()
     .get();
-  publish(userId);
+  publish(userId, { entity: 'task', taskId, action: 'start' });
   void jira.onStart(updated);
   return toDTO(updated);
 }
@@ -195,7 +195,7 @@ export function stopTimer(userId: string, taskId: number): TaskDTO | null {
   const startMs = row.startTime ? row.startTime.getTime() : null;
   const delta = stopRow(userId, row);
   const updated = getOwnedRow(userId, taskId)!;
-  publish(userId);
+  publish(userId, { entity: 'task', taskId, action: 'stop' });
   void jira.onStop(row, delta, startMs); // worklog only; keep the issue's status
   return toDTO(updated);
 }
@@ -209,7 +209,7 @@ export function resetTask(userId: string, taskId: number): TaskDTO | null {
     .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
     .returning()
     .get();
-  publish(userId);
+  publish(userId, { entity: 'task', taskId, action: 'reset' });
   return toDTO(updated);
 }
 
@@ -218,7 +218,7 @@ export function resetAll(userId: string): { tasks: TaskDTO[]; totalElapsedSecond
     .set({ isRunning: false, elapsedTime: 0, startTime: null, updatedAt: new Date() })
     .where(eq(tasks.userId, userId))
     .run();
-  publish(userId);
+  publish(userId, { entity: 'task', taskId: 0, action: 'reset_all' });
   return listTasks(userId);
 }
 
@@ -232,7 +232,7 @@ export function addComment(userId: string, taskId: number, input: {
 }) {
   if (!getOwnedRow(userId, taskId)) return null;
   const row = db.insert(taskComments).values({ taskId, ...input }).returning().get();
-  publish(userId);
+  publish(userId, { entity: 'comment', taskId });
   return row;
 }
 
@@ -250,7 +250,7 @@ export function upsertIntegration(userId: string, taskId: number, group: string,
   const row = existing
     ? db.update(taskIntegrations).set({ value, updatedAt: now }).where(eq(taskIntegrations.id, existing.id)).returning().get()
     : db.insert(taskIntegrations).values({ taskId, group, field, value, createdAt: now, updatedAt: now }).returning().get();
-  publish(userId);
+  publish(userId, { entity: 'integration', taskId });
   return row;
 }
 
@@ -259,7 +259,7 @@ export function deleteTask(userId: string, taskId: number): boolean {
     .delete(tasks)
     .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
     .run();
-  if (res.changes > 0) publish(userId);
+  if (res.changes > 0) publish(userId, { entity: 'task', taskId, action: 'delete' });
   return res.changes > 0;
 }
 
@@ -326,7 +326,7 @@ export function updateTask(userId: string, taskId: number, changes: TaskUpdate):
     .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
     .returning()
     .get();
-  publish(userId);
+  publish(userId, { entity: 'task', taskId, action: 'update' });
   if (becameDone && changes.done) void jira.onDone(row, doneDelta, doneStartMs);
   return toDTO(updated);
 }
@@ -367,6 +367,6 @@ export function reorderTasks(userId: string, orderedIds: number[]): { tasks: Tas
       pos++;
     }
   });
-  publish(userId);
+  publish(userId, { entity: 'task', taskId: 0, action: 'reorder' });
   return listTasks(userId);
 }

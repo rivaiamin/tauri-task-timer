@@ -1,6 +1,12 @@
 // Tiny in-process pub/sub for live updates. Single-node only (fine for SQLite):
 // task mutations publish() to a user's channel, and the SSE endpoint subscribes.
-type Listener = () => void;
+type Listener = (payload: ChangePayload) => void;
+
+export type ChangePayload = {
+  entity: 'task' | 'comment' | 'integration';
+  taskId: number;
+  action?: string;
+};
 
 const channels = new Map<string, Set<Listener>>();
 
@@ -19,12 +25,12 @@ export function subscribe(userId: string, listener: Listener): () => void {
   };
 }
 
-export function publish(userId: string): void {
+export function publish(userId: string, payload: ChangePayload): void {
   const set = channels.get(userId);
   if (!set) return;
   for (const listener of set) {
     try {
-      listener();
+      listener(payload);
     } catch {
       // ignore a broken subscriber
     }
