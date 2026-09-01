@@ -81,6 +81,42 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
   );
 
   tool(
+    'list_comments',
+    {
+      title: 'List task comments',
+      description: 'List all comments attached to a task.',
+      inputSchema: { task_id: z.number().int() }
+    },
+    ({ task_id }) => api(`/tasks/${task_id}/comments`)
+  );
+
+  tool(
+    'upsert_integration',
+    {
+      title: 'Upsert integration',
+      description: 'Create or update an integration field on a task (e.g. JIRA sprint, Bitbucket branch).',
+      inputSchema: {
+        task_id: z.number().int(),
+        group: z.string().min(1).describe('Integration group (e.g. "jira", "bitbucket")'),
+        field: z.string().min(1).describe('Field name (e.g. "sprint", "branch")'),
+        value: z.string().nullable()
+      }
+    },
+    ({ task_id, group, field, value }) =>
+      api(`/tasks/${task_id}/integrations`, 'PATCH', { group, field, value })
+  );
+
+  tool(
+    'list_integrations',
+    {
+      title: 'List task integrations',
+      description: 'List all integration fields on a task.',
+      inputSchema: { task_id: z.number().int() }
+    },
+    ({ task_id }) => api(`/tasks/${task_id}/integrations`)
+  );
+
+  tool(
     'create_task',
     {
       title: 'Create task',
