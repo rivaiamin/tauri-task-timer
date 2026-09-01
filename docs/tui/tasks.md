@@ -55,20 +55,20 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 - [x] `taskService`: CRUD for comments and integrations
 - [x] REST: `/api/tasks/[id]/comments`, integration endpoints
 - [x] Zod schemas for new fields
-- [ ] SSE payload includes new entities
+- [x] SSE payload includes new entities
 
 ### TUI (`apps/tui`)
 
 - [x] Extend `Task` struct + SQL in `db/tasks.rs`
 - [x] `db/comments.rs`, `db/integrations.rs`
-- [ ] Edit/detail UI for new fields
+- [x] Edit/detail UI for new fields
 - [x] Tests
 
 ### MCP (`apps/mcp`)
 
 - [x] Extend `create_task` / `update_task` parameters
 - [x] New tool: `add_comment`
-- [ ] Update `apps/mcp/README.md`
+- [x] Update `apps/mcp/README.md`
 
 ### Shared (`packages/shared`)
 
