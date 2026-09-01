@@ -22,6 +22,10 @@ pub enum Field {
     Label,
     Description,
     Elapsed,
+    Status,
+    Code,
+    Notes,
+    Tags,
 }
 
 pub enum Overlay {
@@ -29,12 +33,17 @@ pub enum Overlay {
     Help,
     ConfirmDelete,
     ConfirmResetAll,
+    Detail,
     Form {
         edit_id: Option<i64>,
         field: Field,
         label: String,
         description: String,
         elapsed: String,
+        status: String,
+        code: String,
+        notes: String,
+        tags: String,
     },
 }
 
@@ -191,42 +200,51 @@ impl App {
             label: String::new(),
             description: String::new(),
             elapsed: "00:00:00".into(),
+            status: String::new(),
+            code: String::new(),
+            notes: String::new(),
+            tags: String::new(),
         };
     }
 
     fn open_edit(&mut self) {
-        let Some((id, label, description, elapsed)) = self.selected_task().map(|t| {
-            (
-                t.id,
-                t.label.clone(),
-                t.description.clone().unwrap_or_default(),
-                format_time(t.current_elapsed(now_ms())),
-            )
-        }) else {
+        let Some(t) = self.selected_task() else {
             return;
         };
         self.overlay = Overlay::Form {
-            edit_id: Some(id),
+            edit_id: Some(t.id),
             field: Field::Label,
-            label,
-            description,
-            elapsed,
+            label: t.label.clone(),
+            description: t.description.clone().unwrap_or_default(),
+            elapsed: format_time(t.current_elapsed(now_ms())),
+            status: t.status.clone(),
+            code: t.code.clone().unwrap_or_default(),
+            notes: t.notes.clone().unwrap_or_default(),
+            tags: t.tags.clone().unwrap_or_default(),
         };
     }
 
     fn submit_form(&mut self) -> Result<()> {
-        let (edit_id, label, description, elapsed) = match &self.overlay {
+        let (edit_id, label, description, elapsed, status, code, notes, tags) = match &self.overlay {
             Overlay::Form {
                 edit_id,
                 label,
                 description,
                 elapsed,
+                status,
+                code,
+                notes,
+                tags,
                 ..
             } => (
                 *edit_id,
                 label.clone(),
                 description.clone(),
                 elapsed.clone(),
+                status.clone(),
+                code.clone(),
+                notes.clone(),
+                tags.clone(),
             ),
             _ => return Ok(()),
         };
@@ -241,6 +259,10 @@ impl App {
                 return Ok(());
             }
         };
+        let status_opt = if status.is_empty() { None } else { Some(status.as_str()) };
+        let code_opt = if code.is_empty() { None } else { Some(code.as_str()) };
+        let notes_opt = if notes.is_empty() { None } else { Some(notes.as_str()) };
+        let tags_opt = if tags.is_empty() { None } else { Some(tags.as_str()) };
         if let Some(id) = edit_id {
             tasks::update_task(
                 &self.conn,
@@ -249,6 +271,10 @@ impl App {
                 Some(&label),
                 Some(&description),
                 Some(elapsed_secs),
+                code_opt,
+                status_opt,
+                notes_opt,
+                tags_opt,
             )?;
         } else {
             let mut final_description = description.clone();
@@ -273,6 +299,10 @@ impl App {
                     None,
                     None,
                     Some(elapsed_secs),
+                    None,
+                    None,
+                    None,
+                    None,
                 )?;
             }
             self.reload()?;
@@ -323,7 +353,10 @@ impl App {
             label,
             description,
             elapsed,
-            ..
+            status,
+            code,
+            notes,
+            tags,
         } = &mut self.overlay
         else {
             return Ok(false);
@@ -332,8 +365,12 @@ impl App {
             KeyCode::Tab | KeyCode::BackTab => {
                 *field = match field {
                     Field::Label => Field::Description,
-                    Field::Description => Field::Elapsed,
-                    Field::Elapsed => Field::Label,
+                    Field::Description => Field::Status,
+                    Field::Status => Field::Code,
+                    Field::Code => Field::Elapsed,
+                    Field::Elapsed => Field::Notes,
+                    Field::Notes => Field::Tags,
+                    Field::Tags => Field::Label,
                 };
             }
             KeyCode::Backspace => {
@@ -341,6 +378,10 @@ impl App {
                     Field::Label => label,
                     Field::Description => description,
                     Field::Elapsed => elapsed,
+                    Field::Status => status,
+                    Field::Code => code,
+                    Field::Notes => notes,
+                    Field::Tags => tags,
                 };
                 buf.pop();
             }
@@ -351,6 +392,10 @@ impl App {
                     Field::Label => label,
                     Field::Description => description,
                     Field::Elapsed => elapsed,
+                    Field::Status => status,
+                    Field::Code => code,
+                    Field::Notes => notes,
+                    Field::Tags => tags,
                 };
                 buf.push(c);
             }
@@ -408,6 +453,12 @@ impl App {
                 }
                 return Ok(false);
             }
+            Overlay::Detail => {
+                if matches!(key.code, KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('q')) {
+                    self.overlay = Overlay::None;
+                }
+                return Ok(false);
+            }
             Overlay::None => {}
         }
 
@@ -429,6 +480,11 @@ impl App {
             KeyCode::Char(' ') => self.start_stop()?,
             KeyCode::Char('n') => self.open_create(),
             KeyCode::Char('e') => self.open_edit(),
+            KeyCode::Char('i') => {
+                if self.selected_task().is_some() {
+                    self.overlay = Overlay::Detail;
+                }
+            }
             KeyCode::Char('d') => {
                 if self.selected_task().is_some() {
                     self.overlay = Overlay::ConfirmDelete;

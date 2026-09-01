@@ -225,6 +225,10 @@ pub fn update_task(
     label: Option<&str>,
     description: Option<&str>,
     elapsed_seconds: Option<i64>,
+    code: Option<&str>,
+    status: Option<&str>,
+    notes: Option<&str>,
+    tags: Option<&str>,
 ) -> Result<Option<Task>> {
     let Some(row) = get_task(conn, user_id, task_id)? else {
         return Ok(None);
@@ -246,15 +250,24 @@ pub fn update_task(
     } else {
         row.start_time
     };
+    let new_code = code.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let new_status = status.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let new_notes = notes.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let new_tags = tags.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     match conn.execute(
-        "UPDATE tasks SET label = ?1, description = ?2, elapsed_time = ?3, start_time = ?4, updated_at = ?5
-         WHERE id = ?6 AND user_id = ?7",
+        "UPDATE tasks SET label = ?1, description = ?2, elapsed_time = ?3, start_time = ?4, updated_at = ?5,
+         code = ?6, status = ?7, notes = ?8, tags = ?9
+         WHERE id = ?10 AND user_id = ?11",
         params![
             new_label,
             new_desc,
             new_elapsed,
             new_start,
             now,
+            new_code,
+            new_status,
+            new_notes,
+            new_tags,
             task_id,
             user_id
         ],
