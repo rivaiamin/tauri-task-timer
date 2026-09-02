@@ -1,6 +1,6 @@
 // Domain layer for task/timer operations, scoped by user, on local SQLite.
 // Used by the REST API (browser + AI agents). Pure timer math lives in `shared`.
-import { and, asc, eq, ne } from 'drizzle-orm';
+import { and, asc, desc, eq, like, ne, or, sql } from 'drizzle-orm';
 import { currentElapsedSeconds, buildMarkdownReport, buildCsvReport } from 'shared';
 import { db, schema } from './db';
 import { publish } from './events';
@@ -87,14 +87,48 @@ export function setTimerMode(userId: string, mode: TimerMode): { timer_mode: Tim
   return { timer_mode: mode };
 }
 
+export interface ListTasksFilter {
+  workDate?: string;
+  archived?: boolean;
+  done?: boolean;
+  status?: string;
+  q?: string;
+  tag?: string;
+}
+
 export function listTasks(
   userId: string,
-  workDate?: string
+  workDateOrFilter?: string | ListTasksFilter
 ): { tasks: TaskDTO[]; totalElapsedSeconds: number } {
-  const where = workDate
-    ? and(eq(tasks.userId, userId), eq(tasks.workDate, workDate))
-    : eq(tasks.userId, userId);
-  const rows = db.select().from(tasks).where(where).orderBy(asc(tasks.position)).all();
+  let filter: ListTasksFilter;
+  if (typeof workDateOrFilter === 'string') {
+    filter = workDateOrFilter ? { workDate: workDateOrFilter } : {};
+  } else {
+    filter = workDateOrFilter ?? {};
+  }
+
+  // Archive mode: no workDate and archived !== false means "backlog" — unfinished only
+  const isArchive = filter.archived !== false && !filter.workDate && (filter.archived === true || filter.q !== undefined || filter.tag !== undefined || filter.status !== undefined || filter.done === false);
+  // Default backlog when ?archived=true or ?q/?tag without date: unfinished tasks across days
+  const useBacklogFilter = isArchive || filter.archived === true;
+
+  const conds: any[] = [eq(tasks.userId, userId)];
+  if (filter.workDate) conds.push(eq(tasks.workDate, filter.workDate));
+  if (filter.done !== undefined) conds.push(eq(tasks.done, filter.done));
+  else if (useBacklogFilter) conds.push(eq(tasks.done, false));
+  if (filter.archived !== undefined) conds.push(eq(tasks.isArchived, filter.archived));
+  else if (useBacklogFilter) conds.push(eq(tasks.isArchived, false));
+  if (useBacklogFilter) {
+    conds.push(eq(tasks.isDeleted, false), eq(tasks.isCompleted, false), eq(tasks.isCancelled, false));
+  }
+  if (filter.status) conds.push(eq(tasks.status, filter.status));
+  if (filter.q) conds.push(like(tasks.label, `%${filter.q}%`));
+  if (filter.tag) conds.push(like(tasks.tags, `%${filter.tag}%`));
+
+  const where = conds.length === 1 ? conds[0] : and(...conds);
+  // Archive: newest date first; daily: by position
+  const order = useBacklogFilter ? [desc(tasks.workDate), asc(tasks.position)] : [asc(tasks.position)];
+  const rows = db.select().from(tasks).where(where).orderBy(...order).all();
   const dtos = rows.map(toDTO);
   const total = dtos.reduce((sum, t) => sum + t.currentElapsedSeconds, 0);
   return { tasks: dtos, totalElapsedSeconds: total };

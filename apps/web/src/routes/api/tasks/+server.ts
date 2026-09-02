@@ -4,6 +4,7 @@ import { resolveActor, requireScope } from '$lib/server/actor';
 import { listTasks, createTask } from '$lib/server/taskService';
 
 // GET /api/tasks — list the caller's tasks with computed elapsed + total.
+// Query: ?date=YYYY-MM-DD&archived=bool&done=bool&status=str&q=str&tag=str
 export const GET: RequestHandler = async (event) => {
   const actor = await resolveActor(event);
   requireScope(actor, 'tasks:read');
@@ -11,7 +12,20 @@ export const GET: RequestHandler = async (event) => {
   if (date !== null && !/^\d{4}-\d{2}-\d{2}$/.test(date)) {
     throw error(400, 'Invalid date; expected YYYY-MM-DD');
   }
-  return json(listTasks(actor.userId, date ?? undefined));
+  const archived = event.url.searchParams.get('archived');
+  const done = event.url.searchParams.get('done');
+  const status = event.url.searchParams.get('status');
+  const q = event.url.searchParams.get('q');
+  const tag = event.url.searchParams.get('tag');
+  const parseBool = (v: string | null) => (v === 'true' ? true : v === 'false' ? false : undefined);
+  return json(listTasks(actor.userId, {
+    workDate: date ?? undefined,
+    archived: parseBool(archived),
+    done: parseBool(done),
+    status: status ?? undefined,
+    q: q ?? undefined,
+    tag: tag ?? undefined,
+  }));
 };
 
 const createSchema = z.object({
