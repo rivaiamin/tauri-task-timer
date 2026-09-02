@@ -28,12 +28,32 @@ pub enum Field {
     Tags,
 }
 
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum AppMode {
+    Daily,
+    Archive,
+}
+
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum ArchiveInput {
+    Label,
+    Tag,
+}
+
+pub struct ArchiveState {
+    pub filter_q: Option<String>,
+    pub filter_tag: Option<String>,
+    pub tasks: Vec<Task>,
+    pub selected: usize,
+}
+
 pub enum Overlay {
     None,
     Help,
     ConfirmDelete,
     ConfirmResetAll,
     Detail,
+    Filter { input: ArchiveInput, buffer: String },
     Form {
         edit_id: Option<i64>,
         field: Field,
@@ -54,6 +74,8 @@ pub struct App {
     pub tasks: Vec<Task>,
     pub selected: usize,
     pub timer_mode: String,
+    pub mode: AppMode,
+    pub archive: ArchiveState,
     pub overlay: Overlay,
     pub status: String,
     status_until: Option<Instant>,
@@ -74,6 +96,13 @@ impl App {
             tasks: Vec::new(),
             selected: 0,
             timer_mode,
+            mode: AppMode::Daily,
+            archive: ArchiveState {
+                filter_q: None,
+                filter_tag: None,
+                tasks: Vec::new(),
+                selected: 0,
+            },
             overlay: Overlay::None,
             status: String::new(),
             status_until: None,
@@ -115,6 +144,64 @@ impl App {
         if self.tasks.is_empty() {
             self.selected = 0;
         }
+        Ok(())
+    }
+
+    pub fn archive_selected_task(&self) -> Option<&Task> {
+        self.archive.tasks.get(self.archive.selected)
+    }
+
+    fn reload_archive(&mut self) -> Result<()> {
+        let filter = tasks::ArchiveFilter {
+            q: self.archive.filter_q.clone(),
+            tag: self.archive.filter_tag.clone(),
+        };
+        self.archive.tasks = tasks::list_archive(&self.conn, &self.user_id, &filter)?;
+        if self.archive.selected >= self.archive.tasks.len() && !self.archive.tasks.is_empty() {
+            self.archive.selected = self.archive.tasks.len() - 1;
+        }
+        if self.archive.tasks.is_empty() {
+            self.archive.selected = 0;
+        }
+        Ok(())
+    }
+
+    fn toggle_archive(&mut self) -> Result<()> {
+        if self.mode == AppMode::Archive {
+            self.mode = AppMode::Daily;
+            self.reload()?;
+        } else {
+            self.mode = AppMode::Archive;
+            self.reload_archive()?;
+        }
+        self.overlay = Overlay::None;
+        Ok(())
+    }
+
+    fn open_archive_filter(&mut self, input: ArchiveInput) {
+        let current = match input {
+            ArchiveInput::Label => self.archive.filter_q.clone().unwrap_or_default(),
+            ArchiveInput::Tag => self.archive.filter_tag.clone().unwrap_or_default(),
+        };
+        self.overlay = Overlay::Filter { input, buffer: current };
+    }
+
+    fn continue_today(&mut self) -> Result<()> {
+        let (label, desc) = if let Some(t) = self.archive_selected_task() {
+            (t.label.clone(), t.description.clone())
+        } else {
+            self.set_status("no task selected in archive");
+            return Ok(());
+        };
+        let today = self.date_str();
+        let created = tasks::create_task(&self.conn, &self.user_id, &today, &label, desc.as_deref())?;
+        self.mode = AppMode::Daily;
+        self.overlay = Overlay::None;
+        self.reload()?;
+        if let Some(i) = self.tasks.iter().position(|t| t.id == created.id) {
+            self.selected = i;
+        }
+        self.set_status(format!("continued '{}' today", label));
         Ok(())
     }
 
@@ -336,6 +423,39 @@ impl App {
         self.reload()
     }
 
+    fn handle_filter_key(&mut self, key: KeyEvent) -> Result<bool> {
+        let (input, buffer) = match &mut self.overlay {
+            Overlay::Filter { input, buffer } => (*input, buffer),
+            _ => return Ok(false),
+        };
+        match key.code {
+            KeyCode::Esc => {
+                self.overlay = Overlay::None;
+            }
+            KeyCode::Enter => {
+                let value = buffer.trim().to_string();
+                let opt = if value.is_empty() { None } else { Some(value) };
+                match input {
+                    ArchiveInput::Label => self.archive.filter_q = opt,
+                    ArchiveInput::Tag => self.archive.filter_tag = opt,
+                }
+                self.archive.selected = 0;
+                self.overlay = Overlay::None;
+                if let Err(e) = self.reload_archive() {
+                    self.err_status(e);
+                }
+            }
+            KeyCode::Backspace => {
+                buffer.pop();
+            }
+            KeyCode::Char(c) if key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT => {
+                buffer.push(c);
+            }
+            _ => {}
+        }
+        Ok(false)
+    }
+
     fn handle_form_key(&mut self, key: KeyEvent) -> Result<bool> {
         match key.code {
             KeyCode::Esc => {
@@ -357,6 +477,7 @@ impl App {
             code,
             notes,
             tags,
+            edit_id: _,
         } = &mut self.overlay
         else {
             return Ok(false);
@@ -412,6 +533,7 @@ impl App {
             return Ok(true);
         }
         match &self.overlay {
+            Overlay::Filter { .. } => return self.handle_filter_key(key),
             Overlay::Form { .. } => return self.handle_form_key(key),
             Overlay::Help => {
                 if matches!(
@@ -462,8 +584,36 @@ impl App {
             Overlay::None => {}
         }
 
+        if self.mode == AppMode::Archive {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Char('a') | KeyCode::Esc => {
+                    self.toggle_archive()?;
+                    return Ok(false);
+                }
+                KeyCode::Char('?') => self.overlay = Overlay::Help,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if !self.archive.tasks.is_empty() {
+                        self.archive.selected = (self.archive.selected + 1).min(self.archive.tasks.len() - 1);
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.archive.selected = self.archive.selected.saturating_sub(1);
+                }
+                KeyCode::Char('/') => self.open_archive_filter(ArchiveInput::Label),
+                KeyCode::Char('t') => self.open_archive_filter(ArchiveInput::Tag),
+                KeyCode::Char('c') | KeyCode::Enter => self.continue_today()?,
+                KeyCode::Char('i') => {
+                    if self.archive_selected_task().is_some() {
+                        self.overlay = Overlay::Detail;
+                    }
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
         match key.code {
             KeyCode::Char('q') => return Ok(true),
+            KeyCode::Char('a') => { self.toggle_archive()?; }
             KeyCode::Char('?') => self.overlay = Overlay::Help,
             KeyCode::Char('j') | KeyCode::Down => {
                 if !self.tasks.is_empty() {
@@ -522,7 +672,11 @@ impl App {
                     }
                 }
                 if last_reload.elapsed() >= StdDuration::from_secs(1) {
-                    if let Err(e) = self.reload() {
+                    if self.mode == AppMode::Daily {
+                        if let Err(e) = self.reload() {
+                            self.err_status(e);
+                        }
+                    } else if let Err(e) = self.reload_archive() {
                         self.err_status(e);
                     }
                     last_reload = Instant::now();

@@ -74,7 +74,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let list = List::new(items).block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
     frame.render_widget(list, body);
 
-    let hints = " n:new  Space:start/stop  e:edit  i:detail  d:del  r:reset  R:reset all  x:export  ←/→:day  j/k:move  J/K:reorder  m:mode  ?:help  q:quit ";
+    let hints = " a:archive  n:new  Space:start/stop  e:edit  i:detail  d:del  r:reset  R:reset all  x:export  ←/→:day  j/k:move  J/K:reorder  m:mode  ?:help  q:quit ";
     let (status_area, hints_area) = if app.status.is_empty() {
         (None, footer)
     } else {
@@ -124,6 +124,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 draw_detail(frame, t);
             }
         }
+        Overlay::Filter { .. } => {}
     }
 }
 
