@@ -80,18 +80,18 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 
 ### TUI
 
-- [ ] `AppMode::Daily | Archive`
-- [ ] `list_archive()` in `db/tasks.rs`
-- [ ] `ui/archive_view.rs`
-- [ ] Keybinding + help
+- [x] `AppMode::Daily | Archive` (`a` toggle)
+- [x] `list_archive()` in `db/tasks.rs` (+ 3 tests, q/tag filters, unfinished exclusion)
+- [x] `ui/archive_view.rs` (filter bar, `c` continue today via E1 dedup rules)
+- [x] Keybinding + help (`a`, `/`, `t`, `c`, daily `a:archive` hint)
 
 ### Web
 
-- [ ] API: archive list with filters (query params or route)
+- [x] API: archive list with filters (`GET /api/tasks?archived&done&q&tag&status`)
 
 ### MCP
 
-- [ ] `list_tasks` supports `done`, `archived`, status filters
+- [x] `list_tasks` supports `date`, `q`, `tag`, `status`, `done`, `archived` filters
 
 ---
 

@@ -34,7 +34,7 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 ## E2 — Extended Schema
 
-**Status:** Planned · **Depends on:** E1
+**Status:** Done (`feat/tui-mvp`) · **Depends on:** E1
 
 **Goal:** Rich tasks, comments, integrations — **one migration, three consumers**.
 
@@ -49,11 +49,11 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 ### Acceptance criteria
 
-- [ ] Single migration; `pnpm db:migrate` succeeds on existing DB
-- [ ] Web API CRUD for comments and integrations
-- [ ] TUI create/edit shows code, notes, tags, status
-- [ ] MCP can set extended fields and add comments
-- [ ] [erd.md](./erd.md) matches deployed schema
+- [x] Single migration; `pnpm db:migrate` succeeds on existing DB
+- [x] Web API CRUD for comments and integrations
+- [x] TUI create/edit shows code, notes, tags, status
+- [x] MCP can set extended fields and add comments
+- [x] [erd.md](./erd.md) matches deployed schema
 
 ---
 
@@ -73,10 +73,10 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 ### Acceptance criteria
 
-- [ ] TUI toggles daily ↔ archive
-- [ ] Archive lists non-finished tasks per agreed rules
-- [ ] Filter by label substring and tag
-- [ ] Continue today creates row via E1 dedup rules
+- [x] TUI toggles daily ↔ archive
+- [x] Archive lists non-finished tasks per agreed rules
+- [x] Filter by label substring and tag
+- [x] Continue today creates row via E1 dedup rules
 
 ---
 
