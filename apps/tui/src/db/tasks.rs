@@ -74,6 +74,48 @@ pub fn list_tasks(conn: &Connection, user_id: &str, work_date: &str) -> Result<V
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+#[derive(Clone, Debug, Default)]
+pub struct ArchiveFilter {
+    pub q: Option<String>,
+    pub tag: Option<String>,
+}
+
+/// Backlog of unfinished tasks across days: not done/archived/deleted/completed/cancelled.
+/// Optional substring filters on label and tags (case-insensitive LIKE).
+/// Ordered newest work_date first so recent backlog surfaces at top.
+pub fn list_archive(
+    conn: &Connection,
+    user_id: &str,
+    filter: &ArchiveFilter,
+) -> Result<Vec<Task>> {
+    let mut sql = format!(
+        "SELECT {COLS} FROM tasks WHERE user_id = ?1
+         AND COALESCE(is_deleted, 0) = 0
+         AND COALESCE(done, 0) = 0
+         AND COALESCE(is_archived, 0) = 0
+         AND COALESCE(is_completed, 0) = 0
+         AND COALESCE(is_cancelled, 0) = 0"
+    );
+    let mut params_vec: Vec<String> = vec![user_id.to_string()];
+    let mut next_idx = 2usize;
+    if let Some(q) = filter.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        sql.push_str(&format!(" AND label LIKE ?{next_idx} COLLATE NOCASE"));
+        params_vec.push(format!("%{q}%"));
+        next_idx += 1;
+    }
+    if let Some(tag) = filter.tag.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        sql.push_str(&format!(" AND COALESCE(tags, '') LIKE ?{next_idx} COLLATE NOCASE"));
+        params_vec.push(format!("%{tag}%"));
+    }
+    let _ = next_idx;
+    sql.push_str(" ORDER BY work_date DESC, position ASC, id ASC");
+    let mut stmt = conn.prepare(&sql)?;
+    let param_refs: Vec<&dyn rusqlite::ToSql> =
+        params_vec.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    let rows = stmt.query_map(param_refs.as_slice(), map_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 pub fn get_task(conn: &Connection, user_id: &str, task_id: i64) -> Result<Option<Task>> {
     conn.query_row(
         &format!("SELECT {COLS} FROM tasks WHERE id = ?1 AND user_id = ?2"),
@@ -381,5 +423,64 @@ mod tests {
         let b2 = get_task(&conn, "u1", b.id).unwrap().unwrap();
         assert!(!a2.is_running);
         assert!(b2.is_running);
+    }
+
+    fn set_flag(conn: &Connection, id: i64, col: &str) {
+        conn.execute(&format!("UPDATE tasks SET {col} = 1 WHERE id = ?1"), [id])
+            .unwrap();
+    }
+
+    #[test]
+    fn archive_excludes_done_and_archived() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-08-28", "A", None).unwrap();
+        let b = create_task(&conn, "u1", "2026-08-28", "B", None).unwrap();
+        let c = create_task(&conn, "u1", "2026-08-29", "C", None).unwrap();
+        set_flag(&conn, b.id, "done");
+        set_flag(&conn, c.id, "is_archived");
+        let rows = list_archive(&conn, "u1", &ArchiveFilter::default()).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, a.id);
+    }
+
+    #[test]
+    fn archive_filter_by_q() {
+        let conn = setup();
+        create_task(&conn, "u1", "2026-08-28", "US-101 fix login", None).unwrap();
+        create_task(&conn, "u1", "2026-08-28", "US-102 checkout", None).unwrap();
+        let rows = list_archive(
+            &conn,
+            "u1",
+            &ArchiveFilter {
+                q: Some("login".into()),
+                tag: None,
+            },
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert!(rows[0].label.contains("login"));
+    }
+
+    #[test]
+    fn archive_filter_by_tag() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-08-28", "A", None).unwrap();
+        let _b = create_task(&conn, "u1", "2026-08-28", "B", None).unwrap();
+        conn.execute(
+            "UPDATE tasks SET tags = '[\"backend\"]' WHERE id = ?1",
+            [a.id],
+        )
+        .unwrap();
+        let rows = list_archive(
+            &conn,
+            "u1",
+            &ArchiveFilter {
+                q: None,
+                tag: Some("backend".into()),
+            },
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, a.id);
     }
 }
