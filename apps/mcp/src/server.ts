@@ -59,8 +59,31 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
     });
   }
 
-  tool('list_tasks', { title: 'List tasks', description: 'List all tasks with elapsed time and the total.' }, () =>
-    api('/tasks')
+  tool(
+    'list_tasks',
+    {
+      title: 'List tasks',
+      description: 'List tasks with elapsed time and total. Filter with date (YYYY-MM-DD), q (label substring), tag, status, done, archived.',
+      inputSchema: {
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Work date YYYY-MM-DD'),
+        q: z.string().optional().describe('Label substring (case-insensitive)'),
+        tag: z.string().optional().describe('Tag substring'),
+        status: z.string().optional(),
+        done: z.boolean().optional(),
+        archived: z.boolean().optional(),
+      },
+    },
+    ({ date, q, tag, status, done, archived }: { date?: string; q?: string; tag?: string; status?: string; done?: boolean; archived?: boolean }) => {
+      const params = new URLSearchParams();
+      if (date) params.set('date', date);
+      if (q) params.set('q', q);
+      if (tag) params.set('tag', tag);
+      if (status) params.set('status', status);
+      if (done !== undefined) params.set('done', String(done));
+      if (archived !== undefined) params.set('archived', String(archived));
+      const qs = params.toString();
+      return api(qs ? `/tasks?${qs}` : '/tasks');
+    }
   );
 
   tool(
