@@ -2,6 +2,14 @@
 	"mcpServers": {
 		"svelte": {
 			"url": "https://mcp.svelte.dev/mcp"
+		},
+		"task-timer": {
+			"command": "node",
+			"args": ["/home/amin/projects/tauri/tauri-task-timer/apps/mcp/dist/index.js"],
+			"env": {
+				"BASE_URL": "http://task-timer.test",
+				"API_KEY": "sk_live_your_key_here"
+			}
 		}
 	}
 }

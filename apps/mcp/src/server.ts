@@ -59,8 +59,84 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
     });
   }
 
-  tool('list_tasks', { title: 'List tasks', description: 'List all tasks with elapsed time and the total.' }, () =>
-    api('/tasks')
+  tool(
+    'list_tasks',
+    {
+      title: 'List tasks',
+      description: 'List tasks with elapsed time and total. Filter with date (YYYY-MM-DD), q (label substring), tag, status, done, archived.',
+      inputSchema: {
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Work date YYYY-MM-DD'),
+        q: z.string().optional().describe('Label substring (case-insensitive)'),
+        tag: z.string().optional().describe('Tag substring'),
+        status: z.string().optional(),
+        done: z.boolean().optional(),
+        archived: z.boolean().optional(),
+      },
+    },
+    ({ date, q, tag, status, done, archived }: { date?: string; q?: string; tag?: string; status?: string; done?: boolean; archived?: boolean }) => {
+      const params = new URLSearchParams();
+      if (date) params.set('date', date);
+      if (q) params.set('q', q);
+      if (tag) params.set('tag', tag);
+      if (status) params.set('status', status);
+      if (done !== undefined) params.set('done', String(done));
+      if (archived !== undefined) params.set('archived', String(archived));
+      const qs = params.toString();
+      return api(qs ? `/tasks?${qs}` : '/tasks');
+    }
+  );
+
+  tool(
+    'add_comment',
+    {
+      title: 'Add task comment',
+      description: 'Attach a comment or delivery reference to a task.',
+      inputSchema: {
+        task_id: z.number().int(),
+        subject: z.string().nullable().optional(),
+        summary: z.string().nullable().optional(),
+        branch: z.string().nullable().optional(),
+        pr: z.string().nullable().optional()
+      }
+    },
+    ({ task_id, subject, summary, branch, pr }) =>
+      api(`/tasks/${task_id}/comments`, 'POST', { subject, summary, branch, pr })
+  );
+
+  tool(
+    'list_comments',
+    {
+      title: 'List task comments',
+      description: 'List all comments attached to a task.',
+      inputSchema: { task_id: z.number().int() }
+    },
+    ({ task_id }) => api(`/tasks/${task_id}/comments`)
+  );
+
+  tool(
+    'upsert_integration',
+    {
+      title: 'Upsert integration',
+      description: 'Create or update an integration field on a task (e.g. JIRA sprint, Bitbucket branch).',
+      inputSchema: {
+        task_id: z.number().int(),
+        group: z.string().min(1).describe('Integration group (e.g. "jira", "bitbucket")'),
+        field: z.string().min(1).describe('Field name (e.g. "sprint", "branch")'),
+        value: z.string().nullable()
+      }
+    },
+    ({ task_id, group, field, value }) =>
+      api(`/tasks/${task_id}/integrations`, 'PATCH', { group, field, value })
+  );
+
+  tool(
+    'list_integrations',
+    {
+      title: 'List task integrations',
+      description: 'List all integration fields on a task.',
+      inputSchema: { task_id: z.number().int() }
+    },
+    ({ task_id }) => api(`/tasks/${task_id}/integrations`)
   );
 
   tool(
@@ -68,9 +144,18 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
     {
       title: 'Create task',
       description: 'Create a new task.',
-      inputSchema: { label: z.string().min(1).describe('Task name'), description: z.string().optional() }
+      inputSchema: {
+        label: z.string().min(1).describe('Task name'),
+        description: z.string().optional(),
+        code: z.string().nullable().optional(),
+        link: z.string().url().nullable().optional(),
+        status: z.string().optional(),
+        notes: z.string().nullable().optional(),
+        tags: z.array(z.string()).nullable().optional()
+      }
     },
-    ({ label, description }) => api('/tasks', 'POST', { label, description })
+    ({ label, description, code, link, status, notes, tags }) =>
+      api('/tasks', 'POST', { label, description, code, link, status, notes, tags })
   );
 
   tool(
@@ -113,14 +198,36 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
         description: z.string().nullable().optional(),
         elapsed_seconds: z.number().int().min(0).optional(),
         done: z.boolean().optional()
+        ,code: z.string().nullable().optional()
+        ,link: z.string().url().nullable().optional()
+        ,status: z.string().optional()
+        ,notes: z.string().nullable().optional()
+        ,tags: z.array(z.string()).nullable().optional()
+        ,is_completed: z.boolean().optional()
+        ,is_cancelled: z.boolean().optional()
+        ,is_deleted: z.boolean().optional()
+        ,is_archived: z.boolean().optional()
+        ,is_pinned: z.boolean().optional()
+        ,is_important: z.boolean().optional()
       }
     },
-    ({ task_id, label, description, elapsed_seconds, done }) => {
+    ({ task_id, label, description, elapsed_seconds, done, code, link, status, notes, tags, is_completed, is_cancelled, is_deleted, is_archived, is_pinned, is_important }) => {
       const body: Record<string, unknown> = {};
       if (label !== undefined) body.label = label;
       if (description !== undefined) body.description = description;
       if (elapsed_seconds !== undefined) body.elapsed_seconds = elapsed_seconds;
       if (done !== undefined) body.done = done;
+      if (code !== undefined) body.code = code;
+      if (link !== undefined) body.link = link;
+      if (status !== undefined) body.status = status;
+      if (notes !== undefined) body.notes = notes;
+      if (tags !== undefined) body.tags = tags;
+      if (is_completed !== undefined) body.is_completed = is_completed;
+      if (is_cancelled !== undefined) body.is_cancelled = is_cancelled;
+      if (is_deleted !== undefined) body.is_deleted = is_deleted;
+      if (is_archived !== undefined) body.is_archived = is_archived;
+      if (is_pinned !== undefined) body.is_pinned = is_pinned;
+      if (is_important !== undefined) body.is_important = is_important;
       return api(`/tasks/${task_id}`, 'PATCH', body);
     }
   );

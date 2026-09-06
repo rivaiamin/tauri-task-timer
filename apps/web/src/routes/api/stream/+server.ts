@@ -1,6 +1,6 @@
 import { type RequestHandler } from '@sveltejs/kit';
 import { resolveActor } from '$lib/server/actor';
-import { subscribe } from '$lib/server/events';
+import { subscribe, type ChangePayload } from '$lib/server/events';
 
 // GET /api/stream — Server-Sent Events: pushes a "change" whenever any of the
 // caller's tasks are mutated (by this browser, another device, or an agent).
@@ -15,7 +15,9 @@ export const GET: RequestHandler = async (event) => {
         controller.enqueue(encoder.encode(`data: ${JSON.stringify(payload)}\n\n`));
 
       send({ type: 'connected' });
-      const unsubscribe = subscribe(actor.userId, () => send({ type: 'tasks-changed' }));
+      const unsubscribe = subscribe(actor.userId, (change: ChangePayload) =>
+        send({ type: 'change', ...change })
+      );
 
       // Keep-alive comment so proxies don't drop an idle connection.
       const ping = setInterval(() => {

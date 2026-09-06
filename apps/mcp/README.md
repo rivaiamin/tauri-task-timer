@@ -72,12 +72,72 @@ before exposing it publicly (the default bind is loopback only).
 
 ## Tools
 
-`list_tasks`, `create_task`, `start_timer`, `stop_timer`, `reset_task`,
-`reset_all`, `update_task`, `delete_task`, `reorder_tasks`, `get_timer_mode`,
-`set_timer_mode`, `get_report`.
+### Tasks
+
+| Tool | Description |
+|------|-------------|
+| `list_tasks` | List all tasks with elapsed time and the total |
+| `create_task` | Create a new task (see extended fields below) |
+| `update_task` | Update label, description, elapsed, status, code, notes, tags, and/or flags |
+| `delete_task` | Delete a task |
+| `reorder_tasks` | Set task order by giving all task ids in the desired order |
+
+### Timer
+
+| Tool | Description |
+|------|-------------|
+| `start_timer` | Start a task's timer. Omit `exclusive` to use the user's timer mode |
+| `stop_timer` | Stop a task's timer, accumulating elapsed time |
+| `reset_task` | Reset a single task's elapsed time to zero |
+| `reset_all` | Reset every task to zero |
+
+### Comments
+
+| Tool | Description |
+|------|-------------|
+| `add_comment` | Attach a comment or delivery reference to a task (subject, summary, branch, pr) |
+| `list_comments` | List all comments attached to a task |
+
+### Integrations
+
+| Tool | Description |
+|------|-------------|
+| `upsert_integration` | Create or update an integration field on a task (e.g. JIRA sprint, Bitbucket branch) |
+| `list_integrations` | List all integration fields on a task |
+
+### Settings
+
+| Tool | Description |
+|------|-------------|
+| `get_timer_mode` | Get the current timer mode (focus \| parallel) |
+| `set_timer_mode` | Set the timer mode |
+| `get_report` | Get a Daily Report of tracked time (markdown or csv) |
+
+## Extended task fields
+
+`create_task` and `update_task` accept these optional fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `code` | string \| null | Short code or identifier |
+| `link` | string \| null | URL link (e.g. JIRA, PR) |
+| `status` | string | Task status (default: `todo`) |
+| `notes` | string \| null | Free-form notes |
+| `tags` | string[] \| null | Tags for categorization |
+
+`update_task` also supports flag fields: `is_completed`, `is_cancelled`, `is_deleted`, `is_archived`, `is_pinned`, `is_important`.
+
+## SSE live updates
 
 Because the web app pushes changes over SSE, anything an agent does here shows up
-live in any open dashboard.
+live in any open dashboard. The SSE payload now includes the entity type and task
+ID:
+
+```json
+{"type":"change","entity":"task","taskId":42,"action":"start"}
+{"type":"change","entity":"comment","taskId":42}
+{"type":"change","entity":"integration","taskId":42}
+```
 
 ## Notes
 
