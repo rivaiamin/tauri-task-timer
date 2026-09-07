@@ -125,6 +125,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             }
         }
         Overlay::Filter { .. } => {}
+        Overlay::Jira { .. } => {}
     }
 }
 
