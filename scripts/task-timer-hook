@@ -1,0 +1,61 @@
+#!/usr/bin/env python3
+"""task-timer-hook — send session lifecycle events to the TUI via Unix socket.
+
+Usage:
+    task-timer-hook session_start [TASK_ID]
+    task-timer-hook waiting_user
+    task-timer-hook session_end
+
+The TUI must be running for events to be received. If the socket doesn't
+exist, the script exits silently (agent hooks should never crash).
+"""
+import json
+import os
+import socket
+import sys
+
+SOCK_PATH = os.path.join(
+    os.environ.get("XDG_CACHE_HOME", os.path.expanduser("~/.cache")),
+    "task-timer-tui",
+    "hook.sock",
+)
+
+
+def send(event: str, task_id: int | None = None) -> None:
+    if not os.path.exists(SOCK_PATH):
+        # TUI not running — silent exit, never crash the agent.
+        return
+    payload: dict = {"event": event}
+    if task_id is not None:
+        payload["task_id"] = task_id
+    s = socket.socket(socket.AF_UNIX, socket.SOCK_STREAM)
+    try:
+        s.connect(SOCK_PATH)
+        s.sendall((json.dumps(payload) + "\n").encode())
+    except (ConnectionRefusedError, FileNotFoundError, OSError):
+        pass
+    finally:
+        s.close()
+
+
+def main() -> None:
+    if len(sys.argv) < 2:
+        print(__doc__, file=sys.stderr)
+        sys.exit(1)
+
+    event = sys.argv[1]
+    task_id = int(sys.argv[2]) if len(sys.argv) > 2 else None
+
+    if event not in ("session_start", "waiting_user", "session_end"):
+        print(f"Unknown event: {event}", file=sys.stderr)
+        sys.exit(1)
+
+    if event == "session_start" and task_id is None:
+        # No task_id — TUI will use the currently selected task.
+        pass
+
+    send(event, task_id)
+
+
+if __name__ == "__main__":
+    main()
