@@ -52,6 +52,8 @@ apps/tui/
       archive_view.rs              # E3
       widgets.rs
     jira.rs                      # E4 — direct JIRA REST API
+    bitbucket.rs                  # E5 — Bitbucket REST API
+    git.rs                        # E5 — git CLI wrapper
     hooks/
       listener.rs                  # E6
 ```
@@ -67,9 +69,13 @@ apps/tui/
 database_path = "/path/to/apps/web/local.db"
 user_email = "you@example.com"
 # timer_mode = "focus"   # optional; else user_settings.timer_mode
-# JIRA (E4) — env vars: JIRA_BASE_URL, JIRA_EMAIL, JIRA_TOKEN
+# JIRA (E4) — env vars: JIRA_SITE, JIRA_EMAIL, JIRA_TOKEN
 # jira_board = "AIMSIS"
 # jira_sprint_id = "123"
+# Bitbucket (E5) — env vars: BITBUCKET_EMAIL, BITBUCKET_TOKEN
+# bitbucket_workspace = "your-workspace"
+# bitbucket_repo = "your-repo"
+# git_repo_path = "/path/to/repo"  # auto-detected from database_path if omitted
 ```
 
 CLI overrides: `task-timer-tui --date YYYY-MM-DD --db PATH --config PATH`
@@ -158,9 +164,29 @@ Chose option A: standalone `reqwest` calls from TUI. No web server dependency.
 | `pick_transition_id` | Match status name to transition |
 | `fetch_sprint_issues` | GET all issues in a sprint (board + sprint ID) |
 
-**TUI controls:** Ctrl+J opens JIRA menu → comment (C), transition (T), sprint sync (S).
-Credentials via env vars (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_TOKEN`).
+**TUI controls:** Ctrl+J opens JIRA menu → comment (1), transition (2), sprint sync (3).
+Credentials via env vars (`JIRA_SITE`, `JIRA_EMAIL`, `JIRA_TOKEN`).
 Board/sprint config in `config.toml` (`jira_board`, `jira_sprint_id`).
+
+## E5 — Git / Bitbucket Integration (implemented)
+
+Hybrid approach: local git CLI for branch/commit info, Bitbucket REST API for PR status.
+
+| Function | Purpose |
+|----------|---------|
+| `git::current_branch` | Get current branch via `git rev-parse` |
+| `git::commits_for_branch` | List recent commits on a branch |
+| `git::branch_ahead_behind` | Ahead/behind count vs upstream or main |
+| `bitbucket::bb_fetch` | Shared Bitbucket REST API fetcher |
+| `bitbucket::list_prs` | List PRs for a branch |
+| `bitbucket::get_pr_status` | Get PR status by ID |
+| `bitbucket::get_pr_comments` | Get PR comments |
+
+**TUI controls:** Ctrl+B opens Git menu → link branch (1), show commits (2), PR status (3).
+Credentials via env vars (`BITBUCKET_EMAIL`, `BITBUCKET_TOKEN`).
+Workspace/repo in `config.toml` (`bitbucket_workspace`, `bitbucket_repo`).
+Repo path auto-detected from `database_path` or set via `git_repo_path`.
+Branch linked via `task_integrations` (`group=git, field=branch`).
 
 ## E7 — Web dashboard changes
 

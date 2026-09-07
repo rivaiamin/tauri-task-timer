@@ -5,7 +5,7 @@ use ratatui::widgets::{Block, Borders, Clear, List, ListItem, Paragraph, Wrap};
 use ratatui::Frame;
 
 use super::widgets::{centered, vsplit};
-use crate::app::{App, Field, Overlay, HELP};
+use crate::app::{App, Field, GitMode, Overlay, HELP};
 use crate::db::tasks::Task;
 use crate::timer::{format_time, now_ms};
 
@@ -74,7 +74,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let list = List::new(items).block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
     frame.render_widget(list, body);
 
-    let hints = " a:archive  n:new  Space:start/stop  e:edit  i:detail  d:del  r:reset  R:reset all  x:export  ←/→:day  j/k:move  J/K:reorder  m:mode  ?:help  q:quit ";
+    let hints = " a:archive  n:new  Space:start/stop  e:edit  i:detail  d:del  r:reset  R:reset all  x:export  ←/→:day  j/k:move  J/K:reorder  m:mode  Ctrl+J:jira  Ctrl+B:git  ?:help  q:quit ";
     let (status_area, hints_area) = if app.status.is_empty() {
         (None, footer)
     } else {
@@ -126,6 +126,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
         Overlay::Filter { .. } => {}
         Overlay::Jira { .. } => {}
+        Overlay::Git { mode } => draw_git(frame, mode),
     }
 }
 
@@ -265,6 +266,125 @@ fn draw_form(
             .style(Style::default().fg(Color::DarkGray)),
         rows[15],
     );
+}
+
+fn draw_git(frame: &mut Frame, mode: &GitMode) {
+    match mode {
+        GitMode::Menu => {
+            let area = centered(frame.area(), 48, 9);
+            frame.render_widget(Clear, area);
+            let lines = vec![
+                Line::from(Span::styled("  1", Style::default().fg(Color::Cyan))),
+                Line::from("     link current branch to task"),
+                Line::from(Span::styled("  2", Style::default().fg(Color::Cyan))),
+                Line::from("     show commits on linked branch"),
+                Line::from(Span::styled("  3", Style::default().fg(Color::Cyan))),
+                Line::from("     PR status (Bitbucket)"),
+                Line::from(""),
+                Line::from(Span::styled(
+                    "  Esc: close",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ];
+            let p = Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" git ")
+                    .title_alignment(Alignment::Center),
+            );
+            frame.render_widget(p, area);
+        }
+        GitMode::LinkBranch { buffer } => {
+            let area = centered(frame.area(), 50, 5);
+            frame.render_widget(Clear, area);
+            let block = Block::default()
+                .borders(Borders::ALL)
+                .title(" link branch ");
+            let inner = block.inner(area);
+            frame.render_widget(block, area);
+            let lines = vec![
+                Line::from(buffer.as_str()),
+                Line::from(Span::styled(
+                    "Enter: confirm  Esc: cancel",
+                    Style::default().fg(Color::DarkGray),
+                )),
+            ];
+            frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
+        }
+        GitMode::Commits { commits, ahead, behind } => {
+            let title = format!(" commits ({ahead} ahead, {behind} behind) ");
+            let height = (commits.len() as u16).saturating_add(5).min(frame.area().height - 2);
+            let area = centered(frame.area(), 60, height);
+            frame.render_widget(Clear, area);
+            let mut lines: Vec<Line> = commits
+                .iter()
+                .map(|c| {
+                    Line::from(vec![
+                        Span::styled(
+                            format!(" {} ", &c.hash[..7.min(c.hash.len())]),
+                            Style::default().fg(Color::Yellow),
+                        ),
+                        Span::raw(&c.subject),
+                    ])
+                })
+                .collect();
+            lines.push(Line::from(vec![]));
+            lines.push(Line::from(Span::styled(
+                " Esc / q: back",
+                Style::default().fg(Color::DarkGray),
+            )));
+            let p = Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(title)
+                    .title_alignment(Alignment::Center),
+            );
+            frame.render_widget(p, area);
+        }
+        GitMode::PrStatus { prs, selected } => {
+            let height = (prs.len() as u16).saturating_add(5).min(frame.area().height - 2);
+            let area = centered(frame.area(), 60, height);
+            frame.render_widget(Clear, area);
+            let mut lines: Vec<Line> = prs
+                .iter()
+                .enumerate()
+                .map(|(i, pr)| {
+                    let state_color = match pr.state.as_str() {
+                        "OPEN" => Color::Green,
+                        "MERGED" => Color::Magenta,
+                        "DECLINED" => Color::Red,
+                        _ => Color::DarkGray,
+                    };
+                    let spans = vec![
+                        Span::styled(
+                            format!(" {}", pr.state),
+                            Style::default().fg(state_color),
+                        ),
+                        Span::raw(format!("  {}", pr.title)),
+                    ];
+                    let mut style = Style::default();
+                    if i == *selected {
+                        style = style
+                            .fg(Color::Cyan)
+                            .add_modifier(Modifier::UNDERLINED | Modifier::BOLD);
+                    }
+                    Line::from(spans).style(style)
+                })
+                .collect();
+            lines.push(Line::from(vec![]));
+            lines.push(Line::from(Span::styled(
+                " Esc / q: back",
+                Style::default().fg(Color::DarkGray),
+            )));
+            let p = Paragraph::new(lines).block(
+                Block::default()
+                    .borders(Borders::ALL)
+                    .title(" pull requests ")
+                    .title_alignment(Alignment::Center),
+            );
+            frame.render_widget(p, area);
+        }
+    }
 }
 
 fn draw_detail(frame: &mut Frame, task: &Task) {

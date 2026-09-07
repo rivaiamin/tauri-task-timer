@@ -10,6 +10,9 @@ pub struct Config {
     pub timer_mode: Option<String>,
     pub jira_board: Option<String>,
     pub jira_sprint_id: Option<String>,
+    pub bitbucket_workspace: Option<String>,
+    pub bitbucket_repo: Option<String>,
+    pub git_repo_path: Option<String>,
 }
 
 const EXAMPLE: &str = r#"# ~/.config/task-timer-tui/config.toml
@@ -18,6 +21,10 @@ user_email = "you@example.com"
 # timer_mode = "focus"  # optional: "focus" | "parallel"
 # jira_board = "AIMSIS"
 # jira_sprint_id = "123"
+# Bitbucket (E5) — env vars: BITBUCKET_EMAIL, BITBUCKET_TOKEN
+# bitbucket_workspace = "your-workspace"
+# bitbucket_repo = "your-repo"
+# git_repo_path = "/path/to/repo"  # auto-detected from database_path if omitted
 "#;
 
 pub fn default_path() -> Result<PathBuf> {
@@ -44,4 +51,27 @@ pub fn load(explicit: Option<&Path>) -> Result<Config> {
         bail!("config must set database_path and user_email");
     }
     Ok(cfg)
+}
+
+impl Config {
+    /// Resolve the git repo root: explicit config, or walk up from database_path.
+    pub fn resolve_repo_root(&self) -> Option<PathBuf> {
+        if let Some(ref p) = self.git_repo_path {
+            let path = PathBuf::from(p);
+            if path.join(".git").exists() {
+                return Some(path);
+            }
+        }
+        // Walk up from database_path looking for .git
+        let mut cur = PathBuf::from(&self.database_path);
+        cur.pop(); // strip filename
+        loop {
+            if cur.join(".git").exists() {
+                return Some(cur);
+            }
+            if !cur.pop() {
+                return None;
+            }
+        }
+    }
 }

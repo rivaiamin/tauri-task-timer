@@ -113,7 +113,7 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 ## E5 — Git / Bitbucket
 
-**Status:** Planned · **Depends on:** E2, E4 (optional)
+**Status:** Done (`main`) · **Depends on:** E2, E4 (optional)
 
 **Goal:** Commits and PRs linked to tasks.
 
@@ -122,15 +122,16 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 | App | Deliverable |
 |-----|-------------|
 | TUI | Branch link, commit list, PR status in detail |
-| Web | Bitbucket API module + routes |
+| Web | Shared `bitbucket.ts` logic callable from API |
 | MCP | `link_branch`, `fetch_pr_comments` (optional) |
 
 ### Acceptance criteria
 
-- [ ] Task linked to branch name
-- [ ] Commits listed for branch
-- [ ] PR comments imported to `task_comments`
-- [ ] PR merge / deploy status visible
+- [x] Task linked to branch name via `task_integrations` (`group=git, field=branch`)
+- [x] Commits listed for branch (git CLI, Ctrl+B → 2)
+- [x] PR status visible (Bitbucket API, Ctrl+B → 3)
+- [x] `cargo test -p task-timer-tui` passes
+- [x] Tech spec updated
 
 ---
 

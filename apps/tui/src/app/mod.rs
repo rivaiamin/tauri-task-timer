@@ -9,6 +9,7 @@ use std::time::{Duration as StdDuration, Instant};
 use crate::clipboard;
 use crate::db;
 use crate::db::tasks::{self, Task};
+use crate::git;
 use crate::jira;
 use crate::jira::Transition;
 use crate::report::{self, ReportTask};
@@ -57,6 +58,15 @@ pub enum JiraMode {
     Syncing,
 }
 
+#[derive(Clone)]
+#[allow(dead_code)]
+pub enum GitMode {
+    Menu,
+    LinkBranch { buffer: String },
+    Commits { commits: Vec<git::Commit>, ahead: u32, behind: u32 },
+    PrStatus { prs: Vec<crate::bitbucket::PullRequest>, selected: usize },
+}
+
 pub enum Overlay {
     None,
     Help,
@@ -76,6 +86,7 @@ pub enum Overlay {
         tags: String,
     },
     Jira { mode: JiraMode },
+    Git { mode: GitMode },
 }
 
 pub struct App {
@@ -93,6 +104,9 @@ pub struct App {
     clipboard: Option<arboard::Clipboard>,
     pub jira_board: Option<String>,
     pub jira_sprint_id: Option<String>,
+    pub git_repo_path: Option<std::path::PathBuf>,
+    pub bitbucket_workspace: Option<String>,
+    pub bitbucket_repo: Option<String>,
 }
 
 impl App {
@@ -103,6 +117,9 @@ impl App {
         timer_mode: String,
         jira_board: Option<String>,
         jira_sprint_id: Option<String>,
+        git_repo_path: Option<std::path::PathBuf>,
+        bitbucket_workspace: Option<String>,
+        bitbucket_repo: Option<String>,
     ) -> Result<Self> {
         let mut app = Self {
             conn,
@@ -124,6 +141,9 @@ impl App {
             clipboard: None,
             jira_board,
             jira_sprint_id,
+            git_repo_path,
+            bitbucket_workspace,
+            bitbucket_repo,
         };
         app.reload()?;
         Ok(app)
@@ -682,6 +702,164 @@ impl App {
         Ok(format!("sprint sync: {created} created, {updated} updated, {} total", issues.len()))
     }
 
+    fn open_git_menu(&mut self) {
+        if self.git_repo_path.is_none() {
+            self.set_status("git repo not found (set git_repo_path in config)");
+            return;
+        }
+        self.overlay = Overlay::Git { mode: GitMode::Menu };
+    }
+
+    fn git_task_branch(&self) -> Option<String> {
+        let task = self.selected_task()?;
+        let integrations = db::integrations::list(&self.conn, task.id).ok()?;
+        integrations
+            .iter()
+            .find(|i| i.group == "git" && i.field == "branch")
+            .and_then(|i| i.value.clone())
+    }
+
+    fn handle_git_key(&mut self, key: KeyEvent) -> Result<bool> {
+        let mode = match &self.overlay {
+            Overlay::Git { mode } => mode.clone(),
+            _ => return Ok(false),
+        };
+        match mode {
+            GitMode::Menu => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.overlay = Overlay::None;
+                }
+                KeyCode::Char('1') => {
+                    // Link current branch to task
+                    let Some(repo) = self.git_repo_path.clone() else {
+                        self.set_status("no git repo");
+                        self.overlay = Overlay::None;
+                        return Ok(false);
+                    };
+                    match git::current_branch(&repo) {
+                        Ok(branch) => {
+                            self.overlay = Overlay::Git {
+                                mode: GitMode::LinkBranch { buffer: branch },
+                            };
+                        }
+                        Err(e) => {
+                            self.set_status(format!("git: {e}"));
+                            self.overlay = Overlay::None;
+                        }
+                    }
+                }
+                KeyCode::Char('2') => {
+                    // Show commits
+                    let Some(repo) = self.git_repo_path.clone() else {
+                        self.set_status("no git repo");
+                        self.overlay = Overlay::None;
+                        return Ok(false);
+                    };
+                    let branch = self.git_task_branch().unwrap_or_default();
+                    if branch.is_empty() {
+                        self.set_status("no branch linked — use option 1 first");
+                        self.overlay = Overlay::None;
+                        return Ok(false);
+                    }
+                    match (
+                        git::commits_for_branch(&repo, &branch, 15),
+                        git::branch_ahead_behind(&repo, &branch),
+                    ) {
+                        (Ok(commits), Ok((ahead, behind))) => {
+                            self.overlay = Overlay::Git {
+                                mode: GitMode::Commits { commits, ahead, behind },
+                            };
+                        }
+                        (Err(e), _) | (_, Err(e)) => {
+                            self.set_status(format!("git: {e}"));
+                            self.overlay = Overlay::None;
+                        }
+                    }
+                }
+                KeyCode::Char('3') => {
+                    // PR status
+                    match (&self.bitbucket_workspace, &self.bitbucket_repo) {
+                        (Some(ws), Some(repo_name)) => {
+                            let branch = self.git_task_branch().unwrap_or_default();
+                            if branch.is_empty() {
+                                self.set_status("no branch linked — use option 1 first");
+                                self.overlay = Overlay::None;
+                                return Ok(false);
+                            }
+                            match crate::bitbucket::list_prs(ws, repo_name, &branch) {
+                                Ok(prs) if prs.is_empty() => {
+                                    self.set_status("no PRs found for this branch");
+                                    self.overlay = Overlay::None;
+                                }
+                                Ok(prs) => {
+                                    self.overlay = Overlay::Git {
+                                        mode: GitMode::PrStatus { prs, selected: 0 },
+                                    };
+                                }
+                                Err(e) => {
+                                    self.set_status(format!("bitbucket: {e}"));
+                                    self.overlay = Overlay::None;
+                                }
+                            }
+                        }
+                        _ => {
+                            self.set_status("set bitbucket_workspace + bitbucket_repo in config");
+                            self.overlay = Overlay::None;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            GitMode::LinkBranch { mut buffer } => match key.code {
+                KeyCode::Esc => {
+                    self.overlay = Overlay::Git { mode: GitMode::Menu };
+                }
+                KeyCode::Enter => {
+                    let branch = buffer.trim().to_string();
+                    if branch.is_empty() {
+                        self.set_status("branch name is empty");
+                        return Ok(false);
+                    }
+                    let Some(task) = self.selected_task() else {
+                        self.set_status("no task selected");
+                        self.overlay = Overlay::None;
+                        return Ok(false);
+                    };
+                    let task_id = task.id;
+                    if let Err(e) = db::integrations::upsert(&self.conn, task_id, "git", "branch", Some(&branch)) {
+                        self.set_status(format!("db error: {e}"));
+                    } else {
+                        self.set_status(format!("linked branch '{branch}'"));
+                    }
+                    self.overlay = Overlay::None;
+                }
+                KeyCode::Backspace => {
+                    buffer.pop();
+                }
+                KeyCode::Char(c)
+                    if key.modifiers == KeyModifiers::NONE
+                        || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    buffer.push(c);
+                }
+                _ => {}
+            },
+            GitMode::Commits { .. } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.overlay = Overlay::Git { mode: GitMode::Menu };
+                }
+                _ => {}
+            },
+            GitMode::PrStatus { .. } => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.overlay = Overlay::Git { mode: GitMode::Menu };
+                }
+                _ => {}
+            },
+        }
+        Ok(false)
+    }
+
     fn handle_form_key(&mut self, key: KeyEvent) -> Result<bool> {
         match key.code {
             KeyCode::Esc => {
@@ -808,6 +986,7 @@ impl App {
                 return Ok(false);
             }
             Overlay::Jira { .. } => return self.handle_jira_key(key),
+            Overlay::Git { .. } => return self.handle_git_key(key),
             Overlay::None => {}
         }
 
@@ -846,6 +1025,9 @@ impl App {
             KeyCode::Char('K') => self.reorder(-1)?,
             KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
                 self.open_jira_menu();
+            }
+            KeyCode::Char('b') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_git_menu();
             }
             KeyCode::Char('j') | KeyCode::Down => {
                 if !self.tasks.is_empty() {
