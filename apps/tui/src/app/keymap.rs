@@ -17,6 +17,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("t", "filter archive by tag"),
     ("c", "continue archive task today"),
     ("q", "quit"),
+    ("Ctrl+J", "JIRA menu (comment, transition, sprint sync)"),
     ("Esc", "close overlay / cancel"),
     ("Tab", "next field in form"),
     ("Enter", "save form"),

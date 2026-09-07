@@ -67,7 +67,7 @@ apps/tui/
 database_path = "/path/to/apps/web/local.db"
 user_email = "you@example.com"
 # timer_mode = "focus"   # optional; else user_settings.timer_mode
-# JIRA (E4) — env vars: JIRA_BASE_URL, JIRA_EMAIL, JIRA_TOKEN
+# JIRA (E4) — env vars: JIRA_SITE, JIRA_EMAIL, JIRA_TOKEN
 # jira_board = "AIMSIS"
 # jira_sprint_id = "123"
 ```
@@ -158,8 +158,8 @@ Chose option A: standalone `reqwest` calls from TUI. No web server dependency.
 | `pick_transition_id` | Match status name to transition |
 | `fetch_sprint_issues` | GET all issues in a sprint (board + sprint ID) |
 
-**TUI controls:** Ctrl+J opens JIRA menu → comment (C), transition (T), sprint sync (S).
-Credentials via env vars (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_TOKEN`).
+**TUI controls:** Ctrl+J opens JIRA menu → comment (1), transition (2), sprint sync (3).
+Credentials via env vars (`JIRA_SITE`, `JIRA_EMAIL`, `JIRA_TOKEN`).
 Board/sprint config in `config.toml` (`jira_board`, `jira_sprint_id`).
 
 ## E7 — Web dashboard changes
