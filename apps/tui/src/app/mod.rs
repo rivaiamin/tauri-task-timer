@@ -10,6 +10,7 @@ use crate::clipboard;
 use crate::db;
 use crate::db::tasks::{self, Task};
 use crate::jira;
+use crate::jira::Transition;
 use crate::report::{self, ReportTask};
 use crate::timer::{format_time, now_ms, parse_time_input};
 
@@ -47,6 +48,15 @@ pub struct ArchiveState {
     pub selected: usize,
 }
 
+#[derive(Clone)]
+#[allow(dead_code)]
+pub enum JiraMode {
+    Menu,
+    Comment { buffer: String },
+    Transition { transitions: Vec<Transition>, selected: usize },
+    Syncing,
+}
+
 pub enum Overlay {
     None,
     Help,
@@ -65,6 +75,7 @@ pub enum Overlay {
         notes: String,
         tags: String,
     },
+    Jira { mode: JiraMode },
 }
 
 pub struct App {
@@ -80,6 +91,8 @@ pub struct App {
     pub status: String,
     status_until: Option<Instant>,
     clipboard: Option<arboard::Clipboard>,
+    pub jira_board: Option<String>,
+    pub jira_sprint_id: Option<String>,
 }
 
 impl App {
@@ -88,6 +101,8 @@ impl App {
         user_id: String,
         date: NaiveDate,
         timer_mode: String,
+        jira_board: Option<String>,
+        jira_sprint_id: Option<String>,
     ) -> Result<Self> {
         let mut app = Self {
             conn,
@@ -107,6 +122,8 @@ impl App {
             status: String::new(),
             status_until: None,
             clipboard: None,
+            jira_board,
+            jira_sprint_id,
         };
         app.reload()?;
         Ok(app)
@@ -456,6 +473,215 @@ impl App {
         Ok(false)
     }
 
+    fn open_jira_menu(&mut self) {
+        let Some(t) = self.selected_task() else {
+            self.set_status("no task selected");
+            return;
+        };
+        let key = jira::issue_key_from_task(&t.label, t.description.as_deref().unwrap_or(""));
+        if key.is_none() {
+            self.set_status("no JIRA key in task label/description");
+            return;
+        }
+        self.overlay = Overlay::Jira {
+            mode: JiraMode::Menu,
+        };
+    }
+
+    fn jira_issue_key(&self) -> Option<String> {
+        self.selected_task()
+            .and_then(|t| jira::issue_key_from_task(&t.label, t.description.as_deref().unwrap_or("")))
+    }
+
+    fn handle_jira_key(&mut self, key: KeyEvent) -> Result<bool> {
+        let mut mode = match &self.overlay {
+            Overlay::Jira { mode } => mode.clone(),
+            _ => return Ok(false),
+        };
+        match mode {
+            JiraMode::Menu => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.overlay = Overlay::None;
+                }
+                KeyCode::Char('1') => {
+                    self.overlay = Overlay::Jira {
+                        mode: JiraMode::Comment {
+                            buffer: String::new(),
+                        },
+                    };
+                }
+                KeyCode::Char('2') => {
+                    let key = match self.jira_issue_key() {
+                        Some(k) => k,
+                        None => {
+                            self.set_status("no JIRA key");
+                            self.overlay = Overlay::None;
+                            return Ok(false);
+                        }
+                    };
+                    match jira::get_transitions(&key) {
+                        Ok(trans) if trans.is_empty() => {
+                            self.set_status("no transitions available");
+                            self.overlay = Overlay::None;
+                        }
+                        Ok(trans) => {
+                            self.overlay = Overlay::Jira {
+                                mode: JiraMode::Transition {
+                                    transitions: trans,
+                                    selected: 0,
+                                },
+                            };
+                        }
+                        Err(e) => {
+                            self.set_status(format!("transitions: {e}"));
+                            self.overlay = Overlay::None;
+                        }
+                    }
+                }
+                KeyCode::Char('3') => {
+                    let board = self.jira_board.clone();
+                    let sprint_id = self.jira_sprint_id.clone();
+                    match (board, sprint_id) {
+                        (Some(board), Some(sprint_id)) => {
+                            self.overlay = Overlay::Jira { mode: JiraMode::Syncing };
+                            match self.sync_sprint(&board, &sprint_id) {
+                                Ok(msg) => {
+                                    self.set_status(msg);
+                                    self.overlay = Overlay::None;
+                                    if let Err(e) = self.reload() { self.err_status(e); }
+                                }
+                                Err(e) => {
+                                    self.set_status(format!("sprint sync: {e}"));
+                                    self.overlay = Overlay::None;
+                                }
+                            }
+                        }
+                        _ => {
+                            self.set_status("set jira_board + jira_sprint_id in config.toml");
+                            self.overlay = Overlay::None;
+                        }
+                    }
+                }
+                _ => {}
+            },
+            JiraMode::Comment { mut buffer } => match key.code {
+                KeyCode::Esc => {
+                    self.overlay = Overlay::Jira {
+                        mode: JiraMode::Menu,
+                    };
+                }
+                KeyCode::Enter => {
+                    if buffer.trim().is_empty() {
+                        self.set_status("comment is empty");
+                        return Ok(false);
+                    }
+                    let key = match self.jira_issue_key() {
+                        Some(k) => k,
+                        None => {
+                            self.set_status("no JIRA key");
+                            self.overlay = Overlay::None;
+                            return Ok(false);
+                        }
+                    };
+                    let text = buffer.trim().to_string();
+                    match jira::post_comment(&key, &text) {
+                        Ok(()) => {
+                            self.set_status(format!("comment posted to {key}"));
+                            self.overlay = Overlay::None;
+                        }
+                        Err(e) => {
+                            self.set_status(format!("comment failed: {e}"));
+                            self.overlay = Overlay::None;
+                        }
+                    }
+                }
+                KeyCode::Backspace => {
+                    buffer.pop();
+                }
+                KeyCode::Char(c)
+                    if key.modifiers == KeyModifiers::NONE
+                        || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    buffer.push(c);
+                }
+                _ => {}
+            },
+            JiraMode::Transition {
+                ref transitions,
+                ref mut selected,
+            } => match key.code {
+                KeyCode::Esc => {
+                    self.overlay = Overlay::Jira {
+                        mode: JiraMode::Menu,
+                    };
+                }
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if !transitions.is_empty() {
+                        *selected = (*selected + 1).min(transitions.len() - 1);
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    *selected = selected.saturating_sub(1);
+                }
+                KeyCode::Enter => {
+                    if let Some(t) = transitions.get(*selected) {
+                        let tid = t.id.clone();
+                        let tname = t.to.as_ref()
+                            .and_then(|to| to.name.clone())
+                            .unwrap_or_else(|| t.name.clone());
+                        let key = match self.jira_issue_key() {
+                            Some(k) => k,
+                            None => {
+                                self.set_status("no JIRA key");
+                                self.overlay = Overlay::None;
+                                return Ok(false);
+                            }
+                        };
+                        match jira::transition_issue(&key, &tid) {
+                            Ok(()) => {
+                                self.set_status(format!("{key} → {tname}"));
+                                self.overlay = Overlay::None;
+                            }
+                            Err(e) => {
+                                self.set_status(format!("transition failed: {e}"));
+                                self.overlay = Overlay::None;
+                            }
+                        }
+                    }
+                }
+                _ => {}
+            },
+            JiraMode::Syncing => match key.code {
+                KeyCode::Esc | KeyCode::Enter => {
+                    self.overlay = Overlay::None;
+                }
+                _ => {}
+            },
+        }
+        Ok(false)
+    }
+
+
+    fn sync_sprint(&mut self, board: &str, sprint_id: &str) -> Result<String> {
+        let issues = jira::fetch_sprint_issues(board, sprint_id)?;
+        let today = self.date_str();
+        let mut created = 0u32;
+        let mut updated = 0u32;
+        let user_id = self.user_id.clone();
+        for (key, summary, _status) in &issues {
+            let label = format!("{key} {summary}");
+            let task = tasks::create_task(&self.conn, &user_id, &today, &label.trim(), Some(summary))?;
+            db::integrations::upsert(&self.conn, task.id, "jira", "issue_key", Some(key))?;
+            if task.description.as_deref() == Some(summary.as_str()) && !summary.is_empty() {
+                // newly created (description matched summary = no prior desc)
+                created += 1;
+            } else {
+                updated += 1;
+            }
+        }
+        Ok(format!("sprint sync: {created} created, {updated} updated, {} total", issues.len()))
+    }
+
     fn handle_form_key(&mut self, key: KeyEvent) -> Result<bool> {
         match key.code {
             KeyCode::Esc => {
@@ -581,6 +807,7 @@ impl App {
                 }
                 return Ok(false);
             }
+            Overlay::Jira { .. } => return self.handle_jira_key(key),
             Overlay::None => {}
         }
 
@@ -615,6 +842,11 @@ impl App {
             KeyCode::Char('q') => return Ok(true),
             KeyCode::Char('a') => { self.toggle_archive()?; }
             KeyCode::Char('?') => self.overlay = Overlay::Help,
+            KeyCode::Char('J') => self.reorder(1)?,
+            KeyCode::Char('K') => self.reorder(-1)?,
+            KeyCode::Char('j') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                self.open_jira_menu();
+            }
             KeyCode::Char('j') | KeyCode::Down => {
                 if !self.tasks.is_empty() {
                     self.selected = (self.selected + 1).min(self.tasks.len() - 1);
@@ -623,8 +855,6 @@ impl App {
             KeyCode::Char('k') | KeyCode::Up => {
                 self.selected = self.selected.saturating_sub(1);
             }
-            KeyCode::Char('J') => self.reorder(1)?,
-            KeyCode::Char('K') => self.reorder(-1)?,
             KeyCode::Char('h') | KeyCode::Left => self.shift_day(-1)?,
             KeyCode::Char('l') | KeyCode::Right => self.shift_day(1)?,
             KeyCode::Char(' ') => self.start_stop()?,

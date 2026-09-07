@@ -8,12 +8,16 @@ pub struct Config {
     pub database_path: String,
     pub user_email: String,
     pub timer_mode: Option<String>,
+    pub jira_board: Option<String>,
+    pub jira_sprint_id: Option<String>,
 }
 
 const EXAMPLE: &str = r#"# ~/.config/task-timer-tui/config.toml
 database_path = "/home/amin/projects/tauri/tauri-task-timer/apps/web/local.db"
 user_email = "you@example.com"
 # timer_mode = "focus"  # optional: "focus" | "parallel"
+# jira_board = "AIMSIS"
+# jira_sprint_id = "123"
 "#;
 
 pub fn default_path() -> Result<PathBuf> {

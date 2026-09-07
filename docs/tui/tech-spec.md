@@ -1,6 +1,6 @@
 # Tech Spec — Task Timer TUI (monorepo)
 
-**Last updated:** 2026-08-31
+**Last updated:** 2026-09-07
 
 ## System context
 
@@ -51,9 +51,7 @@ apps/tui/
       timer_view.rs                # Daily layout
       archive_view.rs              # E3
       widgets.rs
-    integrations/
-      jira.rs                      # E4 (or sidecar bridge)
-      bitbucket.rs                 # E5
+    jira.rs                      # E4 — direct JIRA REST API
     hooks/
       listener.rs                  # E6
 ```
@@ -69,6 +67,9 @@ apps/tui/
 database_path = "/path/to/apps/web/local.db"
 user_email = "you@example.com"
 # timer_mode = "focus"   # optional; else user_settings.timer_mode
+# JIRA (E4) — env vars: JIRA_BASE_URL, JIRA_EMAIL, JIRA_TOKEN
+# jira_board = "AIMSIS"
+# jira_sprint_id = "123"
 ```
 
 CLI overrides: `task-timer-tui --date YYYY-MM-DD --db PATH --config PATH`
@@ -142,15 +143,24 @@ JSON lines on stdin or Unix domain socket `~/.cache/task-timer-tui/hook.sock`:
 
 Cursor hook example (`.cursor/hooks.json`): invoke `task-timer-hook` script that writes to socket or calls `POST /api/session/hook`.
 
-## E4 — JIRA implementation options
+## E4 — JIRA Integration (implemented)
 
-| Option | Pros | Cons |
-|--------|------|------|
-| **A. Rust `reqwest` in TUI** | Standalone, no web server | Duplicate logic vs `jira.ts` |
-| **B. TS sidecar** | Reuse `jira.ts` | Extra process, web deps |
-| **C. Web API only** | Single implementation | TUI needs web running |
+Chose option A: standalone `reqwest` calls from TUI. No web server dependency.
 
-**Recommendation:** C for correctness; B if offline TUI is mandatory for JIRA sync.
+| Function | Purpose |
+|----------|---------|
+| `jira_fetch` | GET issue — summary, description, status |
+| `issue_key_from_task` | Parse `AIM-NNNN` from label/description |
+| `description_for_task` | Fetch summary + status for task description field |
+| `post_comment` | POST comment on issue |
+| `get_transitions` | GET available workflow transitions |
+| `transition_issue` | POST transition to move issue status |
+| `pick_transition_id` | Match status name to transition |
+| `fetch_sprint_issues` | GET all issues in a sprint (board + sprint ID) |
+
+**TUI controls:** Ctrl+J opens JIRA menu → comment (C), transition (T), sprint sync (S).
+Credentials via env vars (`JIRA_BASE_URL`, `JIRA_EMAIL`, `JIRA_TOKEN`).
+Board/sprint config in `config.toml` (`jira_board`, `jira_sprint_id`).
 
 ## E7 — Web dashboard changes
 
