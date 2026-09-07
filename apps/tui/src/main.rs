@@ -4,6 +4,7 @@ mod clipboard;
 mod config;
 mod db;
 mod git;
+mod hooks;
 mod jira;
 mod report;
 mod timer;

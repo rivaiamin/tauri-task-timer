@@ -107,6 +107,7 @@ pub struct App {
     pub git_repo_path: Option<std::path::PathBuf>,
     pub bitbucket_workspace: Option<String>,
     pub bitbucket_repo: Option<String>,
+    hook_listener: crate::hooks::HookListener,
 }
 
 impl App {
@@ -144,6 +145,7 @@ impl App {
             git_repo_path,
             bitbucket_workspace,
             bitbucket_repo,
+            hook_listener: crate::hooks::HookListener::new(),
         };
         app.reload()?;
         Ok(app)
@@ -1066,6 +1068,58 @@ impl App {
         Ok(false)
     }
 
+    fn handle_hook_event(&mut self, ev: crate::hooks::HookEvent) -> Result<()> {
+        use crate::hooks::HookEvent;
+        match ev {
+            HookEvent::SessionStart { task_id } => {
+                let id = if let Some(tid) = task_id {
+                    tid
+                } else if let Some(t) = self.selected_task() {
+                    t.id
+                } else {
+                    self.set_status("hook: no task selected");
+                    return Ok(());
+                };
+                let exclusive = self.timer_mode == "focus";
+                tasks::start_timer(&self.conn, &self.user_id, id, exclusive)?;
+                self.reload()?;
+                self.set_status(format!("hook: timer started (task {id})"));
+            }
+            HookEvent::WaitingUser => {
+                // Stop the currently running task.
+                let running: Vec<i64> = self
+                    .tasks
+                    .iter()
+                    .filter(|t| t.is_running)
+                    .map(|t| t.id)
+                    .collect();
+                for id in &running {
+                    tasks::stop_timer(&self.conn, &self.user_id, *id)?;
+                }
+                if !running.is_empty() {
+                    self.reload()?;
+                    self.set_status("hook: timer paused");
+                }
+            }
+            HookEvent::SessionEnd => {
+                let running: Vec<i64> = self
+                    .tasks
+                    .iter()
+                    .filter(|t| t.is_running)
+                    .map(|t| t.id)
+                    .collect();
+                for id in &running {
+                    tasks::stop_timer(&self.conn, &self.user_id, *id)?;
+                }
+                if !running.is_empty() {
+                    self.reload()?;
+                    self.set_status("hook: timers stopped");
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub fn run(&mut self) -> Result<()> {
         let mut terminal = ratatui::init();
         let result = (|| {
@@ -1081,6 +1135,12 @@ impl App {
                             Ok(false) => {}
                             Err(e) => self.err_status(e),
                         }
+                    }
+                }
+                // Poll hook socket for agent events.
+                if let Some(ev) = self.hook_listener.poll() {
+                    if let Err(e) = self.handle_hook_event(ev) {
+                        self.err_status(e);
                     }
                 }
                 if last_reload.elapsed() >= StdDuration::from_secs(1) {
