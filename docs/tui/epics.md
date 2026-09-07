@@ -28,7 +28,7 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 - [x] Focus mode stops other tasks same day
 - [x] `cargo test -p task-timer-tui` passes
 - [x] Export markdown report to clipboard (`x`; matches web/MCP format)
-- [ ] Merge `feat/tui-mvp` → `main`
+- [x] Merge `feat/tui-mvp` → `main`
 
 ---
 
@@ -59,7 +59,7 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 ## E3 — Archive View
 
-**Status:** Planned · **Depends on:** E2
+**Status:** Done (`main`) · **Depends on:** E2
 
 **Goal:** Backlog of unfinished work across days.
 
@@ -82,9 +82,13 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 ## E4 — JIRA Integration
 
-**Status:** Planned · **Depends on:** E2
+**Status:** In Progress (`feat/e4-jira`) · **Depends on:** E2
 
 **Goal:** Sprint sync and JIRA mutations from TUI; web/MCP can reuse.
+
+### Existing work
+
+`apps/tui/src/jira.rs` already provides: credential loading (env + `~/.aimsis/jira.env`), issue-key extraction from label/description, and summary fetch + description merge.
 
 ### Apps
 
@@ -96,10 +100,14 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 ### Acceptance criteria
 
+- [x] Credential loading from env vars or `~/.aimsis/jira.env`
+- [x] Issue-key extraction from label or description
+- [x] Summary fetch merges into task description
 - [ ] Sprint fetch creates/updates tasks + `task_integrations`
 - [ ] Comment from TUI appears in JIRA
 - [ ] Status transition updates JIRA + local task
-- [ ] Auth failure is non-destructive
+- [ ] Auth failure is non-destructive (toast, not crash)
+- [ ] `cargo test -p task-timer-tui` passes
 
 ---
 
