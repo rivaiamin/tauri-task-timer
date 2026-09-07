@@ -99,23 +99,23 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 
 ### Shared logic
 
-- [ ] Decide Rust vs TS sidecar — record in tech-spec
-- [ ] JIRA config (env / config file)
+- [x] Decide Rust vs TS sidecar — record in tech-spec
+- [x] JIRA config (env / config file)
 
 ### TUI
 
-- [ ] Sync menu + fetch sprint / by key
-- [ ] Detail, comment, transition UI
-- [ ] Store in `task_integrations`
+- [x] Sync menu + fetch sprint / by key
+- [x] Detail, comment, transition UI
+- [x] Store in `task_integrations`
 
 ### Web
 
-- [ ] Expose JIRA ops via API (wrap `jira.ts`)
-- [ ] Optional dashboard JIRA panel
+- [x] Expose JIRA ops via API (wrap `jira.ts`)
+- [x] Optional dashboard JIRA panel
 
 ### MCP
 
-- [ ] `sync_jira_sprint`, `jira_comment`, `jira_transition`
+- [x] `sync_jira_sprint`, `jira_comment`, `jira_transition`
 
 ---
 
@@ -123,17 +123,17 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 
 ### Web
 
-- [ ] Bitbucket API module
-- [ ] Routes: commits, PR comments, status
+- [x] Bitbucket API module
+- [x] Routes: commits, PR comments, status
 
 ### TUI
 
-- [ ] Link branch, show commits, PR status
-- [ ] Import PR comments → `task_comments`
+- [x] Link branch, show commits, PR status
+- [x] Import PR comments → `task_comments`
 
 ### MCP
 
-- [ ] `link_branch`, `fetch_pr_comments` (optional)
+- [x] `link_branch`, `fetch_pr_comments` (optional)
 
 ---
 
@@ -141,45 +141,73 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 
 ### TUI
 
-- [ ] Hook listener (protocol in tech-spec)
-- [ ] `session_start` → start timer
-- [ ] `waiting_user` → pause
-- [ ] `session_end` → stop
+- [x] Hook listener (protocol in tech-spec)
+- [x] `session_start` → start timer
+- [x] `waiting_user` → pause
+- [x] `session_end` → stop
 
 ### MCP (`apps/mcp`)
 
-- [ ] `session_start` / `session_pause` / `session_end` tools
-- [ ] Map to same REST endpoints as manual timer ops
+- [x] `session_start` / `session_pause` / `session_end` tools
+- [x] Map to same REST endpoints as manual timer ops
 
 ### Web (`apps/web`)
 
-- [ ] `POST /api/session/hook` (Bearer API key)
-- [ ] Document in `docs/api.md`
+- [x] `POST /api/session/hook` (Bearer API key)
+- [x] Document in `docs/api.md`
 
 ### Repo
 
-- [ ] `.cursor/hooks.json` example
-- [ ] Codex `hooks.json` example
-- [ ] Update `docs/ai-control.md`
+- [x] `.cursor/hooks.json` example
+- [x] Codex `hooks.json` example
+- [x] Update `docs/ai-control.md`
 
 ---
 
 ## E7 — Web Dashboard Parity
 
-### Web (`apps/web`)
+### 1. Date Navigation (`apps/web`)
 
-- [ ] Dashboard filters by `work_date`; default today
-- [ ] Date picker (prev/next day)
-- [ ] `taskService.create_task`: dedup + continue-by-title (match TUI)
-- [ ] Extended field UI (after E2)
-- [ ] Archive/backlog UI (after E3)
-- [ ] SSE for comments/integrations
+- [ ] `+page.server.ts`: accept `?date=YYYY-MM-DD` param; default to today
+- [ ] `+page.svelte`: date picker bar — prev day / date input / next day
+- [ ] URL reflects date (`/dashboard?date=2026-09-07`); bookmarkable
+
+### 2. Create Dedup (`apps/web/src/lib/server/taskService.ts`)
+
+- [ ] `createTask`: same label + same `work_date` → return existing row (no insert)
+- [ ] `createTask`: same label + different `work_date` → insert new row, copy description from most recent same-label row if caller didn't supply one
+- [ ] Unit tests matching TUI `create_same_label_same_day_returns_existing` / `create_same_label_new_day_copies_description`
+
+### 3. Extended Field UI (`apps/web/src/routes/dashboard/`)
+
+- [ ] Edit modal: add code, link, status, notes, tags fields
+- [ ] Task card: show code badge, status pill, tags if present
+- [ ] Create form: optional status/tags fields
+- [ ] Wire to existing `PATCH /api/tasks/[id]` endpoint
+
+### 4. Archive Page (`apps/web/src/routes/dashboard/archive/`)
+
+- [ ] New route `+page.svelte` + `+page.server.ts`
+- [ ] Fetch from `GET /api/tasks?archived=true` with filter params (`q`, `tag`, `status`)
+- [ ] Filter bar: text search, tag select, status select
+- [ ] "Continue today" button per task → POST create with dedup (task 2)
+- [ ] Navigation link from daily dashboard ↔ archive
+
+### 5. SSE Fix + Extend (`apps/web/src/lib/server/`)
+
+- [ ] Fix `+page.svelte` SSE handler: listen for `type === 'change'` (currently checks `'tasks-changed'` — never fires)
+- [ ] `events.ts`: publish on comment add, integration upsert (not just task mutations)
+- [ ] Dashboard + archive subscribe to SSE; refresh on relevant entity changes
 
 ### Verification
 
 - [ ] Side-by-side: same DB, same day, TUI total elapsed = web total elapsed
 - [ ] Create in web → visible in TUI after refresh
 - [ ] Create in TUI → visible in web via SSE
+- [ ] Date navigation: prev/next day loads correct tasks, URL bookmarkable
+- [ ] Dedup: create same label twice same day → returns existing, no duplicate
+- [ ] Archive: non-done tasks visible, "continue today" creates row with dedup
+- [ ] Extended fields: edit/save code/link/status/notes/tags, persist across refresh
 
 ---
 

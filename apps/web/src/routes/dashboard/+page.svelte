@@ -1,5 +1,6 @@
 <script lang="ts">
   import { onMount, onDestroy } from 'svelte';
+  import { goto } from '$app/navigation';
   import { formatTime, currentElapsedSeconds, buildCsvReport, buildMarkdownReport } from 'shared';
   import type { PageData } from './$types';
 
@@ -19,6 +20,7 @@
 
   let tasks: TaskDTO[] = data.tasks as TaskDTO[];
   let timerMode: 'focus' | 'parallel' = data.timerMode as 'focus' | 'parallel';
+  let workDate: string = data.workDate as string;
   let taskInput = '';
   let now = Date.now();
   let hasPlayed8HourSound = false;
@@ -146,7 +148,7 @@
 
   async function refresh() {
     try {
-      const d = await api(`/tasks?date=${currentWorkDate()}`);
+      const d = await api(`/tasks?date=${workDate}`);
       tasks = d.tasks;
     } catch (e) {
       console.error('refresh failed', e);
@@ -158,10 +160,41 @@
     refreshTimer = setTimeout(refresh, 120);
   }
 
-  function currentWorkDate(): string {
-    const d = new Date();
+  function shiftDate(iso: string, days: number): string {
+    const d = new Date(iso + 'T12:00:00');
+    d.setDate(d.getDate() + days);
     return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
   }
+
+  function navigateDate(iso: string) {
+    workDate = iso;
+    goto(`/dashboard?date=${iso}`, { replaceState: true, keepFocus: true });
+    scheduleRefresh();
+  }
+
+  function prevDay() {
+    navigateDate(shiftDate(workDate, -1));
+  }
+
+  function nextDay() {
+    navigateDate(shiftDate(workDate, 1));
+  }
+
+  function onDateInput(e: Event) {
+    const v = (e.target as HTMLInputElement).value;
+    if (/^\d{4}-\d{2}-\d{2}$/.test(v)) navigateDate(v);
+  }
+
+  function goToday() {
+    const now = new Date();
+    const today = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
+    if (workDate !== today) navigateDate(today);
+  }
+
+  $: isToday = workDate === (() => {
+    const d = new Date();
+    return `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, '0')}-${String(d.getDate()).padStart(2, '0')}`;
+  })();
 
   function fail(e: unknown) {
     alert(e instanceof Error ? e.message : 'Something went wrong');
@@ -512,6 +545,25 @@
 <div class="min-h-screen p-4 sm:p-8 bg-gray-50 text-gray-900 dark:bg-gray-950 dark:text-gray-100">
   <div class="max-w-2xl mx-auto bg-white dark:bg-gray-900 rounded-xl shadow-lg p-6 sm:p-8 ring-1 ring-black/5 dark:ring-white/10">
     <header class="mb-6">
+      <div class="flex items-center justify-center gap-2 mb-4">
+        <button on:click={prevDay} class="p-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors" type="button" title="Previous day">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7" /></svg>
+        </button>
+        <input
+          type="date"
+          value={workDate}
+          on:change={onDateInput}
+          class="px-3 py-1.5 text-sm font-medium rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500"
+        />
+        <button on:click={nextDay} class="p-2 rounded-lg border border-gray-300 dark:border-gray-700 bg-white dark:bg-gray-900 text-gray-700 dark:text-gray-200 hover:bg-gray-50 dark:hover:bg-gray-800 transition-colors" type="button" title="Next day">
+          <svg xmlns="http://www.w3.org/2000/svg" class="h-4 w-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7" /></svg>
+        </button>
+        {#if !isToday}
+          <button on:click={goToday} class="px-3 py-1.5 text-sm font-medium rounded-lg border border-blue-300 dark:border-blue-700 bg-blue-50 dark:bg-blue-950/40 text-blue-700 dark:text-blue-300 hover:bg-blue-100 dark:hover:bg-blue-950/60 transition-colors" type="button">
+            Today
+          </button>
+        {/if}
+      </div>
       <div>
         <h1 class="text-3xl font-bold text-gray-900 dark:text-gray-100 text-center sm:text-left">Task Timer</h1>
         <p class="text-center sm:text-left text-gray-500 dark:text-gray-400 mt-1">

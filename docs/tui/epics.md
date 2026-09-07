@@ -163,28 +163,31 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 ## E7 — Web Dashboard Parity
 
-**Status:** Planned · **Depends on:** E1, E2 (E3 for archive UI)
+**Status:** In Progress · **Depends on:** E1, E2, E3
 
-**Goal:** Web dashboard matches TUI daily workflow — **explicit so it is not forgotten**.
+**Goal:** Web dashboard matches TUI daily workflow.
 
-### Apps
+### Tasks
 
-| App | Deliverable |
-|-----|-------------|
-| Web | Daily date picker, `work_date` filter on dashboard |
-| Web | Continue-by-title on create (match `taskService` + TUI) |
-| Web | Extended field UI after E2 |
-| Web | Archive/backlog page after E3 |
-| Web | SSE events for comments/integrations |
+| # | Task | Depends on |
+|---|------|-----------|
+| 1 | Date navigation (prev/next, `?date=` param) | — |
+| 2 | Create dedup + continue-by-title | — |
+| 3 | Extended field UI (code, link, status, notes, tags) | E2 |
+| 4 | Archive page with filters + "continue today" | E3 |
+| 5 | Fix SSE handler + extend to comments/integrations | — |
 
 ### Acceptance criteria
 
 - [ ] Dashboard defaults to today; only shows that day's tasks
-- [ ] Date navigation matches TUI semantics
-- [ ] Create duplicate label same day returns existing task
-- [ ] Create same label new day copies description
-- [ ] Extended fields editable in UI
-- [ ] Archive view or filter equivalent to TUI E3
+- [ ] Date navigation: prev/next day, URL bookmarkable
+- [ ] Create duplicate label same day → returns existing task (no dupe)
+- [ ] Create same label new day → copies description from most recent
+- [ ] Extended fields (code, link, status, notes, tags) editable in UI
+- [ ] Archive view with filter bar (q, tag, status)
+- [ ] "Continue today" from archive creates row via dedup rules
+- [ ] SSE auto-refreshes dashboard on task/comment/integration changes
+- [ ] Side-by-side: TUI total elapsed = web total elapsed for same day
 
 ---
 
