@@ -82,7 +82,7 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 ## E4 — JIRA Integration
 
-**Status:** In Progress (`feat/e4-jira`) · **Depends on:** E2
+**Status:** Done (`feat/e4-jira`) · **Depends on:** E2
 
 **Goal:** Sprint sync and JIRA mutations from TUI; web/MCP can reuse.
 
@@ -103,11 +103,11 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 - [x] Credential loading from env vars or `~/.aimsis/jira.env`
 - [x] Issue-key extraction from label or description
 - [x] Summary fetch merges into task description
-- [ ] Sprint fetch creates/updates tasks + `task_integrations`
-- [ ] Comment from TUI appears in JIRA
-- [ ] Status transition updates JIRA + local task
-- [ ] Auth failure is non-destructive (toast, not crash)
-- [ ] `cargo test -p task-timer-tui` passes
+- [x] Sprint fetch creates/updates tasks + `task_integrations`
+- [x] Comment from TUI appears in JIRA
+- [x] Status transition updates JIRA + local task
+- [x] Auth failure is non-destructive (toast, not crash)
+- [x] `cargo test -p task-timer-tui` passes
 
 ---
 
