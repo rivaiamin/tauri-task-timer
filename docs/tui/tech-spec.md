@@ -55,7 +55,7 @@ apps/tui/
     bitbucket.rs                  # E5 — Bitbucket REST API
     git.rs                        # E5 — git CLI wrapper
     hooks/
-      listener.rs                  # E6
+      mod.rs                         # E6 — hook event types + UDS listener
 ```
 
 ### Dependencies
@@ -131,9 +131,15 @@ Update `docs/api.md` when each ships.
 
 Keep MCP thin — no business logic duplication; web `taskService` stays canonical for HTTP path.
 
-## E6 — Hook protocol (draft)
+## E6 — Hook protocol (implemented)
 
-JSON lines on stdin or Unix domain socket `~/.cache/task-timer-tui/hook.sock`:
+Agent session lifecycle hooks. Timer follows agent start/pause/end.
+
+### Transport
+
+Unix domain socket: `~/.cache/task-timer-tui/hook.sock`
+
+JSON lines protocol — one JSON object per line:
 
 ```json
 {"event":"session_start","task_id":42}
@@ -141,13 +147,49 @@ JSON lines on stdin or Unix domain socket `~/.cache/task-timer-tui/hook.sock`:
 {"event":"session_end"}
 ```
 
-| Event | TUI action | MCP equivalent |
-|-------|------------|----------------|
-| `session_start` | `start_timer(task_id)` | `start_timer` tool |
-| `waiting_user` | `stop_timer` (pause) | `stop_timer` on active |
-| `session_end` | `stop_timer` on all running today | `stop_timer` |
+| Event | TUI action | MCP tool | Web endpoint |
+|-------|------------|----------|--------------|
+| `session_start` | `start_timer(task_id)` or selected task if no `task_id` | `session_start` | `POST /api/session/hook` |
+| `waiting_user` | `stop_timer` on all running | `session_pause` | `POST /api/session/hook` |
+| `session_end` | `stop_timer` on all running today | `session_end` | `POST /api/session/hook` |
 
-Cursor hook example (`.cursor/hooks.json`): invoke `task-timer-hook` script that writes to socket or calls `POST /api/session/hook`.
+### Hook script
+
+`scripts/task-timer-hook` — Python3 script, no external deps:
+
+```bash
+task-timer-hook session_start [TASK_ID]
+task-timer-hook waiting_user
+task-timer-hook session_end
+```
+
+Silent exit if TUI not running (socket missing). Never crashes agent hooks.
+
+### Agent integration
+
+- **Cursor** (`.cursor/hooks.json`): `SessionStart` → `task-timer-hook session_start`; `SessionEnd` → `task-timer-hook session_end`
+- **Codex** (`.codex/hooks.json`): same pattern
+- **MCP agents**: use `session_start`, `session_pause`, `session_end` tools (thin wrappers over `POST /api/session/hook`)
+- **External agents**: `POST /api/session/hook` with Bearer API key
+
+### Web endpoint
+
+`POST /api/session/hook` — Bearer-authenticated, requires `tasks:write` scope.
+
+```json
+{"event":"session_start","task_id":42}
+{"event":"waiting_user"}
+{"event":"session_end"}
+```
+
+### TUI implementation
+
+`apps/tui/src/hooks/mod.rs` — non-blocking UDS listener polled every 250ms in the event loop.
+
+- `HookEvent` enum with serde tag deserialization
+- `HookListener` wraps `std::os::unix::net::UnixListener` (no extra deps)
+- Stale socket cleanup on startup and drop
+- Errors logged as status messages, never crash TUI
 
 ## E4 — JIRA Integration (implemented)
 

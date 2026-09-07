@@ -137,7 +137,7 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 ## E6 — AI Agent Hooks
 
-**Status:** Planned · **Depends on:** E1 (E4 for JIRA chain)
+**Status:** Done (`main`) · **Depends on:** E1 (E4 for JIRA chain)
 
 **Goal:** Timer follows agent session lifecycle; MCP stays the primary agent API.
 
@@ -148,16 +148,16 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 | TUI | Hook listener → start/pause/stop |
 | MCP | Session tools: `session_start`, `session_pause`, `session_end` mapping to timer |
 | Web | `POST /api/session/hook` (Bearer key) for non-MCP agents |
-| Repo | `.cursor/hooks.json` + Codex hook examples in docs |
+| Repo | `.cursor/hooks.json` + `.codex/hooks.json` with `task-timer-hook` |
 
 ### Acceptance criteria
 
-- [ ] Documented hook protocol in [tech-spec.md](./tech-spec.md)
-- [ ] Cursor session start starts timer on selected task
-- [ ] Waiting for user pauses timer
-- [ ] Session end stops timer
-- [ ] MCP tools mirror hook behavior
-- [ ] Hook failure does not crash TUI or web
+- [x] Documented hook protocol in [tech-spec.md](./tech-spec.md)
+- [x] Cursor session start starts timer on selected task
+- [x] Waiting for user pauses timer
+- [x] Session end stops timer
+- [x] MCP tools mirror hook behavior
+- [x] Hook failure does not crash TUI or web
 
 ---
 
