@@ -271,5 +271,34 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
     ({ format }) => api(`/report?format=${format ?? 'markdown'}`)
   );
 
+  // E6 — Session lifecycle tools
+  tool(
+    'session_start',
+    {
+      title: 'Session start',
+      description: "Start a timer for an agent session. Provide task_id to start that task's timer (exclusive/focus mode).",
+      inputSchema: { task_id: z.number().int().positive() }
+    },
+    ({ task_id }) => api('/session/hook', 'POST', { event: 'session_start', task_id })
+  );
+
+  tool(
+    'session_pause',
+    {
+      title: 'Session pause',
+      description: 'Pause the currently running timer (e.g. while waiting for user input).'
+    },
+    () => api('/session/hook', 'POST', { event: 'waiting_user' })
+  );
+
+  tool(
+    'session_end',
+    {
+      title: 'Session end',
+      description: 'Stop all running timers for today (e.g. when the agent session ends).'
+    },
+    () => api('/session/hook', 'POST', { event: 'session_end' })
+  );
+
   return server;
 }
