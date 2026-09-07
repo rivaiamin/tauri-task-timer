@@ -1,7 +1,9 @@
 mod app;
+mod bitbucket;
 mod clipboard;
 mod config;
 mod db;
+mod git;
 mod jira;
 mod report;
 mod timer;
@@ -66,6 +68,12 @@ fn main() -> Result<()> {
         }
     }
     let date = args.date.unwrap_or_else(|| Local::now().date_naive());
-    let mut app = App::new(conn, user_id, date, timer_mode, cfg.jira_board.clone(), cfg.jira_sprint_id.clone())?;
+    let repo_root = cfg.resolve_repo_root();
+    let mut app = App::new(
+        conn, user_id, date, timer_mode,
+        cfg.jira_board.clone(), cfg.jira_sprint_id.clone(),
+        repo_root,
+        cfg.bitbucket_workspace.clone(), cfg.bitbucket_repo.clone(),
+    )?;
     app.run()
 }

@@ -114,6 +114,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Overlay::Form { .. } => {}
         Overlay::Filter { input, buffer } => draw_filter(frame, input, buffer),
         Overlay::Jira { .. } => {}
+        Overlay::Git { .. } => {}
     }
 }
 
