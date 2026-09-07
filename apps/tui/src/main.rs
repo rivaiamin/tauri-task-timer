@@ -66,6 +66,6 @@ fn main() -> Result<()> {
         }
     }
     let date = args.date.unwrap_or_else(|| Local::now().date_naive());
-    let mut app = App::new(conn, user_id, date, timer_mode)?;
+    let mut app = App::new(conn, user_id, date, timer_mode, cfg.jira_board.clone(), cfg.jira_sprint_id.clone())?;
     app.run()
 }

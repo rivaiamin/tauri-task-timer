@@ -91,6 +91,8 @@ pub struct App {
     pub status: String,
     status_until: Option<Instant>,
     clipboard: Option<arboard::Clipboard>,
+    pub jira_board: Option<String>,
+    pub jira_sprint_id: Option<String>,
 }
 
 impl App {
@@ -99,6 +101,8 @@ impl App {
         user_id: String,
         date: NaiveDate,
         timer_mode: String,
+        jira_board: Option<String>,
+        jira_sprint_id: Option<String>,
     ) -> Result<Self> {
         let mut app = Self {
             conn,
@@ -118,6 +122,8 @@ impl App {
             status: String::new(),
             status_until: None,
             clipboard: None,
+            jira_board,
+            jira_sprint_id,
         };
         app.reload()?;
         Ok(app)
@@ -533,8 +539,28 @@ impl App {
                     }
                 }
                 KeyCode::Char('3') => {
-                    self.set_status("sprint sync: not yet wired (needs board/sprint config)");
-                    self.overlay = Overlay::None;
+                    let board = self.jira_board.clone();
+                    let sprint_id = self.jira_sprint_id.clone();
+                    match (board, sprint_id) {
+                        (Some(board), Some(sprint_id)) => {
+                            self.overlay = Overlay::Jira { mode: JiraMode::Syncing };
+                            match self.sync_sprint(&board, &sprint_id) {
+                                Ok(msg) => {
+                                    self.set_status(msg);
+                                    self.overlay = Overlay::None;
+                                    if let Err(e) = self.reload() { self.err_status(e); }
+                                }
+                                Err(e) => {
+                                    self.set_status(format!("sprint sync: {e}"));
+                                    self.overlay = Overlay::None;
+                                }
+                            }
+                        }
+                        _ => {
+                            self.set_status("set jira_board + jira_sprint_id in config.toml");
+                            self.overlay = Overlay::None;
+                        }
+                    }
                 }
                 _ => {}
             },
@@ -633,6 +659,27 @@ impl App {
             },
         }
         Ok(false)
+    }
+
+
+    fn sync_sprint(&mut self, board: &str, sprint_id: &str) -> Result<String> {
+        let issues = jira::fetch_sprint_issues(board, sprint_id)?;
+        let today = self.date_str();
+        let mut created = 0u32;
+        let mut updated = 0u32;
+        let user_id = self.user_id.clone();
+        for (key, summary, _status) in &issues {
+            let label = format!("{key} {summary}");
+            let task = tasks::create_task(&self.conn, &user_id, &today, &label.trim(), Some(summary))?;
+            db::integrations::upsert(&self.conn, task.id, "jira", "issue_key", Some(key))?;
+            if task.description.as_deref() == Some(summary.as_str()) && !summary.is_empty() {
+                // newly created (description matched summary = no prior desc)
+                created += 1;
+            } else {
+                updated += 1;
+            }
+        }
+        Ok(format!("sprint sync: {created} created, {updated} updated, {} total", issues.len()))
     }
 
     fn handle_form_key(&mut self, key: KeyEvent) -> Result<bool> {
