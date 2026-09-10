@@ -101,7 +101,7 @@
     sse.onmessage = (e) => {
       try {
         const payload = JSON.parse(e.data);
-        if (payload.type === 'tasks-changed') scheduleRefresh();
+        if (payload.type === 'change') scheduleRefresh();
       } catch {
         // ignore malformed event
       }
@@ -206,7 +206,7 @@
     if (!label) return;
     taskInput = '';
     try {
-      await api('/tasks', { method: 'POST', body: { label } });
+      await api('/tasks', { method: 'POST', body: { label, workDate } });
       scheduleRefresh();
     } catch (e) {
       fail(e);
@@ -262,7 +262,7 @@
     }
     if (!confirm('Are you sure you want to reset all timers to 00:00:00?')) return;
     try {
-      await api('/tasks/reset-all', { method: 'POST' });
+      await api('/tasks/reset-all', { method: 'POST', body: { workDate } });
       scheduleRefresh();
     } catch (e) {
       fail(e);
