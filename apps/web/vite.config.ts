@@ -1,6 +1,6 @@
 import tailwindcss from '@tailwindcss/vite';
 import { sveltekit } from '@sveltejs/kit/vite';
-import { defineConfig } from 'vite';
+import { defineConfig } from 'vitest/config';
 import path from 'path';
 import { fileURLToPath } from 'url';
 
@@ -20,5 +20,9 @@ export default defineConfig({
       // Ensure proper resolution in monorepo
       $lib: path.resolve(__dirname, './src/lib')
     }
+  },
+  test: {
+    include: ['src/**/*.test.ts'],
+    environment: 'node'
   }
 });
