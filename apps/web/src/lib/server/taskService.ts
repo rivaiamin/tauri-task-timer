@@ -2,6 +2,8 @@
 // Used by the REST API (browser + AI agents). Pure timer math lives in `shared`.
 import { and, asc, desc, eq, like, ne, or, sql } from 'drizzle-orm';
 import { currentElapsedSeconds, buildMarkdownReport, buildCsvReport } from 'shared';
+import { todayISO } from '$lib/dates';
+import { resolveCreate, insertTask } from './taskCreate';
 import { db, schema } from './db';
 import { publish } from './events';
 import * as jira from './jira';
@@ -137,6 +139,7 @@ export function listTasks(
 export interface TaskCreate {
   label: string;
   description: string | null;
+  workDate?: string; // YYYY-MM-DD; default today
   code?: string | null;
   link?: string | null;
   status?: string;
@@ -145,37 +148,22 @@ export interface TaskCreate {
 }
 
 export async function createTask(userId: string, input: TaskCreate): Promise<TaskDTO> {
-  const { label, description } = input;
-  let finalDescription = description ?? null;
+  const workDate = input.workDate ?? todayISO();
+  const trimmed = { ...input, label: input.label.trim(), workDate };
+
+  const resolved = resolveCreate(db, userId, trimmed);
+  if (resolved.existing) return toDTO(resolved.existing);
+
+  // JIRA summary fetch (fire-and-forget, insert path only).
+  let description = resolved.description;
   try {
-    finalDescription = await jira.onCreate(label, finalDescription);
+    const fetched = await jira.onCreate(trimmed.label, description);
+    if (fetched) description = fetched;
   } catch (err) {
     console.error('[taskService] jira.onCreate error:', err instanceof Error ? err.message : err);
   }
 
-  const count = db.select().from(tasks).where(eq(tasks.userId, userId)).all().length;
-  const now = new Date();
-  const workDate = `${now.getFullYear()}-${String(now.getMonth() + 1).padStart(2, '0')}-${String(now.getDate()).padStart(2, '0')}`;
-  const row = db
-    .insert(tasks)
-    .values({
-      userId,
-      label,
-      workDate,
-      code: input.code ?? null,
-      description: finalDescription,
-      link: input.link ?? null,
-      status: input.status ?? 'todo',
-      notes: input.notes ?? null,
-      tags: input.tags ?? null,
-      elapsedTime: 0,
-      position: count,
-      isRunning: false,
-      createdAt: now,
-      updatedAt: now
-    })
-    .returning()
-    .get();
+  const row = insertTask(db, userId, trimmed, description, resolved.position);
   publish(userId, { entity: 'task', taskId: row.id, action: 'create' });
   return toDTO(row);
 }
@@ -247,13 +235,16 @@ export function resetTask(userId: string, taskId: number): TaskDTO | null {
   return toDTO(updated);
 }
 
-export function resetAll(userId: string): { tasks: TaskDTO[]; totalElapsedSeconds: number } {
+export function resetAll(userId: string, workDate?: string): { tasks: TaskDTO[]; totalElapsedSeconds: number } {
+  const conds = workDate
+    ? and(eq(tasks.userId, userId), eq(tasks.workDate, workDate))
+    : eq(tasks.userId, userId);
   db.update(tasks)
     .set({ isRunning: false, elapsedTime: 0, startTime: null, updatedAt: new Date() })
-    .where(eq(tasks.userId, userId))
+    .where(conds)
     .run();
   publish(userId, { entity: 'task', taskId: 0, action: 'reset_all' });
-  return listTasks(userId);
+  return listTasks(userId, workDate);
 }
 
 export function listComments(userId: string, taskId: number) {

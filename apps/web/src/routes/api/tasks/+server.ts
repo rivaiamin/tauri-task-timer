@@ -31,6 +31,7 @@ export const GET: RequestHandler = async (event) => {
 const createSchema = z.object({
   label: z.string().trim().min(1).max(200),
   description: z.string().trim().max(2000).optional(),
+  workDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
   code: z.string().trim().max(100).nullable().optional(),
   link: z.string().url().max(2000).nullable().optional(),
   status: z.string().trim().max(50).optional(),
@@ -38,7 +39,7 @@ const createSchema = z.object({
   tags: z.array(z.string().trim().min(1).max(50)).max(50).nullable().optional()
 });
 
-// POST /api/tasks — create a task. Body: { label, description? }
+// POST /api/tasks — create a task. Body: { label, description?, workDate? }
 export const POST: RequestHandler = async (event) => {
   const actor = await resolveActor(event);
   requireScope(actor, 'tasks:write');
