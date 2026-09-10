@@ -66,8 +66,8 @@ List responses wrap tasks with a total:
 | Method | Path | Scope | Body | Returns |
 |---|---|---|---|---|
 | GET | `/api/tasks` | read | — | `{ tasks, totalElapsedSeconds }` |
-| POST | `/api/tasks` | write | `{ label, description? }` | Task (201) |
-| PATCH | `/api/tasks/:id` | write | `{ label?, description?, elapsed_seconds?, done? }` | Task |
+| POST | `/api/tasks` | write | `{ label, description?, workDate? }` | Task (201) |
+| PATCH | `/api/tasks/:id` | write | `{ label?, description?, elapsed_seconds?, done?, code?, link?, status?, notes?, tags? }` | Task |
 | DELETE | `/api/tasks/:id` | write | — | `204` |
 | POST | `/api/tasks/reorder` | write | `{ ids: number[] }` (all ids in new order) | `{ tasks, … }` |
 
@@ -78,7 +78,7 @@ List responses wrap tasks with a total:
 | POST | `/api/tasks/:id/start` | write | `{ exclusive? }` | Task |
 | POST | `/api/tasks/:id/stop` | write | — | Task |
 | POST | `/api/tasks/:id/reset` | write | — | Task |
-| POST | `/api/tasks/reset-all` | write | — | `{ tasks, … }` |
+| POST | `/api/tasks/reset-all` | write | `{ workDate? }` | `{ tasks, … }` |
 
 `exclusive` on **start**: `true` stops all other running timers first (focus);
 `false` leaves them running (parallel). Omit it to use the user's saved timer mode.
@@ -144,14 +144,15 @@ Details:
 
 `GET /api/stream` is a [Server-Sent Events](https://developer.mozilla.org/docs/Web/API/Server-sent_events)
 stream (authenticated by session cookie). It emits `{"type":"connected"}` on
-open and `{"type":"tasks-changed"}` whenever any of the user's tasks change —
-from this browser, another device, **or an agent**. The dashboard uses it to stay
-live; on `tasks-changed` it refetches `/api/tasks`.
+open and `{"type":"change", "entity":"task"|"comment"|"integration", "taskId":N}`
+whenever any of the user's tasks change — from this browser, another device,
+**or an agent**. The dashboard uses it to stay live; on `change` it refetches
+`/api/tasks`.
 
 ```js
 const es = new EventSource('/api/stream');
 es.onmessage = (e) => {
-  if (JSON.parse(e.data).type === 'tasks-changed') refetchTasks();
+  if (JSON.parse(e.data).type === 'change') refetchTasks();
 };
 ```
 
