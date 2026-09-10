@@ -9,6 +9,7 @@
   interface TaskDTO {
     id: number;
     label: string;
+    workDate: string;
     description: string | null;
     code: string | null;
     link: string | null;

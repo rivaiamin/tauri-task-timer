@@ -16,6 +16,7 @@ export type TimerMode = 'focus' | 'parallel';
 export interface TaskDTO {
   id: number;
   label: string;
+  workDate: string;
   description: string | null;
   code: string | null;
   link: string | null;
@@ -42,6 +43,7 @@ function toDTO(row: Task): TaskDTO {
   return {
     id: row.id,
     label: row.label,
+    workDate: row.workDate,
     description: row.description ?? null,
     code: row.code ?? null,
     link: row.link ?? null,
