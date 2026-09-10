@@ -1,6 +1,6 @@
 # E7 — Web Dashboard Parity: implementation plan
 
-**Status:** Ready to implement  
+**Status:** Done  
 **Epic:** [epics.md](./epics.md) E7 · **Checklist:** [tasks.md](./tasks.md)  
 **Last updated:** 2026-09-10
 
