@@ -155,15 +155,15 @@ From IDEA.md:
 
 ## E7 — Web dashboard parity
 
-Catch-up epic so web is not left behind TUI.
+Catch-up epic so web is not left behind TUI. Implementation: [e7-plan.md](./e7-plan.md).
 
 | Requirement | Notes |
 |-------------|-------|
-| Daily view | Filter by `work_date`; date picker like TUI |
-| Continue-by-title | Same dedup rules as TUI |
-| Extended fields UI | After E2 schema |
-| Archive / backlog | After E3, mirror TUI filters |
-| SSE | Emit events for new tables (comments, integrations) |
+| Daily view | `?date=` + date bar shipped; create still writes calendar today |
+| Continue-by-title | Port TUI `create_task` into `taskService.createTask` |
+| Extended fields UI | Schema/API done; edit modal + badges remaining |
+| Archive / backlog | List API done; `/dashboard/archive` remaining |
+| SSE | Server emits `change`; dashboard still listens for `tasks-changed` |
 
 ---
 

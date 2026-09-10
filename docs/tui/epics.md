@@ -163,9 +163,11 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 ## E7 — Web Dashboard Parity
 
-**Status:** In Progress · **Depends on:** E1, E2, E3
+**Status:** In Progress · **Depends on:** E1, E2, E3 · **Plan:** [e7-plan.md](./e7-plan.md)
 
 **Goal:** Web dashboard matches TUI daily workflow.
+
+Date bar + `?date=` load already ship. Remaining: TUI create/dedup in `taskService`, extended-field UI, `/dashboard/archive`, SSE client (`type === 'change'`).
 
 ### Tasks
 

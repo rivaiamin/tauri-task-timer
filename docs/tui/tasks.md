@@ -166,11 +166,15 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 
 ## E7 — Web Dashboard Parity
 
+Implementation plan: [e7-plan.md](./e7-plan.md).
+
 ### 1. Date Navigation (`apps/web`)
 
-- [ ] `+page.server.ts`: accept `?date=YYYY-MM-DD` param; default to today
-- [ ] `+page.svelte`: date picker bar — prev day / date input / next day
-- [ ] URL reflects date (`/dashboard?date=2026-09-07`); bookmarkable
+- [x] `+page.server.ts`: accept `?date=YYYY-MM-DD` param; default to today
+- [x] `+page.svelte`: date picker bar — prev day / date input / next day
+- [x] URL reflects date (`/dashboard?date=2026-09-07`); bookmarkable
+- [ ] `addTask` posts `workDate` of the viewed day (not always calendar today)
+- [ ] `resetAll` scoped to viewed `work_date` (TUI resets that day only)
 
 ### 2. Create Dedup (`apps/web/src/lib/server/taskService.ts`)
 
@@ -196,7 +200,7 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 ### 5. SSE Fix + Extend (`apps/web/src/lib/server/`)
 
 - [ ] Fix `+page.svelte` SSE handler: listen for `type === 'change'` (currently checks `'tasks-changed'` — never fires)
-- [ ] `events.ts`: publish on comment add, integration upsert (not just task mutations)
+- [x] `events.ts`: publish on comment add, integration upsert (not just task mutations)
 - [ ] Dashboard + archive subscribe to SSE; refresh on relevant entity changes
 
 ### Verification

@@ -1,6 +1,6 @@
 # Tech Spec — Task Timer TUI (monorepo)
 
-**Last updated:** 2026-09-07
+**Last updated:** 2026-09-10
 
 ## System context
 
@@ -230,20 +230,26 @@ Workspace/repo in `config.toml` (`bitbucket_workspace`, `bitbucket_repo`).
 Repo path auto-detected from `database_path` or set via `git_repo_path`.
 Branch linked via `task_integrations` (`group=git, field=branch`).
 
-## E7 — Web dashboard changes
+## E7 — Web dashboard parity
 
-`apps/web/src/routes/dashboard/+page.svelte`:
+Plan: [e7-plan.md](./e7-plan.md). TUI remains the reference; web catches up.
 
-- Add `selectedDate` state (default `date('now')`)
-- Filter tasks client-side or via API by `work_date`
-- Port continue-by-title from TUI `create_task` into `taskService.createTask`
+| Already in web | Still to do |
+|----------------|-------------|
+| `?date=` load + date bar | `createTask` TUI dedup + optional `workDate` |
+| `GET /api/tasks?archived=` | `/dashboard/archive` UI + continue today |
+| PATCH extended fields | edit modal + card badges |
+| SSE `{ type: 'change' }` publish | client still listens for `tasks-changed` (never fires) |
+
+Timer math stays in `packages/shared` + `taskService`. Do not re-filter `work_date` client-side.
 
 ## Testing
 
 | Layer | Command |
 |-------|---------|
 | TUI unit | `cargo test -p task-timer-tui` |
-| Web | existing test suite + manual dashboard |
+| Web unit | `pnpm --filter sv-task-timer test` (Vitest; add in E7 Wave 1) |
+| Web types | `pnpm --filter sv-task-timer check` |
 | MCP | manual tool invocation against dev server |
 | Cross-app | checklist in [tasks.md](./tasks.md) E7 verification |
 
