@@ -10,6 +10,11 @@
     id: number;
     label: string;
     description: string | null;
+    code: string | null;
+    link: string | null;
+    status: string;
+    notes: string | null;
+    tags: string[] | null;
     position: number;
     isRunning: boolean;
     done: boolean;
@@ -51,6 +56,11 @@
   let editTitle = '';
   let editDescription = '';
   let editTime = '';
+  let editCode = '';
+  let editLink = '';
+  let editStatus = '';
+  let editNotes = '';
+  let editTags = '';
 
   function elapsed(task: TaskDTO, atNow: number): number {
     return currentElapsedSeconds(task.elapsedSeconds, task.isRunning, task.startTime, atNow);
@@ -456,6 +466,11 @@
     editingTask = task;
     editTitle = task.label;
     editDescription = task.description || '';
+    editCode = task.code || '';
+    editLink = task.link || '';
+    editStatus = task.status || '';
+    editNotes = task.notes || '';
+    editTags = task.tags ? task.tags.join(', ') : '';
     editTime = formatTime(elapsed(task, now));
     showEditModal = true;
   }
@@ -465,6 +480,11 @@
     editingTask = null;
     editTitle = '';
     editDescription = '';
+    editCode = '';
+    editLink = '';
+    editStatus = '';
+    editNotes = '';
+    editTags = '';
     editTime = '';
   }
 
@@ -480,10 +500,22 @@
       alert('Invalid time format. Use HH:MM:SS or minutes (e.g. 90)');
       return;
     }
+    const parsedTags = editTags.trim()
+      ? editTags.split(',').map((t) => t.trim()).filter(Boolean)
+      : null;
     try {
       await api(`/tasks/${editingTask.id}`, {
         method: 'PATCH',
-        body: { label: newTitle, description: editDescription.trim() || null, elapsed_seconds: secs }
+        body: {
+          label: newTitle,
+          description: editDescription.trim() || null,
+          elapsed_seconds: secs,
+          code: editCode.trim() || null,
+          link: editLink.trim() || null,
+          status: editStatus || undefined,
+          notes: editNotes.trim() || null,
+          tags: parsedTags
+        }
       });
       closeEditModal();
       scheduleRefresh();
@@ -761,6 +793,28 @@
                 />
                 <div>
                   <span class="text-lg font-medium text-gray-900 dark:text-gray-100 break-words {task.done ? 'line-through text-gray-400 dark:text-gray-500' : ''}">{task.label}</span>
+                  <div class="flex flex-wrap items-center gap-1.5 mt-1">
+                    {#if task.code}
+                      <span class="inline-block px-1.5 py-0.5 text-xs font-mono bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded">{task.code}</span>
+                    {/if}
+                    {#if task.status && task.status !== 'todo'}
+                      <span class="inline-block px-1.5 py-0.5 text-xs font-semibold rounded
+                        {task.status === 'done' ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300' :
+                         task.status === 'blocked' ? 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300' :
+                         task.status === 'in_progress' ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300' :
+                         'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'}">{task.status}</span>
+                    {/if}
+                    {#if task.tags}
+                      {#each task.tags as tag}
+                        <span class="inline-block px-1.5 py-0.5 text-xs bg-indigo-50 dark:bg-indigo-950/40 text-indigo-600 dark:text-indigo-400 rounded">{tag}</span>
+                      {/each}
+                    {/if}
+                    {#if task.link}
+                      <a href={task.link} target="_blank" rel="noopener noreferrer" on:click|stopPropagation class="inline-flex items-center text-xs text-gray-400 dark:text-gray-500 hover:text-blue-500 dark:hover:text-blue-400 transition-colors" title={task.link}>
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-3.5 w-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" /></svg>
+                      </a>
+                    {/if}
+                  </div>
                   <span class="text-3xl font-mono text-gray-700 dark:text-gray-300 block mt-1">{formatTime(elapsed(task, now))}</span>
                 </div>
               </div>
@@ -801,6 +855,34 @@
         <div>
           <label for="edit-description" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Description (optional)</label>
           <textarea id="edit-description" bind:value={editDescription} rows="3" class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400" placeholder="Enter task description"></textarea>
+        </div>
+        <div class="grid grid-cols-2 gap-4">
+          <div>
+            <label for="edit-code" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Code</label>
+            <input id="edit-code" type="text" bind:value={editCode} maxlength="100" class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 font-mono text-sm" placeholder="e.g. US-123" />
+          </div>
+          <div>
+            <label for="edit-status" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Status</label>
+            <select id="edit-status" bind:value={editStatus} class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 text-sm">
+              <option value="">default</option>
+              <option value="todo">todo</option>
+              <option value="in_progress">in_progress</option>
+              <option value="done">done</option>
+              <option value="blocked">blocked</option>
+            </select>
+          </div>
+        </div>
+        <div>
+          <label for="edit-link" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Link</label>
+          <input id="edit-link" type="url" bind:value={editLink} class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 text-sm" placeholder="https://..." />
+        </div>
+        <div>
+          <label for="edit-notes" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Notes</label>
+          <textarea id="edit-notes" bind:value={editNotes} rows="2" class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 text-sm" placeholder="Optional notes"></textarea>
+        </div>
+        <div>
+          <label for="edit-tags" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Tags</label>
+          <input id="edit-tags" type="text" bind:value={editTags} class="w-full p-3 border border-gray-300 dark:border-gray-700 rounded-lg bg-white dark:bg-gray-900 text-gray-900 dark:text-gray-100 focus:outline-none focus:ring-2 focus:ring-blue-500 dark:focus:ring-blue-400 text-sm" placeholder="Comma-separated (e.g. backend, urgent)" />
         </div>
         <div>
           <label for="edit-time" class="block text-sm font-medium text-gray-700 dark:text-gray-300 mb-2">Time</label>
