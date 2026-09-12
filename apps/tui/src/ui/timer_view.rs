@@ -39,7 +39,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
             .iter()
             .enumerate()
             .map(|(i, t)| {
-                let marker = if t.is_running { "▶ " } else { "  " };
+                let marker = if t.is_running {
+                    "▶ "
+                } else if t.done {
+                    "✓ "
+                } else {
+                    "  "
+                };
                 let elapsed = format_time(t.current_elapsed(now));
                 let state = if t.is_running { "  [running]" } else { "" };
                 let status_tag = if t.status.is_empty() || t.status == "todo" {
@@ -61,6 +67,8 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 let mut style = Style::default();
                 if t.is_running {
                     style = style.fg(Color::Green);
+                } else if t.done && i != app.selected {
+                    style = style.fg(Color::DarkGray);
                 }
                 if i == app.selected {
                     style = style
@@ -74,7 +82,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let list = List::new(items).block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
     frame.render_widget(list, body);
 
-    let hints = " a:archive  n:new  Space:start/stop  e:edit  i:detail  d:del  r:reset  R:reset all  x:export  ←/→:day  j/k:move  J/K:reorder  m:mode  Ctrl+J:jira  Ctrl+B:git  ?:help  q:quit ";
+    let hints = " a:archive  n:new  Space:start/stop  e:edit  i:detail  d:del  D:done  r:reset  R:reset all  x:export  ←/→:day  j/k:move  J/K:reorder  m:mode  Ctrl+J:jira  Ctrl+B:git  ?:help  q:quit ";
     let (status_area, hints_area) = if app.status.is_empty() {
         (None, footer)
     } else {

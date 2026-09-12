@@ -294,6 +294,67 @@ pub fn pick_transition_id(transitions: &[Transition], status_name: &str) -> Opti
         .map(|t| t.id.clone())
 }
 
+// ---------------------------------------------------------------------------
+// Status name readers (match web's JIRA_STATUS_* env vars)
+// ---------------------------------------------------------------------------
+
+pub fn status_todo() -> String {
+    std::env::var("JIRA_STATUS_TODO").unwrap_or_else(|_| "To Do".into())
+}
+
+pub fn status_in_progress() -> String {
+    std::env::var("JIRA_STATUS_INPROGRESS").unwrap_or_else(|_| "In Progress".into())
+}
+
+pub fn status_done() -> String {
+    std::env::var("JIRA_STATUS_DONE").unwrap_or_else(|_| "Cek lokal".into())
+}
+
+/// Transition an issue to `status_name`. No-op if no matching transition exists.
+pub fn transition_to(issue_key: &str, status_name: &str) -> Result<()> {
+    let transitions = get_transitions(issue_key)?;
+    if let Some(id) = pick_transition_id(&transitions, status_name) {
+        transition_issue(issue_key, &id)?;
+    }
+    Ok(())
+}
+
+// ---------------------------------------------------------------------------
+// Fire-and-forget wrappers — mirror web's run() + onStart/onStop/onSwitchStop/onDone
+// ---------------------------------------------------------------------------
+
+/// Timer started → transition issue to In Progress.
+pub fn fire_on_start(label: &str, description: &str) {
+    if load_credentials().is_none() { return; }
+    let Some(key) = issue_key_from_task(label, description) else { return; };
+    let _ = transition_to(&key, &status_in_progress());
+}
+
+/// Timer stopped (explicit) → log worklog only; keep current status.
+pub fn fire_on_stop(label: &str, description: &str, seconds: i64, started_ms: Option<i64>) {
+    if load_credentials().is_none() { return; }
+    let Some(key) = issue_key_from_task(label, description) else { return; };
+    let _ = log_work(&key, seconds, started_ms);
+}
+
+/// Focus-switch stop → log worklog, then transition to To Do.
+/// If worklog fails, still attempt the To Do transition.
+pub fn fire_on_switch_stop(label: &str, description: &str, seconds: i64, started_ms: Option<i64>) {
+    if load_credentials().is_none() { return; }
+    let Some(key) = issue_key_from_task(label, description) else { return; };
+    let _ = log_work(&key, seconds, started_ms);
+    let _ = transition_to(&key, &status_todo());
+}
+
+/// Mark done → log worklog, then transition to Cek lokal.
+/// If worklog fails, still attempt the done transition.
+pub fn fire_on_done(label: &str, description: &str, seconds: i64, started_ms: Option<i64>) {
+    if load_credentials().is_none() { return; }
+    let Some(key) = issue_key_from_task(label, description) else { return; };
+    let _ = log_work(&key, seconds, started_ms);
+    let _ = transition_to(&key, &status_done());
+}
+
 /// Fetch issues from a JIRA sprint (Agile REST API).
 /// Returns (issue_key, summary, status_name) tuples.
 #[allow(dead_code)]
@@ -397,5 +458,13 @@ mod tests {
             to: None,
         }];
         assert_eq!(pick_transition_id(&transitions, "anything"), None);
+    }
+
+    #[test]
+    fn status_defaults_are_nonempty() {
+        // If env vars happen to be set in the test runner, we just assert non-empty.
+        assert!(!status_todo().is_empty());
+        assert!(!status_in_progress().is_empty());
+        assert!(!status_done().is_empty());
     }
 }

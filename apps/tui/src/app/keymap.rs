@@ -7,6 +7,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("e", "edit task (label, description, time, status, code, notes, tags)"),
     ("i", "task detail view"),
     ("d", "delete task"),
+    ("D", "toggle done (JIRA → Cek lokal)"),
     ("r", "reset selected timer"),
     ("R", "reset all timers today"),
     ("m", "toggle focus / parallel"),

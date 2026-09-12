@@ -320,6 +320,38 @@ pub fn update_task(
     }
 }
 
+/// Set the `done` flag on a task. If becoming done while the task is running,
+/// stops the timer first. Returns `(updated_task, worklog_delta_seconds, start_ms_before_stop)`.
+/// If un-done, just flips the flag (delta=0, start_ms=None).
+pub fn set_done(
+    conn: &Connection,
+    user_id: &str,
+    task_id: i64,
+    done: bool,
+) -> Result<Option<(Task, i64, Option<i64>)>> {
+    let Some(row) = get_task(conn, user_id, task_id)? else {
+        return Ok(None);
+    };
+    if row.done == done {
+        return Ok(Some((row, 0, None)));
+    }
+    let now = now_ms();
+    let mut delta: i64 = 0;
+    let mut start_ms: Option<i64> = None;
+    if done && row.is_running {
+        start_ms = row.start_time;
+        delta = row.current_elapsed(now) - row.elapsed_time;
+        stop_row(conn, user_id, &row, now)?;
+    }
+    conn.execute(
+        "UPDATE tasks SET done = ?1, updated_at = ?2 WHERE id = ?3 AND user_id = ?4",
+        params![done as i64, now, task_id, user_id],
+    )?;
+    let updated = get_task(conn, user_id, task_id)?
+        .ok_or_else(|| anyhow::anyhow!("task vanished after set_done"))?;
+    Ok(Some((updated, delta, start_ms)))
+}
+
 pub fn reorder_swap(conn: &Connection, user_id: &str, a: i64, b: i64) -> Result<()> {
     let now = now_ms();
     let pa: i64 = conn.query_row(
@@ -482,5 +514,30 @@ mod tests {
         .unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, a.id);
+    }
+
+    #[test]
+    fn set_done_stops_running_task_and_returns_delta() {
+        let conn = setup();
+        let t = create_task(&conn, "u1", "2026-09-12", "Run", None).unwrap();
+        // Start the timer with a start_time 5 seconds in the past
+        let five_sec_ago = crate::timer::now_ms() - 5000;
+        conn.execute(
+            "UPDATE tasks SET is_running = 1, start_time = ?1 WHERE id = ?2",
+            [five_sec_ago, t.id],
+        )
+        .unwrap();
+
+        let (updated, delta, start_ms) = set_done(&conn, "u1", t.id, true).unwrap().unwrap();
+        assert!(updated.done);
+        assert!(!updated.is_running);
+        assert!(delta >= 4); // at least ~5s minus rounding
+        assert!(start_ms.is_some());
+
+        // Second call is idempotent (already done)
+        let (again, d2, s2) = set_done(&conn, "u1", t.id, true).unwrap().unwrap();
+        assert!(again.done);
+        assert_eq!(d2, 0);
+        assert!(s2.is_none());
     }
 }
