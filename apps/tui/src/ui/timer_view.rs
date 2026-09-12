@@ -125,7 +125,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             }
         }
         Overlay::Filter { .. } => {}
-        Overlay::Jira { .. } => {}
+        Overlay::Jira { mode } => super::widgets::draw_jira(frame, mode),
         Overlay::Git { mode } => draw_git(frame, mode),
     }
 }
