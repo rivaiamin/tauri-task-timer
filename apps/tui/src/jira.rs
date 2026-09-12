@@ -230,6 +230,35 @@ pub fn post_comment(issue_key: &str, text: &str) -> Result<()> {
     Ok(())
 }
 
+/// Log work on a JIRA issue. `started_ms` is the epoch-millis when the run began;
+/// when None, JIRA defaults to "now". Matches the web's logWork behavior.
+pub fn log_work(issue_key: &str, seconds: i64, started_ms: Option<i64>) -> Result<()> {
+    if seconds <= 0 {
+        return Ok(());
+    }
+    let started = match started_ms {
+        Some(ms) => {
+            let dt = chrono::DateTime::from_timestamp_millis(ms)
+                .context("invalid worklog start timestamp")?;
+            dt.format("%Y-%m-%dT%H:%M:%S%.3f+0000").to_string()
+        }
+        None => {
+            let dt = chrono::Utc::now();
+            dt.format("%Y-%m-%dT%H:%M:%S%.3f+0000").to_string()
+        }
+    };
+    let body = serde_json::json!({
+        "timeSpentSeconds": seconds,
+        "started": started,
+    });
+    jira_fetch(
+        &format!("/issue/{issue_key}/worklog"),
+        "POST",
+        Some(body),
+    )?;
+    Ok(())
+}
+
 /// Get available transitions for a JIRA issue.
 pub fn get_transitions(issue_key: &str) -> Result<Vec<Transition>> {
     let data = jira_fetch(&format!("/issue/{issue_key}/transitions"), "GET", None)?;
