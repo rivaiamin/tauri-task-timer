@@ -516,14 +516,41 @@ impl App {
     }
 
     fn handle_jira_key(&mut self, key: KeyEvent) -> Result<bool> {
-        let mut mode = match &self.overlay {
-            Overlay::Jira { mode } => mode.clone(),
-            _ => return Ok(false),
+        let jira = std::mem::replace(&mut self.overlay, Overlay::None);
+        let Overlay::Jira { mut mode } = jira else {
+            self.overlay = jira;
+            return Ok(false);
         };
+
+        // Phase 1: in-place state mutations (typing, navigation)
+        match &mut mode {
+            JiraMode::Comment { buffer } => match key.code {
+                KeyCode::Backspace => { buffer.pop(); }
+                KeyCode::Char(c)
+                    if key.modifiers == KeyModifiers::NONE
+                        || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    buffer.push(c);
+                }
+                _ => {}
+            },
+            JiraMode::Transition { ref transitions, ref mut selected } => match key.code {
+                KeyCode::Char('j') | KeyCode::Down => {
+                    *selected = (*selected + 1).min(transitions.len() - 1);
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    *selected = selected.saturating_sub(1);
+                }
+                _ => {}
+            },
+            _ => {}
+        }
+
+        // Phase 2: overlay state transitions
         match mode {
             JiraMode::Menu => match key.code {
                 KeyCode::Esc | KeyCode::Char('q') => {
-                    self.overlay = Overlay::None;
+                    // self.overlay already Overlay::None
                 }
                 KeyCode::Char('1') => {
                     self.overlay = Overlay::Jira {
@@ -537,14 +564,12 @@ impl App {
                         Some(k) => k,
                         None => {
                             self.set_status("no JIRA key");
-                            self.overlay = Overlay::None;
                             return Ok(false);
                         }
                     };
                     match jira::get_transitions(&key) {
                         Ok(trans) if trans.is_empty() => {
                             self.set_status("no transitions available");
-                            self.overlay = Overlay::None;
                         }
                         Ok(trans) => {
                             self.overlay = Overlay::Jira {
@@ -556,7 +581,6 @@ impl App {
                         }
                         Err(e) => {
                             self.set_status(format!("transitions: {e}"));
-                            self.overlay = Overlay::None;
                         }
                     }
                 }
@@ -580,13 +604,14 @@ impl App {
                         }
                         _ => {
                             self.set_status("set jira_board + jira_sprint_id in config.toml");
-                            self.overlay = Overlay::None;
                         }
                     }
                 }
-                _ => {}
+                _ => {
+                    self.overlay = Overlay::Jira { mode: JiraMode::Menu };
+                }
             },
-            JiraMode::Comment { mut buffer } => match key.code {
+            JiraMode::Comment { buffer } => match key.code {
                 KeyCode::Esc => {
                     self.overlay = Overlay::Jira {
                         mode: JiraMode::Menu,
@@ -595,13 +620,15 @@ impl App {
                 KeyCode::Enter => {
                     if buffer.trim().is_empty() {
                         self.set_status("comment is empty");
+                        self.overlay = Overlay::Jira {
+                            mode: JiraMode::Comment { buffer },
+                        };
                         return Ok(false);
                     }
                     let key = match self.jira_issue_key() {
                         Some(k) => k,
                         None => {
                             self.set_status("no JIRA key");
-                            self.overlay = Overlay::None;
                             return Ok(false);
                         }
                     };
@@ -609,44 +636,27 @@ impl App {
                     match jira::post_comment(&key, &text) {
                         Ok(()) => {
                             self.set_status(format!("comment posted to {key}"));
-                            self.overlay = Overlay::None;
                         }
                         Err(e) => {
                             self.set_status(format!("comment failed: {e}"));
-                            self.overlay = Overlay::None;
                         }
                     }
                 }
-                KeyCode::Backspace => {
-                    buffer.pop();
+                _ => {
+                    // preserve typed buffer
+                    self.overlay = Overlay::Jira {
+                        mode: JiraMode::Comment { buffer },
+                    };
                 }
-                KeyCode::Char(c)
-                    if key.modifiers == KeyModifiers::NONE
-                        || key.modifiers == KeyModifiers::SHIFT =>
-                {
-                    buffer.push(c);
-                }
-                _ => {}
             },
-            JiraMode::Transition {
-                ref transitions,
-                ref mut selected,
-            } => match key.code {
+            JiraMode::Transition { transitions, selected } => match key.code {
                 KeyCode::Esc => {
                     self.overlay = Overlay::Jira {
                         mode: JiraMode::Menu,
                     };
                 }
-                KeyCode::Char('j') | KeyCode::Down => {
-                    if !transitions.is_empty() {
-                        *selected = (*selected + 1).min(transitions.len() - 1);
-                    }
-                }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    *selected = selected.saturating_sub(1);
-                }
                 KeyCode::Enter => {
-                    if let Some(t) = transitions.get(*selected) {
+                    if let Some(t) = transitions.get(selected) {
                         let tid = t.id.clone();
                         let tname = t.to.as_ref()
                             .and_then(|to| to.name.clone())
@@ -655,29 +665,33 @@ impl App {
                             Some(k) => k,
                             None => {
                                 self.set_status("no JIRA key");
-                                self.overlay = Overlay::None;
                                 return Ok(false);
                             }
                         };
                         match jira::transition_issue(&key, &tid) {
                             Ok(()) => {
                                 self.set_status(format!("{key} → {tname}"));
-                                self.overlay = Overlay::None;
                             }
                             Err(e) => {
                                 self.set_status(format!("transition failed: {e}"));
-                                self.overlay = Overlay::None;
                             }
                         }
                     }
                 }
-                _ => {}
+                _ => {
+                    // preserve selected index
+                    self.overlay = Overlay::Jira {
+                        mode: JiraMode::Transition { transitions, selected },
+                    };
+                }
             },
             JiraMode::Syncing => match key.code {
                 KeyCode::Esc | KeyCode::Enter => {
-                    self.overlay = Overlay::None;
+                    // self.overlay already Overlay::None
                 }
-                _ => {}
+                _ => {
+                    self.overlay = Overlay::Jira { mode: JiraMode::Syncing };
+                }
             },
         }
         Ok(false)
