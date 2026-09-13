@@ -7,6 +7,7 @@ use ratatui::Frame;
 use super::widgets::{centered, vsplit};
 use crate::app::{App, Field, GitMode, Overlay, HELP};
 use crate::db::tasks::Task;
+use crate::jira;
 use crate::timer::{format_time, now_ms};
 
 pub fn draw(frame: &mut Frame, app: &App) {
@@ -48,22 +49,25 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 };
                 let elapsed = format_time(t.current_elapsed(now));
                 let state = if t.is_running { "  [running]" } else { "" };
-                let status_tag = if t.status.is_empty() || t.status == "todo" {
-                    String::new()
-                } else {
-                    format!(" [{}", t.status)
-                };
+                let mut spans = vec![
+                    Span::raw(format!("{marker}{:<32}  {elapsed}{state}", t.label)),
+                ];
                 let status_color = match t.status.as_str() {
-                    "done" | "completed" => Color::Green,
-                    "in_progress" | "running" => Color::Yellow,
+                    "11" | "todo" => Color::DarkGray,
+                    "21" | "in_progress" => Color::Yellow,
+                    "81" | "blocked" => Color::Red,
+                    "31" | "41" | "51" | "61" | "71" | "done" | "completed" => Color::Green,
                     _ => Color::DarkGray,
                 };
-                let mut spans = vec![
-                    Span::raw(format!("{marker}{:<32}  {elapsed}{state}{status_tag}", t.label)),
-                ];
-                if !status_tag.is_empty() {
-                    spans.push(Span::styled("]", Style::default().fg(status_color)));
-                }
+                let status_display = if t.status.is_empty() {
+                    "—"
+                } else {
+                    jira::status_label(&t.status)
+                };
+                spans.push(Span::styled(
+                    format!("  {status_display}"),
+                    Style::default().fg(status_color),
+                ));
                 let mut style = Style::default();
                 if t.is_running {
                     style = style.fg(Color::Green);
@@ -419,7 +423,7 @@ fn draw_detail(frame: &mut Frame, task: &Task) {
     }
     lines.push(Line::from(vec![
         Span::styled(" status: ", Style::default().fg(Color::DarkGray)),
-        Span::raw(&task.status),
+        Span::raw(jira::status_label(&task.status)),
     ]));
     if let Some(ref code) = task.code {
         lines.push(Line::from(vec![

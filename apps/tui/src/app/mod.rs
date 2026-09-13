@@ -412,7 +412,7 @@ impl App {
             label: t.label.clone(),
             description: t.description.clone().unwrap_or_default(),
             elapsed: format_time(t.current_elapsed(now_ms())),
-            status: t.status.clone(),
+            status: jira::status_label(&t.status).to_string(),
             code: t.code.clone().unwrap_or_default(),
             notes: t.notes.clone().unwrap_or_default(),
             tags: t.tags.clone().unwrap_or_default(),
@@ -454,7 +454,13 @@ impl App {
                 return Ok(());
             }
         };
-        let status_opt = if status.is_empty() { None } else { Some(status.as_str()) };
+        // Known label/id → store catalog id. Empty → None (no-op). Unknown text → store as-is
+        // so we don't wipe pre-existing values on legacy rows.
+        let status_opt = jira::resolve_status_id(status.trim()).or(if status.is_empty() {
+            None
+        } else {
+            Some(status.as_str())
+        });
         let code_opt = if code.is_empty() { None } else { Some(code.as_str()) };
         let notes_opt = if notes.is_empty() { None } else { Some(notes.as_str()) };
         let tags_opt = if tags.is_empty() { None } else { Some(tags.as_str()) };
@@ -739,6 +745,24 @@ impl App {
                         };
                         match jira::transition_issue(&key, &tid) {
                             Ok(()) => {
+                                let status_id = t
+                                    .to
+                                    .as_ref()
+                                    .and_then(|to| to.id.clone())
+                                    .or_else(|| jira::resolve_status_id(&tname).map(str::to_string));
+                                if let Some(status_id) = status_id {
+                                    if let Some(task) = self.selected_task() {
+                                        let _ = tasks::update_task(
+                                            &self.conn,
+                                            &self.user_id,
+                                            task.id,
+                                            None, None, None, None,
+                                            Some(&status_id),
+                                            None, None,
+                                        );
+                                        self.reload().ok();
+                                    }
+                                }
                                 self.set_status(format!("{key} → {tname}"));
                             }
                             Err(e) => {
@@ -1138,7 +1162,7 @@ impl App {
                 }
             }
             KeyCode::Char('D') => {
-                // Shift-D: toggle done flag (JIRA → Cek lokal on false→true)
+                // Shift-D: toggle done flag (JIRA → Cek di Local on false→true)
                 if let Some(t) = self.selected_task().cloned() {
                     let new_done = !t.done;
                     let result = tasks::set_done(&self.conn, &self.user_id, t.id, new_done)?;
