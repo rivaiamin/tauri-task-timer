@@ -64,7 +64,7 @@ Copy `apps/web/.env.example` to `apps/web/.env`. All settings are optional.
 | `JIRA_ENV_FILE` | `~/.aimsis/jira.env` | Fallback file for email + token |
 | `JIRA_STATUS_TODO` | `To Do` | Status on focus-switch |
 | `JIRA_STATUS_INPROGRESS` | `In Progress` | Status on timer start |
-| `JIRA_STATUS_DONE` | `Cek lokal` | Status when marking task done |
+| `JIRA_STATUS_DONE` | `Cek di Local` | Status when marking task done |
 
 Without JIRA credentials, sync hooks are no-ops — the timer works normally.
 

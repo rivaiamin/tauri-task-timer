@@ -333,7 +333,7 @@ export function updateTask(userId: string, taskId: number, changes: TaskUpdate):
   }
 
   // Marking a task done (false→true): stop any live run and record its delta so the
-  // JIRA hook can worklog it, then move the issue to Cek lokal.
+  // JIRA hook can worklog it, then move the issue to Cek di Local.
   let doneDelta = 0;
   let doneStartMs: number | null = null;
   const becameDone = changes.done !== undefined && changes.done !== row.done;

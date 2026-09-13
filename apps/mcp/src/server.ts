@@ -191,7 +191,7 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
     {
       title: 'Update task',
       description:
-        'Update a task label, description, elapsed time (seconds), and/or done flag. Marking done moves the linked JIRA issue to Cek lokal.',
+        'Update a task label, description, elapsed time (seconds), and/or done flag. Marking done moves the linked JIRA issue to Cek di Local.',
       inputSchema: {
         task_id: z.number().int(),
         label: z.string().min(1).optional(),
