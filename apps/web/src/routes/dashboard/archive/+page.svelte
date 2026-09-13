@@ -5,6 +5,8 @@
   import { todayISO } from '$lib/dates';
   import type { PageData } from './$types';
 
+  import { STATUS_LABELS, statusChipClass } from '$lib/status';
+
   export let data: PageData;
 
   interface TaskDTO {
@@ -192,11 +194,7 @@
                   <span class="inline-block px-1.5 py-0.5 text-xs font-mono bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded">{task.code}</span>
                 {/if}
                 {#if task.status && task.status !== 'todo'}
-                  <span class="inline-block px-1.5 py-0.5 text-xs font-semibold rounded
-                    {task.status === 'done' ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300' :
-                     task.status === 'blocked' ? 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300' :
-                     task.status === 'in_progress' ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300' :
-                     'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'}">{task.status}</span>
+                  <span class="inline-block px-1.5 py-0.5 text-xs font-semibold rounded {statusChipClass(task.status)}">{STATUS_LABELS[task.status] ?? task.status}</span>
                 {/if}
                 {#if task.tags}
                   {#each task.tags as tag}

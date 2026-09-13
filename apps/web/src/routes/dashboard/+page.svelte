@@ -4,6 +4,8 @@
   import { formatTime, currentElapsedSeconds, buildCsvReport, buildMarkdownReport } from 'shared';
   import type { PageData } from './$types';
 
+  import { STATUS_LABELS, statusChipClass } from '$lib/status';
+
   export let data: PageData;
 
   interface TaskDTO {
@@ -790,7 +792,7 @@
                   on:click|stopPropagation
                   on:change={(e) => toggleDone(task, e.currentTarget.checked)}
                   class="mt-1.5 h-5 w-5 shrink-0 rounded border-gray-300 dark:border-gray-600 text-green-600 focus:ring-green-500 cursor-pointer"
-                  title="Mark done (moves the linked JIRA issue to Cek lokal)"
+                  title="Mark done (moves the linked JIRA issue to Cek di Local)"
                 />
                 <div>
                   <span class="text-lg font-medium text-gray-900 dark:text-gray-100 break-words {task.done ? 'line-through text-gray-400 dark:text-gray-500' : ''}">{task.label}</span>
@@ -799,11 +801,7 @@
                       <span class="inline-block px-1.5 py-0.5 text-xs font-mono bg-gray-200 dark:bg-gray-700 text-gray-700 dark:text-gray-300 rounded">{task.code}</span>
                     {/if}
                     {#if task.status && task.status !== 'todo'}
-                      <span class="inline-block px-1.5 py-0.5 text-xs font-semibold rounded
-                        {task.status === 'done' ? 'bg-green-100 dark:bg-green-900/40 text-green-700 dark:text-green-300' :
-                         task.status === 'blocked' ? 'bg-red-100 dark:bg-red-900/40 text-red-700 dark:text-red-300' :
-                         task.status === 'in_progress' ? 'bg-blue-100 dark:bg-blue-900/40 text-blue-700 dark:text-blue-300' :
-                         'bg-gray-100 dark:bg-gray-800 text-gray-600 dark:text-gray-400'}">{task.status}</span>
+                      <span class="inline-block px-1.5 py-0.5 text-xs font-semibold rounded {statusChipClass(task.status)}">{STATUS_LABELS[task.status] ?? task.status}</span>
                     {/if}
                     {#if task.tags}
                       {#each task.tags as tag}
