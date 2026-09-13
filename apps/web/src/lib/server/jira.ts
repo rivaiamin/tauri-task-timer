@@ -1,7 +1,7 @@
 // JIRA sync for the timer. Reads a local API token (~/.aimsis/jira.env) and drives
 // AIMSIS JIRA Cloud (REST v3) off timer events, so the user never opens the JIRA UI:
 //   start -> In Progress   |   focus-switch -> previous back to To Do + worklog
-//   stop  -> worklog       |   "done" checkbox -> Cek lokal
+//   stop  -> worklog       |   "done" checkbox -> Cek di Local
 //
 // Fully disabled (every hook a no-op) when no creds are found, so the OSS app and
 // other users are unaffected. Hooks are fire-and-forget: a JIRA failure is logged
@@ -13,7 +13,7 @@ import { join } from 'node:path';
 
 const STATUS_TODO = process.env.JIRA_STATUS_TODO || 'To Do';
 const STATUS_INPROGRESS = process.env.JIRA_STATUS_INPROGRESS || 'In Progress';
-const STATUS_DONE = process.env.JIRA_STATUS_DONE || 'Cek lokal';
+const STATUS_DONE = process.env.JIRA_STATUS_DONE || 'Cek di Local';
 
 interface Creds {
   email: string;
@@ -162,7 +162,7 @@ export const onSwitchStop = (task: Linkable, seconds: number, startedMs: number 
 export const onStop = (task: Linkable, seconds: number, startedMs: number | null): Promise<void> =>
   run(task, (key) => logWork(key, seconds, startedMs));
 
-/** "Done" checkbox → log any final run, move the issue to Cek lokal. */
+/** "Done" checkbox → log any final run, move the issue to Cek di Local. */
 export const onDone = (task: Linkable, seconds = 0, startedMs: number | null = null): Promise<void> =>
   run(task, async (key) => {
     await logWork(key, seconds, startedMs);

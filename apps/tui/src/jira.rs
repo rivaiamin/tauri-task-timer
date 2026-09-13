@@ -32,6 +32,8 @@ pub struct Transition {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct TransitionTarget {
+    #[serde(default)]
+    pub id: Option<String>,
     pub name: Option<String>,
 }
 
@@ -307,7 +309,51 @@ pub fn status_in_progress() -> String {
 }
 
 pub fn status_done() -> String {
-    std::env::var("JIRA_STATUS_DONE").unwrap_or_else(|_| "Cek lokal".into())
+    std::env::var("JIRA_STATUS_DONE").unwrap_or_else(|_| "Cek di Local".into())
+}
+
+#[derive(Debug, Clone, Copy)]
+pub struct JiraStatus {
+    pub id: &'static str,
+    pub label: &'static str,
+}
+
+pub const JIRA_STATUSES: &[JiraStatus] = &[
+    JiraStatus { id: "11", label: "To Do" },
+    JiraStatus { id: "21", label: "In Progress" },
+    JiraStatus { id: "31", label: "Done" },
+    JiraStatus { id: "41", label: "Local OK" },
+    JiraStatus { id: "51", label: "Cek di Local" },
+    JiraStatus { id: "61", label: "Cek di Prod" },
+    JiraStatus { id: "71", label: "KABARI SEKOLAH" },
+    JiraStatus { id: "81", label: "BLOCKED" },
+];
+
+/// Label for a stored status id. Unknown / empty → return `id` unchanged (empty stays empty).
+pub fn status_label(id: &str) -> &str {
+    JIRA_STATUSES
+        .iter()
+        .find(|s| s.id == id)
+        .map(|s| s.label)
+        .unwrap_or(id)
+}
+
+/// Resolve typed or JIRA name/id to a catalog id.
+/// Match id exactly, then label case-insensitive. Unknown → None.
+pub fn resolve_status_id(value: &str) -> Option<&'static str> {
+    let trimmed = value.trim();
+    if trimmed.is_empty() {
+        return None;
+    }
+    JIRA_STATUSES
+        .iter()
+        .find(|s| s.id == trimmed)
+        .or_else(|| {
+            JIRA_STATUSES
+                .iter()
+                .find(|s| s.label.eq_ignore_ascii_case(trimmed))
+        })
+        .map(|s| s.id)
 }
 
 /// Transition an issue to `status_name`. No-op if no matching transition exists.
@@ -346,7 +392,7 @@ pub fn fire_on_switch_stop(label: &str, description: &str, seconds: i64, started
     let _ = transition_to(&key, &status_todo());
 }
 
-/// Mark done → log worklog, then transition to Cek lokal.
+/// Mark done → log worklog, then transition to Cek di Local.
 /// If worklog fails, still attempt the done transition.
 pub fn fire_on_done(label: &str, description: &str, seconds: i64, started_ms: Option<i64>) {
     if load_credentials().is_none() { return; }
@@ -428,6 +474,7 @@ mod tests {
                 id: "11".into(),
                 name: "To Do".into(),
                 to: Some(TransitionTarget {
+                    id: Some("11".into()),
                     name: Some("To Do".into()),
                 }),
             },
@@ -435,6 +482,7 @@ mod tests {
                 id: "21".into(),
                 name: "Start Progress".into(),
                 to: Some(TransitionTarget {
+                    id: Some("21".into()),
                     name: Some("In Progress".into()),
                 }),
             },
@@ -466,5 +514,20 @@ mod tests {
         assert!(!status_todo().is_empty());
         assert!(!status_in_progress().is_empty());
         assert!(!status_done().is_empty());
+    }
+
+    #[test]
+    fn status_label_maps_catalog_ids() {
+        assert_eq!(status_label("41"), "Local OK");
+        assert_eq!(status_label("11"), "To Do");
+        assert_eq!(status_label("99"), "99");
+        assert_eq!(status_label(""), "");
+    }
+
+    #[test]
+    fn resolve_status_id_matches_id_then_label() {
+        assert_eq!(resolve_status_id("51"), Some("51"));
+        assert_eq!(resolve_status_id("cek di local"), Some("51"));
+        assert_eq!(resolve_status_id("nope"), None);
     }
 }
