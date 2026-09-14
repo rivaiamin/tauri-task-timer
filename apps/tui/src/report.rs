@@ -28,6 +28,28 @@ pub fn build_markdown_report(tasks: &[ReportTask<'_>], date_iso: &str) -> String
     lines.join("\n")
 }
 
+/// CSV with all tasks: Task, Description, Story Points.
+pub fn build_csv_report(tasks: &[ReportTask<'_>]) -> String {
+    fn field(s: &str) -> String {
+        format!("\"{}\"", s.replace('"', "\"\""))
+    }
+    let mut rows = vec![format!(
+        "{},{},{}",
+        field("Task"),
+        field("Description"),
+        field("Story Points")
+    )];
+    for t in tasks {
+        rows.push(format!(
+            "{},{},{}",
+            field(t.label),
+            field(t.description.unwrap_or("")),
+            field(&format!("{:.2}", seconds_to_story_points(t.elapsed_seconds)))
+        ));
+    }
+    rows.join("\r\n")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -50,6 +72,20 @@ mod tests {
         assert_eq!(
             md,
             "*Daily Report 2026-08-31*\n- [1.00] work - notes"
+        );
+    }
+
+    #[test]
+    fn csv_quotes_fields_and_includes_zero_elapsed() {
+        let tasks = [ReportTask {
+            label: "work",
+            description: Some("a \"quote\""),
+            elapsed_seconds: 3600,
+        }];
+        let csv = build_csv_report(&tasks);
+        assert_eq!(
+            csv,
+            "\"Task\",\"Description\",\"Story Points\"\r\n\"work\",\"a \"\"quote\"\"\",\"1.00\""
         );
     }
 }
