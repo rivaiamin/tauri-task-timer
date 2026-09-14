@@ -126,6 +126,19 @@ pub fn get_task(conn: &Connection, user_id: &str, task_id: i64) -> Result<Option
     .map_err(Into::into)
 }
 
+pub fn find_tasks_by_label(
+    conn: &Connection,
+    user_id: &str,
+    work_date: &str,
+    label: &str,
+) -> Result<Vec<Task>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLS} FROM tasks WHERE user_id = ?1 AND work_date = ?2 AND label = ?3 COLLATE NOCASE ORDER BY id ASC"
+    ))?;
+    let rows = stmt.query_map(params![user_id, work_date, label], map_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 fn next_position(conn: &Connection, user_id: &str, work_date: &str) -> Result<i64> {
     let max: Option<i64> = conn.query_row(
         "SELECT MAX(position) FROM tasks WHERE user_id = ?1 AND work_date = ?2",
@@ -539,5 +552,31 @@ mod tests {
         assert!(again.done);
         assert_eq!(d2, 0);
         assert!(s2.is_none());
+    }
+
+    #[test]
+    fn find_by_label_is_case_insensitive_and_date_scoped() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-09-13", "US-2092", None).unwrap();
+        create_task(&conn, "u1", "2026-09-14", "US-2092", None).unwrap();
+        let rows = find_tasks_by_label(&conn, "u1", "2026-09-13", "us-2092").unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, a.id);
+    }
+
+    #[test]
+    fn find_by_label_returns_all_nocase_matches() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-09-13", "US-2092", None).unwrap();
+        conn.execute(
+            "INSERT INTO tasks (user_id, label, work_date, elapsed_time, position, is_running, done, created_at, updated_at)
+             VALUES ('u1', 'Us-2092', '2026-09-13', 0, 1, 0, 0, 0, 0)",
+            [],
+        )
+        .unwrap();
+        let rows = find_tasks_by_label(&conn, "u1", "2026-09-13", "US-2092").unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(rows[0].id, a.id);
+        assert!(rows[1].id > a.id);
     }
 }

@@ -37,28 +37,42 @@ fn parse_date(s: &str) -> Result<NaiveDate, String> {
 #[derive(Subcommand, Debug)]
 pub enum Command {
     List,
-    Show { id: i64 },
+    Show {
+        #[arg(value_name = "TASK")]
+        task: String,
+    },
     Add {
         label: String,
         #[arg(long)]
         description: Option<String>,
     },
     Start {
-        id: i64,
+        #[arg(value_name = "TASK")]
+        task: String,
         #[arg(long, conflicts_with = "parallel")]
         exclusive: bool,
         #[arg(long)]
         parallel: bool,
     },
-    Stop { id: i64 },
-    Reset { id: i64 },
+    Stop {
+        #[arg(value_name = "TASK")]
+        task: String,
+    },
+    Reset {
+        #[arg(value_name = "TASK")]
+        task: String,
+    },
     ResetAll,
     Done {
-        id: i64,
+        #[arg(value_name = "TASK")]
+        task: String,
         #[arg(long)]
         undo: bool,
     },
-    Delete { id: i64 },
+    Delete {
+        #[arg(value_name = "TASK")]
+        task: String,
+    },
     Report {
         #[arg(long, value_enum, default_value_t = ReportFormat::Markdown)]
         format: ReportFormat,
@@ -122,8 +136,36 @@ fn emit_task(task: &Task, json: bool) -> Result<()> {
     }
 }
 
-fn require_task(id: i64, task: Option<Task>) -> Result<Task> {
-    task.ok_or_else(|| anyhow::anyhow!("task {id} not found"))
+fn resolve_task(
+    conn: &Connection,
+    user_id: &str,
+    date_iso: &str,
+    selector: &str,
+) -> Result<Task> {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        bail!("task selector is required");
+    }
+    if selector.chars().all(|c| c.is_ascii_digit()) {
+        if let Ok(id) = selector.parse::<i64>() {
+            if let Some(task) = db::tasks::get_task(conn, user_id, id)? {
+                return Ok(task);
+            }
+        }
+    }
+    let matches = db::tasks::find_tasks_by_label(conn, user_id, date_iso, selector)?;
+    match matches.as_slice() {
+        [] => bail!("task {selector} not found"),
+        [task] => Ok(task.clone()),
+        rest => {
+            let ids = rest
+                .iter()
+                .map(|t| t.id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!("ambiguous label {selector}: ids {ids} (use numeric id)")
+        }
+    }
 }
 
 pub fn run(
@@ -152,8 +194,8 @@ pub fn run(
                 Ok(())
             }
         }
-        Command::Show { id } => {
-            let task = require_task(id, db::tasks::get_task(conn, user_id, id)?)?;
+        Command::Show { task } => {
+            let task = resolve_task(conn, user_id, date_iso, &task)?;
             emit_task(&task, json)
         }
         Command::Add { label, description } => {
@@ -167,7 +209,7 @@ pub fn run(
             emit_task(&task, json)
         }
         Command::Start {
-            id,
+            task,
             exclusive,
             parallel,
         } => {
@@ -178,15 +220,24 @@ pub fn run(
             } else {
                 timer_mode == "focus"
             };
-            let task = require_task(id, db::tasks::start_timer(conn, user_id, id, exclusive)?)?;
+            let task = resolve_task(conn, user_id, date_iso, &task)?;
+            let id = task.id;
+            let task = db::tasks::start_timer(conn, user_id, id, exclusive)?
+                .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             emit_task(&task, json)
         }
-        Command::Stop { id } => {
-            let task = require_task(id, db::tasks::stop_timer(conn, user_id, id)?)?;
+        Command::Stop { task } => {
+            let task = resolve_task(conn, user_id, date_iso, &task)?;
+            let id = task.id;
+            let task = db::tasks::stop_timer(conn, user_id, id)?
+                .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             emit_task(&task, json)
         }
-        Command::Reset { id } => {
-            let task = require_task(id, db::tasks::reset_task(conn, user_id, id)?)?;
+        Command::Reset { task } => {
+            let task = resolve_task(conn, user_id, date_iso, &task)?;
+            let id = task.id;
+            let task = db::tasks::reset_task(conn, user_id, id)?
+                .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             emit_task(&task, json)
         }
         Command::ResetAll => {
@@ -198,13 +249,17 @@ pub fn run(
                 Ok(())
             }
         }
-        Command::Done { id, undo } => {
+        Command::Done { task, undo } => {
+            let task = resolve_task(conn, user_id, date_iso, &task)?;
+            let id = task.id;
             let Some((task, _, _)) = db::tasks::set_done(conn, user_id, id, !undo)? else {
                 bail!("task {id} not found");
             };
             emit_task(&task, json)
         }
-        Command::Delete { id } => {
+        Command::Delete { task } => {
+            let task = resolve_task(conn, user_id, date_iso, &task)?;
+            let id = task.id;
             if !db::tasks::delete_task(conn, user_id, id)? {
                 bail!("task {id} not found");
             }
