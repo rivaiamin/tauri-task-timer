@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+usage() {
+  echo "install-task-timer-skill [--copy] [--link-claude|--no-link-claude] [--link-cursor|--no-link-cursor]"
+}
+
+ROOT="$(cd "$(dirname "$0")/.." && pwd)"
+SRC="$ROOT/skills/task-timer"
+DEST="$HOME/.agents/skills/task-timer"
+
+if [[ ! -f "$SRC/SKILL.md" ]]; then
+  echo "skills/task-timer/SKILL.md not found" >&2
+  exit 1
+fi
+
+copy=0
+link_claude=1
+link_cursor=1
+
+while [[ $# -gt 0 ]]; do
+  case "$1" in
+    --copy) copy=1 ;;
+    --link-claude) link_claude=1 ;;
+    --no-link-claude) link_claude=0 ;;
+    --link-cursor) link_cursor=1 ;;
+    --no-link-cursor) link_cursor=0 ;;
+    -h|--help)
+      usage
+      exit 0
+      ;;
+    *)
+      usage >&2
+      exit 1
+      ;;
+  esac
+  shift
+done
+
+mkdir -p "$HOME/.agents/skills"
+rm -rf "$DEST"
+
+if [[ "$copy" -eq 1 ]]; then
+  cp -a "$SRC" "$DEST"
+else
+  ln -sfn "$SRC" "$DEST"
+fi
+
+echo "$DEST"
+
+link_client() {
+  local client="$1"
+  local parent="$HOME/.$client/skills"
+  mkdir -p "$parent"
+  if [[ "$(realpath "$parent")" == "$(realpath "$HOME/.agents/skills")" ]]; then
+    return 0
+  fi
+  ln -sfn "$DEST" "$parent/task-timer"
+  echo "$parent/task-timer"
+}
+
+if [[ "$link_claude" -eq 1 ]]; then
+  link_client claude
+fi
+
+if [[ "$link_cursor" -eq 1 ]]; then
+  link_client cursor
+fi

@@ -9,6 +9,7 @@
       "dev:mcp": "pnpm --filter task-timer-mcp dev",
       "dev:tui": "cargo run -p task-timer-tui",
       "dev:cli": "cargo run -p task-timer-tui --",
+      "install:skill": "bash scripts/install-task-timer-skill",
       "build:desktop": "pnpm --filter task-timer-desktop build",
       "build:web": "pnpm --filter sv-task-timer build",
       "build:mcp": "pnpm --filter task-timer-mcp build",
