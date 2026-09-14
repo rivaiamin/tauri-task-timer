@@ -35,6 +35,15 @@ fn parse_date(s: &str) -> Result<NaiveDate, String> {
     NaiveDate::parse_from_str(s, "%Y-%m-%d").map_err(|_| format!("invalid date {s}"))
 }
 
+/// JIRA side effects must not fail the command — the local timer already moved —
+/// but a transition that never landed must not be silent either. Exit stays 0;
+/// the wrappers do not redirect stderr, so this reaches the operator.
+fn warn_jira(warnings: &[String]) {
+    for warning in warnings {
+        eprintln!("JIRA WARNING: {warning}");
+    }
+}
+
 #[derive(Subcommand, Debug)]
 pub enum Command {
     List,
@@ -236,9 +245,9 @@ pub fn run(
             let started = db::tasks::start_timer(conn, user_id, id, exclusive)?
                 .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             for worklog in &stopped {
-                worklog.record_and_reopen();
+                warn_jira(&worklog.record_and_reopen());
             }
-            jira::fire_on_start(&started.label, started.description_text());
+            warn_jira(&jira::fire_on_start(&started.label, started.description_text()));
             emit_task(&started, json)
         }
         Command::Stop { task } => {
@@ -248,7 +257,7 @@ pub fn run(
             let task = db::tasks::stop_timer(conn, user_id, id)?
                 .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             if let Some(worklog) = &worklog {
-                worklog.record();
+                warn_jira(&worklog.record());
             }
             emit_task(&task, json)
         }
@@ -275,7 +284,12 @@ pub fn run(
                 bail!("task {id} not found");
             };
             if !undo {
-                jira::fire_on_done(&task.label, task.description_text(), delta, start_ms);
+                warn_jira(&jira::fire_on_done(
+                    &task.label,
+                    task.description_text(),
+                    delta,
+                    start_ms,
+                ));
             }
             emit_task(&task, json)
         }

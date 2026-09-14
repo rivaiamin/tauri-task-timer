@@ -358,13 +358,27 @@ pub fn resolve_status_id(value: &str) -> Option<&'static str> {
         .map(|s| s.id)
 }
 
-/// Transition an issue to `status_name`. No-op if no matching transition exists.
+/// Transition an issue to `status_name`.
+///
+/// Errors when the workflow offers no transition into that status: silently
+/// doing nothing is indistinguishable from a status that actually moved.
 pub fn transition_to(issue_key: &str, status_name: &str) -> Result<()> {
     let transitions = get_transitions(issue_key)?;
-    if let Some(id) = pick_transition_id(&transitions, status_name) {
-        transition_issue(issue_key, &id)?;
-    }
-    Ok(())
+    let id = resolve_transition_id(&transitions, status_name)?;
+    transition_issue(issue_key, &id)
+}
+
+/// The transition id for `status_name`, or an error naming what the workflow
+/// does offer — an unmatched status must not read as a successful move.
+fn resolve_transition_id(transitions: &[Transition], status_name: &str) -> Result<String> {
+    pick_transition_id(transitions, status_name).ok_or_else(|| {
+        let available = transitions
+            .iter()
+            .map(|t| t.name.as_str())
+            .collect::<Vec<_>>()
+            .join(", ");
+        anyhow::anyhow!("no transition to '{status_name}' (available: {available})")
+    })
 }
 
 // ---------------------------------------------------------------------------
@@ -398,48 +412,98 @@ impl Worklog {
     }
 
     /// Explicit stop or pause: worklog only, status unchanged.
-    pub fn record(&self) {
+    pub fn record(&self) -> Warnings {
         if self.seconds > 0 {
-            fire_on_stop(&self.label, &self.description, self.seconds, self.started_ms);
+            fire_on_stop(&self.label, &self.description, self.seconds, self.started_ms)
+        } else {
+            Warnings::new()
         }
     }
 
     /// Displaced by another task starting in focus mode: worklog plus To Do.
-    pub fn record_and_reopen(&self) {
-        fire_on_switch_stop(&self.label, &self.description, self.seconds, self.started_ms);
+    pub fn record_and_reopen(&self) -> Warnings {
+        fire_on_switch_stop(&self.label, &self.description, self.seconds, self.started_ms)
     }
 }
 
+/// Failures from a JIRA side effect, one entry per failed call.
+///
+/// Empty when there was nothing to do — JIRA not configured, or the task is not
+/// a ticket — and empty when every call succeeded. The caller decides where to
+/// show it: the CLI on stderr, the TUI in its status line.
+pub type Warnings = Vec<String>;
+
+/// The issue key to report for a task, or `None` when JIRA is not configured or
+/// the task is not a ticket. Both are legitimate no-ops, not failures.
+fn jira_key(label: &str, description: &str) -> Option<String> {
+    if load_credentials().is_none() {
+        return None;
+    }
+    issue_key_from_task(label, description)
+}
+
+fn warn(key: &str, action: &str, result: Result<()>) -> Option<String> {
+    result
+        .err()
+        .map(|e| format!("{key} {action} failed: {e:#}"))
+}
+
 /// Timer started → transition issue to In Progress.
-pub fn fire_on_start(label: &str, description: &str) {
-    if load_credentials().is_none() { return; }
-    let Some(key) = issue_key_from_task(label, description) else { return; };
-    let _ = transition_to(&key, &status_in_progress());
+pub fn fire_on_start(label: &str, description: &str) -> Warnings {
+    let Some(key) = jira_key(label, description) else {
+        return Warnings::new();
+    };
+    warn(&key, "start", transition_to(&key, &status_in_progress()))
+        .into_iter()
+        .collect()
 }
 
 /// Timer stopped (explicit) → log worklog only; keep current status.
-pub fn fire_on_stop(label: &str, description: &str, seconds: i64, started_ms: Option<i64>) {
-    if load_credentials().is_none() { return; }
-    let Some(key) = issue_key_from_task(label, description) else { return; };
-    let _ = log_work(&key, seconds, started_ms);
+pub fn fire_on_stop(label: &str, description: &str, seconds: i64, started_ms: Option<i64>) -> Warnings {
+    let Some(key) = jira_key(label, description) else {
+        return Warnings::new();
+    };
+    warn(&key, "worklog", log_work(&key, seconds, started_ms))
+        .into_iter()
+        .collect()
 }
 
 /// Focus-switch stop → log worklog, then transition to To Do.
 /// If worklog fails, still attempt the To Do transition.
-pub fn fire_on_switch_stop(label: &str, description: &str, seconds: i64, started_ms: Option<i64>) {
-    if load_credentials().is_none() { return; }
-    let Some(key) = issue_key_from_task(label, description) else { return; };
-    let _ = log_work(&key, seconds, started_ms);
-    let _ = transition_to(&key, &status_todo());
+pub fn fire_on_switch_stop(
+    label: &str,
+    description: &str,
+    seconds: i64,
+    started_ms: Option<i64>,
+) -> Warnings {
+    let Some(key) = jira_key(label, description) else {
+        return Warnings::new();
+    };
+    let mut warnings = Warnings::new();
+    warnings.extend(warn(&key, "worklog", log_work(&key, seconds, started_ms)));
+    warnings.extend(warn(
+        &key,
+        "switch-stop",
+        transition_to(&key, &status_todo()),
+    ));
+    warnings
 }
 
 /// Mark done → log worklog, then transition to Cek di Local.
 /// If worklog fails, still attempt the done transition.
-pub fn fire_on_done(label: &str, description: &str, seconds: i64, started_ms: Option<i64>) {
-    if load_credentials().is_none() { return; }
-    let Some(key) = issue_key_from_task(label, description) else { return; };
-    let _ = log_work(&key, seconds, started_ms);
-    let _ = transition_to(&key, &status_done());
+pub fn fire_on_done(
+    label: &str,
+    description: &str,
+    seconds: i64,
+    started_ms: Option<i64>,
+) -> Warnings {
+    let Some(key) = jira_key(label, description) else {
+        return Warnings::new();
+    };
+    let mut warnings = Warnings::new();
+    warnings.extend(warn(&key, "worklog", log_work(&key, seconds, started_ms)));
+    warnings.extend(warn(&key, "done", transition_to(&key, &status_done())));
+    warnings
 }
 
 /// Fetch issues from a JIRA sprint (Agile REST API).
@@ -506,6 +570,35 @@ mod tests {
             merge_description("Fix login", "Fix login\n\nrepro steps"),
             "Fix login\n\nrepro steps"
         );
+    }
+
+    #[test]
+    fn resolve_transition_errors_when_status_unreachable() {
+        let transitions = vec![Transition {
+            id: "11".into(),
+            name: "To Do".into(),
+            to: Some(TransitionTarget {
+                id: Some("11".into()),
+                name: Some("To Do".into()),
+            }),
+        }];
+        // A status the workflow cannot reach must not look like a successful move.
+        let err = resolve_transition_id(&transitions, "In Progress").unwrap_err();
+        let msg = format!("{err:#}");
+        assert!(msg.contains("In Progress"), "{msg}");
+        assert!(msg.contains("To Do"), "{msg}");
+        assert_eq!(
+            resolve_transition_id(&transitions, "to do").unwrap(),
+            "11".to_string()
+        );
+    }
+
+    #[test]
+    fn warn_reports_failures_and_stays_quiet_on_success() {
+        assert!(warn("US-1", "start", Ok(())).is_none());
+        let msg = warn("US-1", "start", Err(anyhow::anyhow!("connection refused"))).unwrap();
+        assert!(msg.contains("US-1"), "{msg}");
+        assert!(msg.contains("connection refused"), "{msg}");
     }
 
     #[test]

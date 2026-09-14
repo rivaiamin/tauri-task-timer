@@ -10,7 +10,7 @@ use crate::clipboard;
 use crate::db;
 use crate::db::tasks::{self, Task};
 use crate::git;
-use crate::jira::{self, Worklog};
+use crate::jira::{self, Warnings, Worklog};
 use crate::jira::Transition;
 use crate::report::{self, ReportTask};
 use crate::timer::{format_time, now_ms, parse_time_input};
@@ -253,6 +253,22 @@ impl App {
         self.set_status(e.to_string());
     }
 
+    /// Surface JIRA hook failures in the status line, appended to whatever the
+    /// caller just reported. The TUI owns an alternate screen, so a hook cannot
+    /// write to stderr without corrupting the display.
+    fn show_jira(&mut self, warnings: Warnings) {
+        if warnings.is_empty() {
+            return;
+        }
+        let suffix = format!("JIRA: {}", warnings.join("; "));
+        let msg = if self.status.is_empty() {
+            suffix
+        } else {
+            format!("{} — {suffix}", self.status)
+        };
+        self.set_status(msg);
+    }
+
     fn tick_status(&mut self) {
         if let Some(until) = self.status_until {
             if Instant::now() >= until {
@@ -310,17 +326,19 @@ impl App {
         let Some((id, running)) = self.selected_task().map(|t| (t.id, t.is_running)) else {
             return Ok(());
         };
-        if running {
-            self.stop_task(id)?;
+        let warnings = if running {
+            self.stop_task(id)?
         } else {
-            self.start_task(id)?;
-        }
-        self.reload()
+            self.start_task(id)?
+        };
+        self.reload()?;
+        self.show_jira(warnings);
+        Ok(())
     }
 
     /// Start a task. In focus mode, stops other running tasks (with worklog + To Do transition).
     /// Fires In Progress transition for the started task.
-    fn start_task(&mut self, id: i64) -> Result<()> {
+    fn start_task(&mut self, id: i64) -> Result<Warnings> {
         let exclusive = self.timer_mode == "focus";
         // Snapshot running tasks before exclusive start stops them
         let stopped: Vec<Worklog> = if exclusive {
@@ -334,34 +352,35 @@ impl App {
             vec![]
         };
         tasks::start_timer(&self.conn, &self.user_id, id, exclusive)?;
+        let mut warnings = Warnings::new();
         // Fire JIRA: focus-switched tasks → worklog + To Do
         for worklog in &stopped {
-            worklog.record_and_reopen();
+            warnings.extend(worklog.record_and_reopen());
         }
         // Fire JIRA: started task → In Progress
         if let Some(t) = self.tasks.iter().find(|t| t.id == id) {
-            jira::fire_on_start(&t.label, t.description_text());
+            warnings.extend(jira::fire_on_start(&t.label, t.description_text()));
         }
-        Ok(())
+        Ok(warnings)
     }
 
     /// Stop a task. Fires worklog-only JIRA hook.
-    fn stop_task(&mut self, id: i64) -> Result<()> {
+    fn stop_task(&mut self, id: i64) -> Result<Warnings> {
         let worklog = self
             .tasks
             .iter()
             .find(|t| t.id == id)
             .and_then(|t| Worklog::capture(t, now_ms()));
         tasks::stop_timer(&self.conn, &self.user_id, id)?;
-        if let Some(worklog) = &worklog {
-            worklog.record();
-        }
-        Ok(())
+        Ok(worklog
+            .as_ref()
+            .map(Worklog::record)
+            .unwrap_or_default())
     }
 
     /// Stop all running tasks. Fires worklog-only JIRA hooks (not To Do — explicit pause/end).
-    /// Returns true if any tasks were running.
-    fn stop_all_running(&mut self) -> Result<bool> {
+    /// Returns whether any tasks were running, plus any JIRA hook failures.
+    fn stop_all_running(&mut self) -> Result<(bool, Warnings)> {
         let now = now_ms();
         let stopped: Vec<Worklog> = self
             .tasks
@@ -372,10 +391,11 @@ impl App {
         for worklog in &stopped {
             tasks::stop_timer(&self.conn, &self.user_id, worklog.task_id)?;
         }
+        let mut warnings = Warnings::new();
         for worklog in &stopped {
-            worklog.record();
+            warnings.extend(worklog.record());
         }
-        Ok(had)
+        Ok((had, warnings))
     }
 
     fn open_create(&mut self) {
@@ -1156,13 +1176,16 @@ impl App {
                 if let Some(t) = self.selected_task().cloned() {
                     let new_done = !t.done;
                     let result = tasks::set_done(&self.conn, &self.user_id, t.id, new_done)?;
+                    let mut warnings = Warnings::new();
                     if let Some((_, delta, start_ms)) = result {
                         if new_done {
-                            jira::fire_on_done(&t.label, t.description_text(), delta, start_ms);
+                            warnings =
+                                jira::fire_on_done(&t.label, t.description_text(), delta, start_ms);
                         }
                     }
                     self.reload()?;
                     self.set_status(if new_done { "marked done" } else { "unmarked done" });
+                    self.show_jira(warnings);
                 }
             }
             KeyCode::Char('r') => {
@@ -1191,20 +1214,25 @@ impl App {
                     self.set_status("hook: no task selected");
                     return Ok(());
                 };
-                self.start_task(id)?;
+                let warnings = self.start_task(id)?;
                 self.reload()?;
                 self.set_status(format!("hook: timer started (task {id})"));
+                self.show_jira(warnings);
             }
             HookEvent::WaitingUser => {
-                if self.stop_all_running()? {
+                let (had, warnings) = self.stop_all_running()?;
+                if had {
                     self.reload()?;
                     self.set_status("hook: timer paused");
+                    self.show_jira(warnings);
                 }
             }
             HookEvent::SessionEnd => {
-                if self.stop_all_running()? {
+                let (had, warnings) = self.stop_all_running()?;
+                if had {
                     self.reload()?;
                     self.set_status("hook: timers stopped");
+                    self.show_jira(warnings);
                 }
             }
         }
