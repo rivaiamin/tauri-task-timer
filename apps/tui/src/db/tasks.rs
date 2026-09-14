@@ -34,6 +34,17 @@ impl Task {
     pub fn current_elapsed(&self, now: i64) -> i64 {
         current_elapsed_seconds(self.elapsed_time, self.is_running, self.start_time, now)
     }
+
+    /// Seconds worked since the last start that are not yet committed to
+    /// `elapsed_time`. Zero when the task is not running.
+    pub fn running_delta(&self, now: i64) -> i64 {
+        self.current_elapsed(now) - self.elapsed_time
+    }
+
+    /// Description as JIRA payloads want it: absent means the empty string.
+    pub fn description_text(&self) -> &str {
+        self.description.as_deref().unwrap_or("")
+    }
 }
 
 fn map_row(row: &rusqlite::Row) -> rusqlite::Result<Task> {
@@ -353,7 +364,7 @@ pub fn set_done(
     let mut start_ms: Option<i64> = None;
     if done && row.is_running {
         start_ms = row.start_time;
-        delta = row.current_elapsed(now) - row.elapsed_time;
+        delta = row.running_delta(now);
         stop_row(conn, user_id, &row, now)?;
     }
     conn.execute(

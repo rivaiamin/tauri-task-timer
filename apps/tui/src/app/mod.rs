@@ -10,7 +10,7 @@ use crate::clipboard;
 use crate::db;
 use crate::db::tasks::{self, Task};
 use crate::git;
-use crate::jira;
+use crate::jira::{self, Worklog};
 use crate::jira::Transition;
 use crate::report::{self, ReportTask};
 use crate::timer::{format_time, now_ms, parse_time_input};
@@ -323,44 +323,38 @@ impl App {
     fn start_task(&mut self, id: i64) -> Result<()> {
         let exclusive = self.timer_mode == "focus";
         // Snapshot running tasks before exclusive start stops them
-        let stopped: Vec<_> = if exclusive {
-            self.tasks.iter()
-                .filter(|t| t.is_running && t.id != id)
-                .map(|t| {
-                    let now = now_ms();
-                    let delta = t.current_elapsed(now) - t.elapsed_time;
-                    (t.label.clone(), t.description.clone(), delta, t.start_time)
-                })
+        let stopped: Vec<Worklog> = if exclusive {
+            let now = now_ms();
+            self.tasks
+                .iter()
+                .filter(|t| t.id != id)
+                .filter_map(|t| Worklog::capture(t, now))
                 .collect()
         } else {
             vec![]
         };
         tasks::start_timer(&self.conn, &self.user_id, id, exclusive)?;
         // Fire JIRA: focus-switched tasks → worklog + To Do
-        for (label, desc, delta, start_ms) in &stopped {
-            jira::fire_on_switch_stop(label, desc.as_deref().unwrap_or(""), *delta, *start_ms);
+        for worklog in &stopped {
+            worklog.record_and_reopen();
         }
         // Fire JIRA: started task → In Progress
         if let Some(t) = self.tasks.iter().find(|t| t.id == id) {
-            jira::fire_on_start(&t.label, t.description.as_deref().unwrap_or(""));
+            jira::fire_on_start(&t.label, t.description_text());
         }
         Ok(())
     }
 
     /// Stop a task. Fires worklog-only JIRA hook.
     fn stop_task(&mut self, id: i64) -> Result<()> {
-        let task = self.tasks.iter().find(|t| t.id == id);
-        let (delta, start_ms, label, desc) = match task {
-            Some(t) => {
-                let now = now_ms();
-                let delta = t.current_elapsed(now) - t.elapsed_time;
-                (delta, t.start_time, t.label.clone(), t.description.clone())
-            }
-            None => (0, None, String::new(), None),
-        };
+        let worklog = self
+            .tasks
+            .iter()
+            .find(|t| t.id == id)
+            .and_then(|t| Worklog::capture(t, now_ms()));
         tasks::stop_timer(&self.conn, &self.user_id, id)?;
-        if delta > 0 {
-            jira::fire_on_stop(&label, desc.as_deref().unwrap_or(""), delta, start_ms);
+        if let Some(worklog) = &worklog {
+            worklog.record();
         }
         Ok(())
     }
@@ -368,22 +362,18 @@ impl App {
     /// Stop all running tasks. Fires worklog-only JIRA hooks (not To Do — explicit pause/end).
     /// Returns true if any tasks were running.
     fn stop_all_running(&mut self) -> Result<bool> {
-        let stopped: Vec<_> = self.tasks.iter()
-            .filter(|t| t.is_running)
-            .map(|t| {
-                let now = now_ms();
-                let delta = t.current_elapsed(now) - t.elapsed_time;
-                (t.id, t.label.clone(), t.description.clone(), delta, t.start_time)
-            })
+        let now = now_ms();
+        let stopped: Vec<Worklog> = self
+            .tasks
+            .iter()
+            .filter_map(|t| Worklog::capture(t, now))
             .collect();
         let had = !stopped.is_empty();
-        for (id, _, _, _, _) in &stopped {
-            tasks::stop_timer(&self.conn, &self.user_id, *id)?;
+        for worklog in &stopped {
+            tasks::stop_timer(&self.conn, &self.user_id, worklog.task_id)?;
         }
-        for (_, label, desc, delta, start_ms) in stopped {
-            if delta > 0 {
-                jira::fire_on_stop(&label, desc.as_deref().unwrap_or(""), delta, start_ms);
-            }
+        for worklog in &stopped {
+            worklog.record();
         }
         Ok(had)
     }
@@ -1168,12 +1158,7 @@ impl App {
                     let result = tasks::set_done(&self.conn, &self.user_id, t.id, new_done)?;
                     if let Some((_, delta, start_ms)) = result {
                         if new_done {
-                            jira::fire_on_done(
-                                &t.label,
-                                t.description.as_deref().unwrap_or(""),
-                                delta,
-                                start_ms,
-                            );
+                            jira::fire_on_done(&t.label, t.description_text(), delta, start_ms);
                         }
                     }
                     self.reload()?;

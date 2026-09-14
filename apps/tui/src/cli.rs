@@ -7,7 +7,7 @@ use std::path::PathBuf;
 
 use crate::db;
 use crate::db::tasks::Task;
-use crate::jira;
+use crate::jira::{self, Worklog};
 use crate::report::{self, ReportTask};
 use crate::timer::{format_time, now_ms};
 
@@ -222,15 +222,12 @@ pub fn run(
                 timer_mode == "focus"
             };
             let task = resolve_task(conn, user_id, date_iso, &task)?;
-            let now = now_ms();
-            let stopped: Vec<_> = if exclusive {
+            let stopped: Vec<Worklog> = if exclusive {
+                let now = now_ms();
                 db::tasks::list_tasks(conn, user_id, date_iso)?
-                    .into_iter()
-                    .filter(|t| t.is_running && t.id != task.id)
-                    .map(|t| {
-                        let delta = t.current_elapsed(now) - t.elapsed_time;
-                        (t.label, t.description, delta, t.start_time)
-                    })
+                    .iter()
+                    .filter(|t| t.id != task.id)
+                    .filter_map(|t| Worklog::capture(t, now))
                     .collect()
             } else {
                 vec![]
@@ -238,24 +235,20 @@ pub fn run(
             let id = task.id;
             let started = db::tasks::start_timer(conn, user_id, id, exclusive)?
                 .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
-            for (label, desc, delta, start_ms) in &stopped {
-                jira::fire_on_switch_stop(label, desc.as_deref().unwrap_or(""), *delta, *start_ms);
+            for worklog in &stopped {
+                worklog.record_and_reopen();
             }
-            jira::fire_on_start(&started.label, started.description.as_deref().unwrap_or(""));
+            jira::fire_on_start(&started.label, started.description_text());
             emit_task(&started, json)
         }
         Command::Stop { task } => {
             let task = resolve_task(conn, user_id, date_iso, &task)?;
-            let now = now_ms();
-            let delta = task.current_elapsed(now) - task.elapsed_time;
-            let start_ms = task.start_time;
-            let label = task.label.clone();
-            let desc = task.description.clone();
+            let worklog = Worklog::capture(&task, now_ms());
             let id = task.id;
             let task = db::tasks::stop_timer(conn, user_id, id)?
                 .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
-            if delta > 0 {
-                jira::fire_on_stop(&label, desc.as_deref().unwrap_or(""), delta, start_ms);
+            if let Some(worklog) = &worklog {
+                worklog.record();
             }
             emit_task(&task, json)
         }
@@ -282,12 +275,7 @@ pub fn run(
                 bail!("task {id} not found");
             };
             if !undo {
-                jira::fire_on_done(
-                    &task.label,
-                    task.description.as_deref().unwrap_or(""),
-                    delta,
-                    start_ms,
-                );
+                jira::fire_on_done(&task.label, task.description_text(), delta, start_ms);
             }
             emit_task(&task, json)
         }

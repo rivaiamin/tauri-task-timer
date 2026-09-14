@@ -5,6 +5,8 @@ use std::env;
 use std::fs;
 use std::path::PathBuf;
 
+use crate::db::tasks::Task;
+
 #[derive(Debug)]
 struct Credentials {
     email: String,
@@ -369,6 +371,45 @@ pub fn transition_to(issue_key: &str, status_name: &str) -> Result<()> {
 // Fire-and-forget wrappers — mirror web's run() + onStart/onStop/onSwitchStop/onDone
 // ---------------------------------------------------------------------------
 
+/// What to report to JIRA for a task that was running and has just stopped.
+///
+/// Capture it *before* the timer stops: the live seconds only exist while the
+/// task runs, and a stopped task has nothing left to report.
+#[derive(Debug)]
+pub struct Worklog {
+    pub task_id: i64,
+    pub label: String,
+    pub description: String,
+    pub seconds: i64,
+    pub started_ms: Option<i64>,
+}
+
+impl Worklog {
+    /// `None` when the task is not running, so a caller cannot log work or
+    /// reopen an issue for a task that has nothing to report.
+    pub fn capture(task: &Task, now: i64) -> Option<Self> {
+        task.is_running.then(|| Self {
+            task_id: task.id,
+            label: task.label.clone(),
+            description: task.description_text().to_string(),
+            seconds: task.running_delta(now),
+            started_ms: task.start_time,
+        })
+    }
+
+    /// Explicit stop or pause: worklog only, status unchanged.
+    pub fn record(&self) {
+        if self.seconds > 0 {
+            fire_on_stop(&self.label, &self.description, self.seconds, self.started_ms);
+        }
+    }
+
+    /// Displaced by another task starting in focus mode: worklog plus To Do.
+    pub fn record_and_reopen(&self) {
+        fire_on_switch_stop(&self.label, &self.description, self.seconds, self.started_ms);
+    }
+}
+
 /// Timer started → transition issue to In Progress.
 pub fn fire_on_start(label: &str, description: &str) {
     if load_credentials().is_none() { return; }
@@ -529,5 +570,49 @@ mod tests {
         assert_eq!(resolve_status_id("51"), Some("51"));
         assert_eq!(resolve_status_id("cek di local"), Some("51"));
         assert_eq!(resolve_status_id("nope"), None);
+    }
+
+    fn task(id: i64, is_running: bool, elapsed_time: i64, start_time: Option<i64>) -> Task {
+        Task {
+            id,
+            label: "US-2092".into(),
+            description: Some("fix login".into()),
+            code: None,
+            link: None,
+            status: "todo".into(),
+            notes: None,
+            tags: None,
+            elapsed_time,
+            total_time: 0,
+            position: 0,
+            is_running,
+            done: false,
+            is_completed: false,
+            is_cancelled: false,
+            is_deleted: false,
+            is_archived: false,
+            is_pinned: false,
+            is_important: false,
+            start_time,
+            end_time: None,
+            work_date: "2026-09-13".into(),
+        }
+    }
+
+    #[test]
+    fn worklog_capture_keeps_live_seconds_before_stop() {
+        let now = crate::timer::now_ms();
+        // 60s committed, started 5s ago: only the live 5s are reportable.
+        let running = task(7, true, 60, Some(now - 5_000));
+        let worklog = Worklog::capture(&running, now).expect("running task has a worklog");
+        assert_eq!(worklog.task_id, 7);
+        assert_eq!(worklog.seconds, 5);
+        assert_eq!(worklog.label, "US-2092");
+        assert_eq!(worklog.description, "fix login");
+        assert_eq!(worklog.started_ms, Some(now - 5_000));
+
+        // A stopped task has nothing to report, so no worklog and no reopen.
+        let stopped = task(7, false, 65, None);
+        assert!(Worklog::capture(&stopped, now).is_none());
     }
 }
