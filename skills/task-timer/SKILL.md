@@ -81,3 +81,14 @@ JIRA side effects (same fire-and-forget hooks as the TUI; CLI stdout stays the t
 - `start` → JIRA **In Progress** (and exclusive peers → worklog + **To Do**).
 - `stop` → JIRA worklog only; status unchanged.
 - `done` → JIRA worklog + **Cek di Local** (`JIRA_STATUS_DONE`, default `Cek di Local`). Still only when the user/pipeline says the work is finished.
+
+These hooks never fail the command — the local timer has already moved — but they do
+not fail silently either. A failure prints `JIRA WARNING: <KEY> <action> failed: <reason>`
+on **stderr** and leaves the exit code at 0, so stdout JSON stays parseable. A status
+that did not move is therefore visible, not inferred:
+
+- no credentials or a non-ticket label → no warning (legitimate no-op);
+- a workflow with no transition into the target status → warning naming what it offers;
+- JIRA unreachable or rejecting the call → warning with the reason.
+
+Never treat exit 0 as proof the JIRA status moved; check for `JIRA WARNING` too.
