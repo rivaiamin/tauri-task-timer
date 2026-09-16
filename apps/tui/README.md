@@ -41,3 +41,22 @@ reloads every second.
 
 Press `?` in the app for the full map. Daily view, vim-style navigation,
 `n`/`e`/`d` for CRUD, Space to start/stop, `x` to copy the daily markdown report.
+
+## Status
+
+The `status` field in the edit form is picked from the JIRA catalog, not typed:
+focus it with `Tab` and press any key to open the list (`j`/`k` to move, `0`–`8`
+to jump, `Enter` to choose, `Esc` to keep what was there). The list is
+`JIRA_STATUSES` in `src/jira.rs`, with the ids the web dashboard and JIRA use.
+
+The status also follows the timer, so the list shows what is running without an
+edit:
+
+| Event | `status` becomes |
+|---|---|
+| start (`Space`) | In Progress (`21`) |
+| done (`D`) | Done (`31`) |
+| stop (`Space`) | unchanged — a hand-set status survives |
+
+Focus-mode switch and the agent hooks behave the same way as a stop. The CLI
+(`start`, `done`) writes the same field.

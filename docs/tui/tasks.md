@@ -62,6 +62,7 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 - [x] Extend `Task` struct + SQL in `db/tasks.rs`
 - [x] `db/comments.rs`, `db/integrations.rs`
 - [x] Edit/detail UI for new fields
+- [x] Status is picked from `JIRA_STATUSES` (no free text); status follows the timer (start → In Progress, done → Done, stop → unchanged)
 - [x] Tests
 
 ### MCP (`apps/mcp`)

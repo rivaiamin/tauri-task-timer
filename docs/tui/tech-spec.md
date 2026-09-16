@@ -98,6 +98,26 @@ Ported from `taskService.ts`:
 
 Timestamps: epoch **milliseconds** (match Drizzle `timestamp_ms`).
 
+### Task status
+
+`JIRA_STATUSES` in `apps/tui/src/jira.rs` is the catalog (id + label) the picker,
+the list chip, and `status_label` all read. Two resolvers keep the two uses
+apart:
+
+| Function | Answers |
+|---|---|
+| `status_when_run_ends(task_is_done)` | the JIRA status **name** a run's end transitions the issue to (To Do / Cek di Local) |
+| `status_for_run_state(is_running, is_done)` | the local catalog **id** the same write stores (`21` running, `31` done, `None` otherwise) |
+
+`auto_status(conn, user_id, task_id, is_running, is_done)` applies the second: start
+and done overwrite the stored status, a plain stop leaves it alone so a
+hand-set status (Local OK, BLOCKED) survives. The write is unconditional rather
+than "only when empty", because start is a layout change that owns the field —
+otherwise a task left at Done would still read Done while its timer runs.
+
+`status` is `NOT NULL`, so `update_task` falls back to the stored value when the
+caller omits or blanks it; writing NULL is a constraint failure.
+
 ## Concurrency
 
 - SQLite WAL enabled (web `db/index.ts`; TUI sets same pragmas).

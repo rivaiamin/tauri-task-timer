@@ -124,15 +124,22 @@ key field.
 | Timer event | JIRA effect |
 |---|---|
 | **create** a task | auto-fetches JIRA issue title and sets as task description |
-| **start** a task | issue → **In Progress** |
-| **stop** a task | worklog for the run, then issue → **To Do** |
-| focus-mode **switch** (start B, auto-stops A) | A → **To Do** + worklog for A's run |
+| **start** a task | issue → **In Progress**; the task's own `status` → **In Progress** |
+| **stop** a task | worklog for the run, then issue → **To Do**; the task's own `status` is left alone |
+| focus-mode **switch** (start B, auto-stops A) | A → **To Do** + worklog for A's run; A's `status` is left alone |
 | agent hook pause / session end | worklog + **To Do** for every stopped task |
-| mark **`done`** (PATCH `{done:true}`) | stops any live run + final worklog, issue → **Cek lokal** |
+| mark **`done`** (PATCH `{done:true}`) | stops any live run + final worklog, issue → **Cek lokal**; the task's own `status` → **Done** |
 
 A stopped task only goes back to **To Do** when it is *not* checked done. Checking
 it done is the one thing that leaves the issue at the done status, so a stop can
 never silently undo a completed ticket.
+
+The task's own `status` column follows the same events, so the list shows what the
+timer is doing without an edit: **start** writes In Progress, **done** writes Done,
+and a plain **stop** writes nothing — a status a human moved the ticket to (Local
+OK, BLOCKED) survives a stop. Both the TUI and the CLI write it; the TUI also
+picks it from the JIRA catalog in the edit form (`e`, then the status field)
+rather than typing it.
 
 Details:
 
