@@ -137,6 +137,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             }
         }
         Overlay::Filter { .. } => {}
+        Overlay::StatusPick { selected } => super::widgets::draw_status_pick(frame, *selected),
         Overlay::Jira { mode } => super::widgets::draw_jira(frame, mode),
         Overlay::Git { mode } => draw_git(frame, mode),
     }
@@ -228,6 +229,12 @@ fn draw_form(
             Style::default()
         }
     };
+    // The field holds a catalog id; show the label the operator picked.
+    let status_display = if status.is_empty() {
+        "—".to_string()
+    } else {
+        format!("{}  ({})", jira::status_label(status), status)
+    };
     frame.render_widget(
         Paragraph::new("label").style(Style::default().fg(Color::DarkGray)),
         rows[0],
@@ -244,10 +251,14 @@ fn draw_form(
         rows[3],
     );
     frame.render_widget(
-        Paragraph::new("status").style(Style::default().fg(Color::DarkGray)),
+        Paragraph::new("status (Enter to pick)").style(Style::default().fg(Color::DarkGray)),
         rows[4],
     );
-    frame.render_widget(Paragraph::new(status).style(active(Field::Status)), rows[5]);
+    frame.render_widget(
+        Paragraph::new(status_display)
+            .style(active(Field::Status)),
+        rows[5],
+    );
     frame.render_widget(
         Paragraph::new("code").style(Style::default().fg(Color::DarkGray)),
         rows[6],
@@ -274,7 +285,7 @@ fn draw_form(
     );
     frame.render_widget(Paragraph::new(tags).style(active(Field::Tags)), rows[13]);
     frame.render_widget(
-        Paragraph::new("Tab: field  Enter: save  Esc: cancel")
+        Paragraph::new("Tab: field  Enter: save  Esc: cancel  (status field opens the picker)")
             .style(Style::default().fg(Color::DarkGray)),
         rows[15],
     );

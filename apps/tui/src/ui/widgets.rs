@@ -38,6 +38,59 @@ pub fn vsplit(area: Rect, header: u16, footer: u16) -> [Rect; 3] {
     [chunks[0], chunks[1], chunks[2]]
 }
 
+pub fn draw_status_pick(frame: &mut Frame, selected: usize) {
+    let area = centered(
+        frame.area(),
+        44,
+        (crate::jira::JIRA_STATUSES.len() as u16)
+            .saturating_add(5)
+            .min(frame.area().height),
+    );
+    frame.render_widget(Clear, area);
+    let mut lines: Vec<Line> = crate::jira::JIRA_STATUSES
+        .iter()
+        .enumerate()
+        .map(|(i, s)| {
+            Line::from(vec![
+                Span::styled(format!(" {i} "), Style::default().fg(Color::Yellow)),
+                Span::raw(format!("{}  ({})", s.label, s.id)),
+            ])
+            .style(picked_if(i == selected))
+        })
+        .collect();
+    lines.push(
+        Line::from(vec![
+            Span::styled(" 0 ", Style::default().fg(Color::Yellow)),
+            Span::raw("No status"),
+        ])
+        .style(picked_if(selected == crate::jira::JIRA_STATUSES.len())),
+    );
+    lines.push(Line::from(vec![]));
+    lines.push(Line::from(Span::styled(
+        " j/k: move  Enter: choose  Esc: cancel",
+        Style::default().fg(Color::DarkGray),
+    )));
+    frame.render_widget(
+        Paragraph::new(lines).block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" status ")
+                .title_alignment(Alignment::Center),
+        ),
+        area,
+    );
+}
+
+fn picked_if(picked: bool) -> Style {
+    if picked {
+        Style::default()
+            .fg(Color::Cyan)
+            .add_modifier(Modifier::UNDERLINED | Modifier::BOLD)
+    } else {
+        Style::default()
+    }
+}
+
 pub fn draw_jira(frame: &mut Frame, mode: &JiraMode) {
     match mode {
         JiraMode::Menu => {
