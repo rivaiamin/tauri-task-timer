@@ -581,6 +581,53 @@ mod tests {
         assert!(s2.is_none());
     }
 
+    /// `status` is NOT NULL, so an update that omits it must keep the stored
+    /// value rather than writing NULL — saving a status-less task used to fail
+    /// the constraint outright.
+    #[test]
+    fn update_without_a_status_keeps_the_stored_one() {
+        let conn = setup();
+        let t = create_task(&conn, "u1", "2026-09-17", "Keep", None).unwrap();
+        conn.execute("UPDATE tasks SET status = '51' WHERE id = ?1", [t.id]).unwrap();
+
+        let updated = update_task(
+            &conn, "u1", t.id, Some("Renamed"), Some("desc"), Some(60), None, None, None, None,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(updated.label, "Renamed");
+        assert_eq!(updated.status, "51", "an omitted status must not be nulled out");
+    }
+
+    /// A blank status is the same case as an omitted one.
+    #[test]
+    fn update_with_a_blank_status_keeps_the_stored_one() {
+        let conn = setup();
+        let t = create_task(&conn, "u1", "2026-09-17", "Keep", None).unwrap();
+        conn.execute("UPDATE tasks SET status = '41' WHERE id = ?1", [t.id]).unwrap();
+
+        let updated = update_task(
+            &conn, "u1", t.id, Some("Renamed"), None, None, None, Some("  "), None, None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(updated.status, "41");
+    }
+
+    /// And a real status still replaces it.
+    #[test]
+    fn update_with_a_status_replaces_the_stored_one() {
+        let conn = setup();
+        let t = create_task(&conn, "u1", "2026-09-17", "Set", None).unwrap();
+        let updated = update_task(
+            &conn, "u1", t.id, None, None, None, None, Some("31"), None, None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(updated.status, "31");
+    }
+
     #[test]
     fn find_by_label_is_case_insensitive_and_date_scoped() {
         let conn = setup();
