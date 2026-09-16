@@ -364,7 +364,7 @@ impl App {
         Ok(warnings)
     }
 
-    /// Stop a task. Fires worklog-only JIRA hook.
+    /// Stop a task. Fires worklog + To Do; Shift-D is what moves an issue to done.
     fn stop_task(&mut self, id: i64) -> Result<Warnings> {
         let worklog = self
             .tasks
@@ -374,11 +374,12 @@ impl App {
         tasks::stop_timer(&self.conn, &self.user_id, id)?;
         Ok(worklog
             .as_ref()
-            .map(Worklog::record)
+            .map(Worklog::record_and_reopen)
             .unwrap_or_default())
     }
 
-    /// Stop all running tasks. Fires worklog-only JIRA hooks (not To Do — explicit pause/end).
+    /// Stop all running tasks. Fires worklog + To Do for each, so a hook pause or
+    /// session end leaves no issue stranded in In Progress.
     /// Returns whether any tasks were running, plus any JIRA hook failures.
     fn stop_all_running(&mut self) -> Result<(bool, Warnings)> {
         let now = now_ms();
@@ -393,7 +394,7 @@ impl App {
         }
         let mut warnings = Warnings::new();
         for worklog in &stopped {
-            warnings.extend(worklog.record());
+            warnings.extend(worklog.record_and_reopen());
         }
         Ok((had, warnings))
     }

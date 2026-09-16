@@ -314,6 +314,20 @@ pub fn status_done() -> String {
     std::env::var("JIRA_STATUS_DONE").unwrap_or_else(|_| "Cek di Local".into())
 }
 
+/// The status a task's issue moves to when its run ends.
+///
+/// A run ending on an unfinished task returns the issue to To Do; a run ending
+/// because the task was checked done goes to the done status. Every stop and
+/// done hook resolves its target here, so the choice is one testable decision
+/// rather than a status name spelled out at each call site.
+pub fn status_when_run_ends(task_is_done: bool) -> String {
+    if task_is_done {
+        status_done()
+    } else {
+        status_todo()
+    }
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct JiraStatus {
     pub id: &'static str,
@@ -411,18 +425,19 @@ impl Worklog {
         })
     }
 
-    /// Explicit stop or pause: worklog only, status unchanged.
-    pub fn record(&self) -> Warnings {
-        if self.seconds > 0 {
-            fire_on_stop(&self.label, &self.description, self.seconds, self.started_ms)
-        } else {
-            Warnings::new()
-        }
-    }
-
-    /// Displaced by another task starting in focus mode: worklog plus To Do.
+    /// A run that ended while the task is not done: worklog, then To Do.
+    ///
+    /// This is the stop oracle. Every stop path routes through it — explicit
+    /// stop, hook pause, session end, and focus-switch displacement alike — so
+    /// an issue cannot be left in In Progress with no timer running.
     pub fn record_and_reopen(&self) -> Warnings {
-        fire_on_switch_stop(&self.label, &self.description, self.seconds, self.started_ms)
+        fire_run_end(
+            &self.label,
+            &self.description,
+            self.seconds,
+            self.started_ms,
+            false,
+        )
     }
 }
 
@@ -458,52 +473,37 @@ pub fn fire_on_start(label: &str, description: &str) -> Warnings {
         .collect()
 }
 
-/// Timer stopped (explicit) → log worklog only; keep current status.
+/// A run ended → log the worklog, then move the issue to the status that run now
+/// implies.
+///
+/// Both calls are attempted even when the worklog fails, so a JIRA hiccup on one
+/// cannot strand the issue in In Progress.
+pub fn fire_run_end(
+    label: &str,
+    description: &str,
+    seconds: i64,
+    started_ms: Option<i64>,
+    task_is_done: bool,
+) -> Warnings {
+    let Some(key) = jira_key(label, description) else {
+        return Warnings::new();
+    };
+    let status = status_when_run_ends(task_is_done);
+    let action = if task_is_done { "done" } else { "stop" };
+    let mut warnings = Warnings::new();
+    warnings.extend(warn(&key, "worklog", log_work(&key, seconds, started_ms)));
+    warnings.extend(warn(&key, action, transition_to(&key, &status)));
+    warnings
+}
+
+/// Timer stopped and the task is not done → worklog, then back to To Do.
 pub fn fire_on_stop(label: &str, description: &str, seconds: i64, started_ms: Option<i64>) -> Warnings {
-    let Some(key) = jira_key(label, description) else {
-        return Warnings::new();
-    };
-    warn(&key, "worklog", log_work(&key, seconds, started_ms))
-        .into_iter()
-        .collect()
+    fire_run_end(label, description, seconds, started_ms, false)
 }
 
-/// Focus-switch stop → log worklog, then transition to To Do.
-/// If worklog fails, still attempt the To Do transition.
-pub fn fire_on_switch_stop(
-    label: &str,
-    description: &str,
-    seconds: i64,
-    started_ms: Option<i64>,
-) -> Warnings {
-    let Some(key) = jira_key(label, description) else {
-        return Warnings::new();
-    };
-    let mut warnings = Warnings::new();
-    warnings.extend(warn(&key, "worklog", log_work(&key, seconds, started_ms)));
-    warnings.extend(warn(
-        &key,
-        "switch-stop",
-        transition_to(&key, &status_todo()),
-    ));
-    warnings
-}
-
-/// Mark done → log worklog, then transition to Cek di Local.
-/// If worklog fails, still attempt the done transition.
-pub fn fire_on_done(
-    label: &str,
-    description: &str,
-    seconds: i64,
-    started_ms: Option<i64>,
-) -> Warnings {
-    let Some(key) = jira_key(label, description) else {
-        return Warnings::new();
-    };
-    let mut warnings = Warnings::new();
-    warnings.extend(warn(&key, "worklog", log_work(&key, seconds, started_ms)));
-    warnings.extend(warn(&key, "done", transition_to(&key, &status_done())));
-    warnings
+/// Mark done → worklog, then to the done status.
+pub fn fire_on_done(label: &str, description: &str, seconds: i64, started_ms: Option<i64>) -> Warnings {
+    fire_run_end(label, description, seconds, started_ms, true)
 }
 
 /// Fetch issues from a JIRA sprint (Agile REST API).
@@ -551,6 +551,44 @@ pub fn fetch_sprint_issues(board: &str, sprint_id: &str) -> Result<Vec<(String, 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_run_ending_on_an_unfinished_task_returns_the_issue_to_todo() {
+        // The decision every stop and done path resolves through.
+        let stop_status = status_when_run_ends(false);
+        let done_status = status_when_run_ends(true);
+
+        assert_eq!(stop_status, status_todo());
+        assert_eq!(done_status, status_done());
+        assert_ne!(
+            stop_status, done_status,
+            "a plain stop must not land on the done status"
+        );
+
+        // Resolve both against a workflow where every status is reachable — this
+        // is the transition id that actually gets POSTed.
+        let workflow = ["To Do", "In Progress", "Cek di Local"]
+            .iter()
+            .enumerate()
+            .map(|(i, name)| Transition {
+                id: (i * 10 + 11).to_string(),
+                name: (*name).into(),
+                to: Some(TransitionTarget {
+                    id: Some((i * 10 + 11).to_string()),
+                    name: Some((*name).into()),
+                }),
+            })
+            .collect::<Vec<_>>();
+
+        let stop_target = resolve_transition_id(&workflow, &stop_status).unwrap();
+        let done_target = resolve_transition_id(&workflow, &done_status).unwrap();
+        assert_eq!(
+            pick_transition_id(&workflow, &status_todo()).as_deref(),
+            Some(stop_target.as_str()),
+            "the unfinished path must resolve to the To Do transition"
+        );
+        assert_ne!(stop_target, done_target, "a stop and a done must POST different transitions");
+    }
 
     #[test]
     fn finds_issue_key_in_label_or_description() {

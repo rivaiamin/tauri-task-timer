@@ -257,7 +257,7 @@ pub fn run(
             let task = db::tasks::stop_timer(conn, user_id, id)?
                 .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             if let Some(worklog) = &worklog {
-                warn_jira(&worklog.record());
+                warn_jira(&worklog.record_and_reopen());
             }
             emit_task(&task, json)
         }
