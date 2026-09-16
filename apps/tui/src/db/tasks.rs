@@ -317,7 +317,14 @@ pub fn update_task(
         row.start_time
     };
     let new_code = code.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-    let new_status = status.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    // `status` is NOT NULL in the schema, so an absent or blank value must land
+    // on the existing one — writing NULL is a constraint failure, which is what
+    // made saving a status-less task impossible.
+    let new_status = status
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| row.status.clone());
     let new_notes = notes.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     let new_tags = tags.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     match conn.execute(
@@ -399,10 +406,19 @@ pub fn reorder_swap(conn: &Connection, user_id: &str, a: i64, b: i64) -> Result<
     Ok(())
 }
 
+/// True only for the label-uniqueness index, so an unrelated constraint failure
+/// (a NOT NULL miss, a foreign key) is reported as itself rather than as a
+/// duplicate title.
 fn is_unique(e: &rusqlite::Error) -> bool {
     matches!(
         e.sqlite_error_code(),
         Some(rusqlite::ErrorCode::ConstraintViolation)
+    ) && matches!(
+        e,
+        rusqlite::Error::SqliteFailure(
+            _,
+            Some(msg),
+        ) if msg.contains("idx_tasks_user_date_label")
     )
 }
 
