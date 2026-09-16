@@ -328,6 +328,48 @@ pub fn status_when_run_ends(task_is_done: bool) -> String {
     }
 }
 
+/// The status a task's own state implies, as a catalog id:
+/// running → In Progress, done → Done, otherwise nothing.
+///
+/// Mirror image of [`status_when_run_ends`], which resolves the JIRA status
+/// *name* a run's end should transition an issue to; this one resolves the local
+/// catalog id the same run write should store, so the list shows what the timer
+/// is doing without the operator editing the row.
+pub fn status_for_run_state(is_running: bool, is_done: bool) -> Option<&'static str> {
+    if is_running {
+        Some("21")
+    } else if is_done {
+        Some("31")
+    } else {
+        None
+    }
+}
+
+/// Overwrite a task's stored status with the one its state implies.
+///
+/// A layout change — start, stop, done — owns the stored status; leaving it
+/// untouched is what made a running task read `To Do` in the list. No-op when
+/// the state implies nothing (a plain stop) or the row is already correct.
+pub fn auto_status(conn: &rusqlite::Connection, user_id: &str, task_id: i64, is_running: bool, is_done: bool) {
+    let Some(status) = status_for_run_state(is_running, is_done) else {
+        return;
+    };
+    let already: Option<String> = conn
+        .query_row(
+            "SELECT status FROM tasks WHERE id = ?1 AND user_id = ?2",
+            rusqlite::params![task_id, user_id],
+            |r| r.get(0),
+        )
+        .ok();
+    if already.as_deref() == Some(status) {
+        return;
+    }
+    let _ = conn.execute(
+        "UPDATE tasks SET status = ?1 WHERE id = ?2 AND user_id = ?3",
+        rusqlite::params![status, task_id, user_id],
+    );
+}
+
 #[derive(Debug, Clone, Copy)]
 pub struct JiraStatus {
     pub id: &'static str,
@@ -701,6 +743,50 @@ mod tests {
         assert_eq!(resolve_status_id("51"), Some("51"));
         assert_eq!(resolve_status_id("cek di local"), Some("51"));
         assert_eq!(resolve_status_id("nope"), None);
+    }
+
+    #[test]
+    fn run_state_implies_the_in_progress_and_done_ids() {
+        assert_eq!(status_for_run_state(true, false), Some("21"));
+        assert_eq!(status_for_run_state(false, true), Some("31"));
+        // A plain stop implies nothing: the stored status is left alone.
+        assert_eq!(status_for_run_state(false, false), None);
+        // The implied ids must resolve through the catalog the picker shows.
+        assert_eq!(status_label(status_for_run_state(true, false).unwrap()), "In Progress");
+        assert_eq!(status_label(status_for_run_state(false, true).unwrap()), "Done");
+    }
+
+    #[test]
+    fn auto_status_overwrites_and_spares_the_manual_states() {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, user_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'todo');
+             INSERT INTO tasks (id, user_id, status) VALUES (1, 'u1', '51'), (2, 'u1', '81');",
+        )
+        .unwrap();
+
+        // Start: the layout change wins over whatever the row said.
+        auto_status(&conn, "u1", 1, true, false);
+        assert_eq!(status_label(&status_of(&conn, 1)), "In Progress");
+
+        // A plain stop implies nothing, so a status a human moved the ticket to
+        // (Cek di Local, BLOCKED) survives it.
+        conn.execute("UPDATE tasks SET status = '51' WHERE id = 1", []).unwrap();
+        auto_status(&conn, "u1", 1, false, false);
+        assert_eq!(status_label(&status_of(&conn, 1)), "Cek di Local");
+
+        // Done implies Done even straight from BLOCKED.
+        auto_status(&conn, "u1", 2, false, true);
+        assert_eq!(status_label(&status_of(&conn, 2)), "Done");
+
+        // Idempotent: a second call leaves the same value.
+        auto_status(&conn, "u1", 2, false, true);
+        assert_eq!(status_label(&status_of(&conn, 2)), "Done");
+    }
+
+    fn status_of(conn: &rusqlite::Connection, task_id: i64) -> String {
+        conn.query_row("SELECT status FROM tasks WHERE id = ?1", [task_id], |r| r.get(0))
+            .unwrap()
     }
 
     fn task(id: i64, is_running: bool, elapsed_time: i64, start_time: Option<i64>) -> Task {
