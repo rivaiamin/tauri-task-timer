@@ -2,7 +2,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("j / k", "move selection"),
     ("J / K", "reorder selected task"),
     ("h / l  or  ← / →", "previous / next day"),
-    ("Space", "start or stop timer"),
+    ("Space", "start or stop timer (JIRA → In Progress / To Do)"),
     ("n", "new task"),
     ("e", "edit task (label, description, time, status, code, notes, tags)"),
     ("i", "task detail view"),

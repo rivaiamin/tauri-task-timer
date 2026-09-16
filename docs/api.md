@@ -125,9 +125,14 @@ key field.
 |---|---|
 | **create** a task | auto-fetches JIRA issue title and sets as task description |
 | **start** a task | issue → **In Progress** |
+| **stop** a task | worklog for the run, then issue → **To Do** |
 | focus-mode **switch** (start B, auto-stops A) | A → **To Do** + worklog for A's run |
-| **stop** a task | worklog for the run (status unchanged) |
+| agent hook pause / session end | worklog + **To Do** for every stopped task |
 | mark **`done`** (PATCH `{done:true}`) | stops any live run + final worklog, issue → **Cek lokal** |
+
+A stopped task only goes back to **To Do** when it is *not* checked done. Checking
+it done is the one thing that leaves the issue at the done status, so a stop can
+never silently undo a completed ticket.
 
 Details:
 
