@@ -59,7 +59,10 @@ function makeFixture() {
   mkdirSync(configDir, { recursive: true });
 
   const email = `verify-${Date.now()}@example.test`;
-  const today = new Date().toISOString().slice(0, 10);
+  // The TUI/CLI resolve label lookups against the *local* date, while an ISO
+  // timestamp is UTC — so pin the day and pass it explicitly. Using the UTC day
+  // here made every command miss the fixture whenever local and UTC differ.
+  const today = '2026-09-17';
   const key = 'US-901';
 
   const db = new DatabaseSync(dbPath);
@@ -77,7 +80,7 @@ function makeFixture() {
     join(configDir, 'config.toml'),
     [`database_path = "${dbPath}"`, `user_email = "${email}"`, 'timer_mode = "focus"'].join('\n') + '\n'
   );
-  return { dir, dbPath, configDir, key };
+  return { dir, dbPath, configDir, key, today };
 }
 
 /** Read one scalar from the fixture, proving the binary moved local state too. */
@@ -92,12 +95,16 @@ function fixtureScalar(dbPath, sql) {
 }
 
 function runCli(fixture, env, args) {
-  return spawnSync(BIN, ['--config', join(fixture.configDir, 'config.toml'), ...args], {
-    cwd: ROOT,
-    encoding: 'utf8',
-    timeout: 60_000,
-    env: { ...process.env, ...env },
-  });
+  return spawnSync(
+    BIN,
+    ['--config', join(fixture.configDir, 'config.toml'), '--date', fixture.today, ...args],
+    {
+      cwd: ROOT,
+      encoding: 'utf8',
+      timeout: 60_000,
+      env: { ...process.env, ...env },
+    }
+  );
 }
 
 /** Requests the stub recorded so far, straight from the capture file. */

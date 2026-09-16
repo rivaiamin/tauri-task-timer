@@ -317,7 +317,14 @@ pub fn update_task(
         row.start_time
     };
     let new_code = code.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-    let new_status = status.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    // `status` is NOT NULL in the schema, so an absent or blank value must land
+    // on the existing one — writing NULL is a constraint failure, which is what
+    // made saving a status-less task impossible.
+    let new_status = status
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .map(str::to_string)
+        .unwrap_or_else(|| row.status.clone());
     let new_notes = notes.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     let new_tags = tags.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     match conn.execute(
@@ -399,10 +406,19 @@ pub fn reorder_swap(conn: &Connection, user_id: &str, a: i64, b: i64) -> Result<
     Ok(())
 }
 
+/// True only for the label-uniqueness index, so an unrelated constraint failure
+/// (a NOT NULL miss, a foreign key) is reported as itself rather than as a
+/// duplicate title.
 fn is_unique(e: &rusqlite::Error) -> bool {
     matches!(
         e.sqlite_error_code(),
         Some(rusqlite::ErrorCode::ConstraintViolation)
+    ) && matches!(
+        e,
+        rusqlite::Error::SqliteFailure(
+            _,
+            Some(msg),
+        ) if msg.contains("idx_tasks_user_date_label")
     )
 }
 
@@ -563,6 +579,53 @@ mod tests {
         assert!(again.done);
         assert_eq!(d2, 0);
         assert!(s2.is_none());
+    }
+
+    /// `status` is NOT NULL, so an update that omits it must keep the stored
+    /// value rather than writing NULL — saving a status-less task used to fail
+    /// the constraint outright.
+    #[test]
+    fn update_without_a_status_keeps_the_stored_one() {
+        let conn = setup();
+        let t = create_task(&conn, "u1", "2026-09-17", "Keep", None).unwrap();
+        conn.execute("UPDATE tasks SET status = '51' WHERE id = ?1", [t.id]).unwrap();
+
+        let updated = update_task(
+            &conn, "u1", t.id, Some("Renamed"), Some("desc"), Some(60), None, None, None, None,
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(updated.label, "Renamed");
+        assert_eq!(updated.status, "51", "an omitted status must not be nulled out");
+    }
+
+    /// A blank status is the same case as an omitted one.
+    #[test]
+    fn update_with_a_blank_status_keeps_the_stored_one() {
+        let conn = setup();
+        let t = create_task(&conn, "u1", "2026-09-17", "Keep", None).unwrap();
+        conn.execute("UPDATE tasks SET status = '41' WHERE id = ?1", [t.id]).unwrap();
+
+        let updated = update_task(
+            &conn, "u1", t.id, Some("Renamed"), None, None, None, Some("  "), None, None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(updated.status, "41");
+    }
+
+    /// And a real status still replaces it.
+    #[test]
+    fn update_with_a_status_replaces_the_stored_one() {
+        let conn = setup();
+        let t = create_task(&conn, "u1", "2026-09-17", "Set", None).unwrap();
+        let updated = update_task(
+            &conn, "u1", t.id, None, None, None, None, Some("31"), None, None,
+        )
+        .unwrap()
+        .unwrap();
+        assert_eq!(updated.status, "31");
     }
 
     #[test]

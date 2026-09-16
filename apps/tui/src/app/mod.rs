@@ -87,6 +87,9 @@ pub enum Overlay {
     },
     Jira { mode: JiraMode },
     Git { mode: GitMode },
+    /// Status picker for the form's status field: the catalog, not free text.
+    /// `selected` indexes `jira::JIRA_STATUSES`; its length is "No status".
+    StatusPick { selected: usize },
 }
 
 pub struct App {
@@ -107,6 +110,8 @@ pub struct App {
     pub git_repo_path: Option<std::path::PathBuf>,
     pub bitbucket_workspace: Option<String>,
     pub bitbucket_repo: Option<String>,
+    /// The form the status picker was opened from, parked while the picker is up.
+    form_under_state: Option<Overlay>,
     hook_listener: crate::hooks::HookListener,
 }
 
@@ -145,6 +150,7 @@ impl App {
             git_repo_path,
             bitbucket_workspace,
             bitbucket_repo,
+            form_under_state: None,
             hook_listener: crate::hooks::HookListener::new(),
         };
         app.reload()?;
@@ -356,11 +362,13 @@ impl App {
         // Fire JIRA: focus-switched tasks → worklog + To Do
         for worklog in &stopped {
             warnings.extend(worklog.record_and_reopen());
+            jira::auto_status(&self.conn, &self.user_id, worklog.task_id, false, false);
         }
         // Fire JIRA: started task → In Progress
         if let Some(t) = self.tasks.iter().find(|t| t.id == id) {
             warnings.extend(jira::fire_on_start(&t.label, t.description_text()));
         }
+        jira::auto_status(&self.conn, &self.user_id, id, true, false);
         Ok(warnings)
     }
 
@@ -430,6 +438,72 @@ impl App {
         };
     }
 
+    /// Rebuild the form the picker was opened from, optionally replacing the
+    /// status field. The picker is a field editor, not a separate form, so this
+    /// is the only way back — and the only place the field changes.
+    fn form_under(&mut self, status: Option<String>) -> Overlay {
+        let Overlay::Form {
+            edit_id,
+            field,
+            label,
+            description,
+            elapsed,
+            status: current,
+            code,
+            notes,
+            tags,
+        } = self.form_under_state.take().unwrap_or_else(|| Overlay::None)
+        else {
+            return Overlay::None;
+        };
+        Overlay::Form {
+            edit_id,
+            field,
+            label,
+            description,
+            elapsed,
+            status: status.unwrap_or(current),
+            code,
+            notes,
+            tags,
+        }
+    }
+
+    /// Move the form's status field from free text to the catalog: the picker
+    /// opens on whatever that field currently holds.
+    fn open_status_pick(&mut self) {
+        let Overlay::Form {
+            status,
+            edit_id,
+            field,
+            label,
+            description,
+            elapsed,
+            code,
+            notes,
+            tags,
+        } = &self.overlay
+        else {
+            return;
+        };
+        let selected = jira::JIRA_STATUSES
+            .iter()
+            .position(|s| s.id == status.trim())
+            .unwrap_or(jira::JIRA_STATUSES.len());
+        self.form_under_state = Some(Overlay::Form {
+            edit_id: *edit_id,
+            field: *field,
+            label: label.clone(),
+            description: description.clone(),
+            elapsed: elapsed.clone(),
+            status: status.clone(),
+            code: code.clone(),
+            notes: notes.clone(),
+            tags: tags.clone(),
+        });
+        self.overlay = Overlay::StatusPick { selected };
+    }
+
     fn submit_form(&mut self) -> Result<()> {
         let (edit_id, label, description, elapsed, status, code, notes, tags) = match &self.overlay {
             Overlay::Form {
@@ -465,8 +539,9 @@ impl App {
                 return Ok(());
             }
         };
-        // Known label/id → store catalog id. Empty → None (no-op). Unknown text → store as-is
-        // so we don't wipe pre-existing values on legacy rows.
+        // The status field only ever holds a catalog id or a legacy value from
+        // before the field was a picker, so resolve defensively and keep an
+        // unrecognised value rather than wiping it.
         let status_opt = jira::resolve_status_id(status.trim()).or(if status.is_empty() {
             None
         } else {
@@ -980,6 +1055,51 @@ impl App {
         Ok(false)
     }
 
+    /// Keys for the status picker. Never quits, so it reports nothing — it only
+    /// ever closes back into the form it came from.
+    fn handle_status_pick_key(&mut self, key: KeyEvent) -> Result<()> {
+        // Copy the index out: `Overlay` is not `Copy`, so the shorthand bind
+        // would move the field it needs to write back.
+        let Overlay::StatusPick { selected } = &self.overlay else {
+            return Ok(());
+        };
+        let selected = *selected;
+        // The row past the last status is "No status".
+        let last = jira::JIRA_STATUSES.len();
+        match key.code {
+            // Esc keeps the field as it was; only Enter applies a choice.
+            KeyCode::Esc => {
+                let restored = self.form_under(None);
+                self.overlay = restored;
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                self.overlay = Overlay::StatusPick {
+                    selected: (selected + 1).min(last),
+                };
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                self.overlay = Overlay::StatusPick {
+                    selected: selected.saturating_sub(1),
+                };
+            }
+            KeyCode::Char(digit @ '0'..='8') => {
+                self.overlay = Overlay::StatusPick {
+                    selected: (digit as usize - '0' as usize).min(last),
+                };
+            }
+            KeyCode::Enter => {
+                let status = jira::JIRA_STATUSES
+                    .get(selected)
+                    .map(|s| s.id.to_string())
+                    .unwrap_or_default();
+                let chosen = self.form_under(Some(status));
+                self.overlay = chosen;
+            }
+            _ => {}
+        }
+        Ok(())
+    }
+
     fn handle_form_key(&mut self, key: KeyEvent) -> Result<bool> {
         match key.code {
             KeyCode::Esc => {
@@ -992,12 +1112,22 @@ impl App {
             }
             _ => {}
         }
+        // The status field is a picker, not a text input: any printable key on it
+        // opens the catalog. Checked before the form borrow so opening can mutate.
+        let status_focused = matches!(&self.overlay, Overlay::Form { field: Field::Status, .. });
+        if status_focused
+            && matches!(key.code, KeyCode::Char(_))
+            && (key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT)
+        {
+            self.open_status_pick();
+            return Ok(false);
+        }
         let Overlay::Form {
             field,
             label,
             description,
             elapsed,
-            status,
+            status: _,
             code,
             notes,
             tags,
@@ -1023,7 +1153,8 @@ impl App {
                     Field::Label => label,
                     Field::Description => description,
                     Field::Elapsed => elapsed,
-                    Field::Status => status,
+                    // Status is chosen from the catalog, never typed.
+                    Field::Status => return Ok(false),
                     Field::Code => code,
                     Field::Notes => notes,
                     Field::Tags => tags,
@@ -1037,7 +1168,7 @@ impl App {
                     Field::Label => label,
                     Field::Description => description,
                     Field::Elapsed => elapsed,
-                    Field::Status => status,
+                    Field::Status => return Ok(false),
                     Field::Code => code,
                     Field::Notes => notes,
                     Field::Tags => tags,
@@ -1059,6 +1190,10 @@ impl App {
         match &self.overlay {
             Overlay::Filter { .. } => return self.handle_filter_key(key),
             Overlay::Form { .. } => return self.handle_form_key(key),
+            Overlay::StatusPick { .. } => {
+                self.handle_status_pick_key(key)?;
+                return Ok(false);
+            }
             Overlay::Help => {
                 if matches!(
                     key.code,
@@ -1184,6 +1319,7 @@ impl App {
                                 jira::fire_on_done(&t.label, t.description_text(), delta, start_ms);
                         }
                     }
+                    jira::auto_status(&self.conn, &self.user_id, t.id, false, new_done);
                     self.reload()?;
                     self.set_status(if new_done { "marked done" } else { "unmarked done" });
                     self.show_jira(warnings);
@@ -1278,5 +1414,160 @@ impl App {
         })();
         ratatui::restore();
         result
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn form(status: &str) -> Overlay {
+        Overlay::Form {
+            edit_id: Some(7),
+            field: Field::Status,
+            label: "US-1".into(),
+            description: "desc".into(),
+            elapsed: "00:10:00".into(),
+            status: status.into(),
+            code: String::new(),
+            notes: String::new(),
+            tags: String::new(),
+        }
+    }
+
+    /// The picker is a field editor: whatever it applies must survive into the
+    /// form, which is what `submit_form` later writes to the database.
+    fn form_status(app: &App) -> &str {
+        match &app.overlay {
+            Overlay::Form { status, .. } => status,
+            _ => panic!("expected the form back after the picker closed"),
+        }
+    }
+
+    fn app_with_form(status: &str) -> App {
+        let mut app = test_app();
+        app.overlay = form(status);
+        app
+    }
+
+    fn test_app() -> App {
+        let conn = rusqlite::Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL);
+             CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, label TEXT NOT NULL, description TEXT, code TEXT, link TEXT, status TEXT NOT NULL DEFAULT 'todo', notes TEXT, tags TEXT, elapsed_time INTEGER NOT NULL DEFAULT 0, total_time INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0, is_running INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, is_completed INTEGER NOT NULL DEFAULT 0, is_cancelled INTEGER NOT NULL DEFAULT 0, is_deleted INTEGER NOT NULL DEFAULT 0, is_archived INTEGER NOT NULL DEFAULT 0, is_pinned INTEGER NOT NULL DEFAULT 0, is_important INTEGER NOT NULL DEFAULT 0, start_time INTEGER, end_time INTEGER, work_date TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE user_settings (user_id TEXT PRIMARY KEY, timer_mode TEXT NOT NULL DEFAULT 'focus', updated_at INTEGER NOT NULL DEFAULT 0);
+             INSERT INTO users VALUES ('u1','a@b.c','x',0);",
+        )
+        .unwrap();
+        App::new(conn, "u1".into(), NaiveDate::from_ymd_opt(2026, 9, 17).unwrap(), "focus".into(),
+            None, None, None, None, None).unwrap()
+    }
+
+    #[test]
+    fn picking_a_status_writes_its_catalog_id_into_the_form() {
+        let mut app = app_with_form("");
+        app.open_status_pick();
+        // No stored status → the cursor sits on the "No status" row, past the
+        // catalog, and `k` walks up into it (Done is the third row from the top).
+        let Overlay::StatusPick { selected } = app.overlay else {
+            panic!("expected the picker");
+        };
+        assert_eq!(selected, jira::JIRA_STATUSES.len());
+
+        for _ in 0..(jira::JIRA_STATUSES.len() - 2) {
+            app.handle_status_pick_key(key(KeyCode::Char('k'))).unwrap();
+        }
+        app.handle_status_pick_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(form_status(&app), "31", "the picked status must land in the form");
+    }
+
+    #[test]
+    fn a_picker_cursor_opens_on_the_status_the_form_already_holds() {
+        let mut app = app_with_form("51");
+        app.open_status_pick();
+        let Overlay::StatusPick { selected } = app.overlay else {
+            panic!("expected the picker");
+        };
+        // Catalog order: 11, 21, 31, 41, 51 → index 4.
+        assert_eq!(selected, 4);
+        app.handle_status_pick_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(form_status(&app), "51");
+    }
+
+    #[test]
+    fn escaping_the_picker_leaves_the_form_status_untouched() {
+        let mut app = app_with_form("41");
+        app.open_status_pick();
+        app.handle_status_pick_key(key(KeyCode::Char('j'))).unwrap();
+        app.handle_status_pick_key(key(KeyCode::Esc)).unwrap();
+        assert_eq!(form_status(&app), "41", "Esc must not apply a selection");
+    }
+
+    #[test]
+    fn the_no_status_row_clears_the_field() {
+        let mut app = app_with_form("81");
+        app.open_status_pick();
+        // Past the last catalog row is "No status".
+        for _ in 0..jira::JIRA_STATUSES.len() {
+            app.handle_status_pick_key(key(KeyCode::Char('j'))).unwrap();
+        }
+        app.handle_status_pick_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(form_status(&app), "");
+    }
+
+    #[test]
+    fn movement_is_clamped_to_the_no_status_row() {
+        let mut app = app_with_form("");
+        app.open_status_pick();
+        for _ in 0..(jira::JIRA_STATUSES.len() + 5) {
+            app.handle_status_pick_key(key(KeyCode::Char('j'))).unwrap();
+        }
+        let Overlay::StatusPick { selected } = app.overlay else {
+            panic!("expected the picker");
+        };
+        assert_eq!(selected, jira::JIRA_STATUSES.len());
+        app.handle_status_pick_key(key(KeyCode::Char('k'))).unwrap();
+        app.handle_status_pick_key(key(KeyCode::Char('k'))).unwrap();
+        let Overlay::StatusPick { selected } = app.overlay else {
+            panic!("expected the picker");
+        };
+        assert_eq!(selected, jira::JIRA_STATUSES.len() - 2);
+    }
+
+    /// The form's status field is not a text input: `s` must open the catalog
+    /// rather than append a character, or the picker would be unreachable.
+    #[test]
+    fn the_status_field_opens_the_picker_instead_of_typing() {
+        let mut app = app_with_form("21");
+        app.handle_form_key(key(KeyCode::Char('s'))).unwrap();
+        assert!(matches!(app.overlay, Overlay::StatusPick { .. }));
+    }
+
+    /// Every other field still types, so the picker did not swallow the form.
+    #[test]
+    fn other_fields_still_accept_text() {
+        let mut app = test_app();
+        app.overlay = Overlay::Form {
+            edit_id: Some(7),
+            field: Field::Label,
+            label: String::new(),
+            description: String::new(),
+            elapsed: "00:00:00".into(),
+            status: "21".into(),
+            code: String::new(),
+            notes: String::new(),
+            tags: String::new(),
+        };
+        app.handle_form_key(key(KeyCode::Char('x'))).unwrap();
+        let Overlay::Form { label, status, .. } = &app.overlay else {
+            panic!("expected the form");
+        };
+        assert_eq!(label, "x");
+        assert_eq!(status, "21");
     }
 }

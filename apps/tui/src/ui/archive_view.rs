@@ -112,6 +112,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             }
         }
         Overlay::Form { .. } => {}
+        Overlay::StatusPick { selected } => super::widgets::draw_status_pick(frame, *selected),
         Overlay::Filter { input, buffer } => draw_filter(frame, input, buffer),
         Overlay::Jira { mode } => super::widgets::draw_jira(frame, mode),
         Overlay::Git { .. } => {}
