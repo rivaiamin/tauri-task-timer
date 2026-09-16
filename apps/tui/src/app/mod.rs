@@ -356,11 +356,13 @@ impl App {
         // Fire JIRA: focus-switched tasks → worklog + To Do
         for worklog in &stopped {
             warnings.extend(worklog.record_and_reopen());
+            jira::auto_status(&self.conn, &self.user_id, worklog.task_id, false, false);
         }
         // Fire JIRA: started task → In Progress
         if let Some(t) = self.tasks.iter().find(|t| t.id == id) {
             warnings.extend(jira::fire_on_start(&t.label, t.description_text()));
         }
+        jira::auto_status(&self.conn, &self.user_id, id, true, false);
         Ok(warnings)
     }
 
@@ -465,8 +467,9 @@ impl App {
                 return Ok(());
             }
         };
-        // Known label/id → store catalog id. Empty → None (no-op). Unknown text → store as-is
-        // so we don't wipe pre-existing values on legacy rows.
+        // The status field only ever holds a catalog id or a legacy value from
+        // before the field was a picker, so resolve defensively and keep an
+        // unrecognised value rather than wiping it.
         let status_opt = jira::resolve_status_id(status.trim()).or(if status.is_empty() {
             None
         } else {
@@ -1184,6 +1187,7 @@ impl App {
                                 jira::fire_on_done(&t.label, t.description_text(), delta, start_ms);
                         }
                     }
+                    jira::auto_status(&self.conn, &self.user_id, t.id, false, new_done);
                     self.reload()?;
                     self.set_status(if new_done { "marked done" } else { "unmarked done" });
                     self.show_jira(warnings);
@@ -1280,3 +1284,4 @@ impl App {
         result
     }
 }
+

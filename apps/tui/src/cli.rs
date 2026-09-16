@@ -246,8 +246,10 @@ pub fn run(
                 .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             for worklog in &stopped {
                 warn_jira(&worklog.record_and_reopen());
+                jira::auto_status(conn, user_id, worklog.task_id, false, false);
             }
             warn_jira(&jira::fire_on_start(&started.label, started.description_text()));
+            jira::auto_status(conn, user_id, started.id, true, false);
             emit_task(&started, json)
         }
         Command::Stop { task } => {
@@ -291,6 +293,7 @@ pub fn run(
                     start_ms,
                 ));
             }
+            jira::auto_status(conn, user_id, id, false, !undo);
             emit_task(&task, json)
         }
         Command::Delete { task } => {
