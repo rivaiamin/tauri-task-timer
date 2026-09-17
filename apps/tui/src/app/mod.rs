@@ -50,7 +50,6 @@ pub struct ArchiveState {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub enum JiraMode {
     Menu,
     Comment { buffer: String },
@@ -59,7 +58,6 @@ pub enum JiraMode {
 }
 
 #[derive(Clone)]
-#[allow(dead_code)]
 pub enum GitMode {
     Menu,
     LinkBranch { buffer: String },
@@ -452,7 +450,7 @@ impl App {
             code,
             notes,
             tags,
-        } = self.form_under_state.take().unwrap_or_else(|| Overlay::None)
+        } = self.form_under_state.take().unwrap_or(Overlay::None)
         else {
             return Overlay::None;
         };
@@ -885,7 +883,7 @@ impl App {
         let user_id = self.user_id.clone();
         for (key, summary, _status) in &issues {
             let label = format!("{key} {summary}");
-            let task = tasks::create_task(&self.conn, &user_id, &today, &label.trim(), Some(summary))?;
+            let task = tasks::create_task(&self.conn, &user_id, &today, label.trim(), Some(summary))?;
             db::integrations::upsert(&self.conn, task.id, "jira", "issue_key", Some(key))?;
             if task.description.as_deref() == Some(summary.as_str()) && !summary.is_empty() {
                 // newly created (description matched summary = no prior desc)
@@ -1263,10 +1261,8 @@ impl App {
                 KeyCode::Char('/') => self.open_archive_filter(ArchiveInput::Label),
                 KeyCode::Char('t') => self.open_archive_filter(ArchiveInput::Tag),
                 KeyCode::Char('c') | KeyCode::Enter => self.continue_today()?,
-                KeyCode::Char('i') => {
-                    if self.archive_selected_task().is_some() {
-                        self.overlay = Overlay::Detail;
-                    }
+                KeyCode::Char('i') if self.archive_selected_task().is_some() => {
+                    self.overlay = Overlay::Detail;
                 }
                 _ => {}
             }

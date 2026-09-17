@@ -68,7 +68,7 @@ pub fn branch_ahead_behind(repo: &Path, branch: &str) -> Result<(u32, u32)> {
     if let Ok(o) = out {
         if o.status.success() {
             let text = String::from_utf8_lossy(&o.stdout);
-            let parts: Vec<&str> = text.trim().split_whitespace().collect();
+            let parts: Vec<&str> = text.split_whitespace().collect();
             if parts.len() == 2 {
                 let ahead = parts[0].parse().unwrap_or(0);
                 let behind = parts[1].parse().unwrap_or(0);
@@ -86,7 +86,7 @@ pub fn branch_ahead_behind(repo: &Path, branch: &str) -> Result<(u32, u32)> {
         if let Ok(o) = out {
             if o.status.success() {
                 let text = String::from_utf8_lossy(&o.stdout);
-                let parts: Vec<&str> = text.trim().split_whitespace().collect();
+                let parts: Vec<&str> = text.split_whitespace().collect();
                 if parts.len() == 2 {
                     let ahead = parts[0].parse().unwrap_or(0);
                     let behind = parts[1].parse().unwrap_or(0);
