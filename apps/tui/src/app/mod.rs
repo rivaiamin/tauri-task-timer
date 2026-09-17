@@ -113,18 +113,33 @@ pub struct App {
     hook_listener: crate::hooks::HookListener,
 }
 
+/// Everything the app takes from `config.toml` plus the open connection and the
+/// day being shown — grouped so `App::new` stays a single argument.
+pub struct AppConfig {
+    pub conn: Connection,
+    pub user_id: String,
+    pub date: NaiveDate,
+    pub timer_mode: String,
+    pub jira_board: Option<String>,
+    pub jira_sprint_id: Option<String>,
+    pub git_repo_path: Option<std::path::PathBuf>,
+    pub bitbucket_workspace: Option<String>,
+    pub bitbucket_repo: Option<String>,
+}
+
 impl App {
-    pub fn new(
-        conn: Connection,
-        user_id: String,
-        date: NaiveDate,
-        timer_mode: String,
-        jira_board: Option<String>,
-        jira_sprint_id: Option<String>,
-        git_repo_path: Option<std::path::PathBuf>,
-        bitbucket_workspace: Option<String>,
-        bitbucket_repo: Option<String>,
-    ) -> Result<Self> {
+    pub fn new(cfg: AppConfig) -> Result<Self> {
+        let AppConfig {
+            conn,
+            user_id,
+            date,
+            timer_mode,
+            jira_board,
+            jira_sprint_id,
+            git_repo_path,
+            bitbucket_workspace,
+            bitbucket_repo,
+        } = cfg;
         let mut app = Self {
             conn,
             user_id,
@@ -553,13 +568,15 @@ impl App {
                 &self.conn,
                 &self.user_id,
                 id,
-                Some(&label),
-                Some(&description),
-                Some(elapsed_secs),
-                code_opt,
-                status_opt,
-                notes_opt,
-                tags_opt,
+                tasks::TaskPatch {
+                    label: Some(&label),
+                    description: Some(&description),
+                    elapsed_seconds: Some(elapsed_secs),
+                    code: code_opt,
+                    status: status_opt,
+                    notes: notes_opt,
+                    tags: tags_opt,
+                },
             )?;
         } else {
             let mut final_description = description.clone();
@@ -581,13 +598,10 @@ impl App {
                     &self.conn,
                     &self.user_id,
                     created.id,
-                    None,
-                    None,
-                    Some(elapsed_secs),
-                    None,
-                    None,
-                    None,
-                    None,
+                    tasks::TaskPatch {
+                        elapsed_seconds: Some(elapsed_secs),
+                        ..Default::default()
+                    },
                 )?;
             }
             self.reload()?;
@@ -840,9 +854,10 @@ impl App {
                                             &self.conn,
                                             &self.user_id,
                                             task.id,
-                                            None, None, None, None,
-                                            Some(&status_id),
-                                            None, None,
+                                            tasks::TaskPatch {
+                                                status: Some(&status_id),
+                                                ..Default::default()
+                                            },
                                         );
                                         self.reload().ok();
                                     }
@@ -1460,8 +1475,18 @@ mod tests {
              INSERT INTO users VALUES ('u1','a@b.c','x',0);",
         )
         .unwrap();
-        App::new(conn, "u1".into(), NaiveDate::from_ymd_opt(2026, 9, 17).unwrap(), "focus".into(),
-            None, None, None, None, None).unwrap()
+        App::new(AppConfig {
+            conn,
+            user_id: "u1".into(),
+            date: NaiveDate::from_ymd_opt(2026, 9, 17).unwrap(),
+            timer_mode: "focus".into(),
+            jira_board: None,
+            jira_sprint_id: None,
+            git_repo_path: None,
+            bitbucket_workspace: None,
+            bitbucket_repo: None,
+        })
+        .unwrap()
     }
 
     #[test]

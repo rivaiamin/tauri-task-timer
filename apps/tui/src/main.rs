@@ -38,17 +38,17 @@ fn main() -> Result<()> {
     match cli.command {
         None => {
             let repo_root = cfg.resolve_repo_root();
-            let mut app = App::new(
+            let mut app = App::new(app::AppConfig {
                 conn,
                 user_id,
                 date,
                 timer_mode,
-                cfg.jira_board.clone(),
-                cfg.jira_sprint_id.clone(),
-                repo_root,
-                cfg.bitbucket_workspace.clone(),
-                cfg.bitbucket_repo.clone(),
-            )?;
+                jira_board: cfg.jira_board.clone(),
+                jira_sprint_id: cfg.jira_sprint_id.clone(),
+                git_repo_path: repo_root,
+                bitbucket_workspace: cfg.bitbucket_workspace.clone(),
+                bitbucket_repo: cfg.bitbucket_repo.clone(),
+            })?;
             app.run()
         }
         Some(cmd) => cli::run(cmd, &conn, &user_id, &date_iso, &timer_mode, cli.json),
