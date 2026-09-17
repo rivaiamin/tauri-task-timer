@@ -60,7 +60,8 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 ### TUI (`apps/tui`)
 
 - [x] Extend `Task` struct + SQL in `db/tasks.rs`
-- [x] `db/comments.rs`, `db/integrations.rs`
+- [x] `db/integrations.rs`
+- [ ] `db/comments.rs` — removed: nothing in the TUI read or wrote `task_comments`, and the module was the only dead-code holder in `db/`
 - [x] Edit/detail UI for new fields
 - [x] Status is picked from `JIRA_STATUSES` (no free text); status follows the timer (start → In Progress, done → Done, stop → unchanged)
 - [x] Tests
@@ -130,7 +131,7 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 ### TUI
 
 - [x] Link branch, show commits, PR status
-- [x] Import PR comments → `task_comments`
+- [ ] Import PR comments → `task_comments` (web only; the TUI has no comment store or overlay)
 
 ### MCP
 
