@@ -1,7 +1,7 @@
 // Verifies that a task's stored status follows its run state, without JIRA,
 // credentials, or network.
 //
-//   node scripts/verify-status-sync.mjs --cli       # G1: start → In Progress, done → Done
+//   node scripts/verify-status-sync.mjs --cli       # G1: start → In Progress, stop → To Do, done → Done
 //   node scripts/verify-status-sync.mjs --self-test # G2: pre-change behavior fails the oracle
 //
 // The fixture has no JIRA credentials on purpose: the status shown in the list
@@ -24,6 +24,7 @@ const mode = process.argv.includes('--self-test') ? 'self-test' : 'cli';
 // The catalog ids are the app's, from apps/tui/src/jira.rs JIRA_STATUSES.
 const IN_PROGRESS = '21';
 const DONE = '31';
+const TODO = '11';
 
 const SCHEMA = `
 CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL);
@@ -169,8 +170,8 @@ function statusSyncHolds(fixture, { preChange }) {
   const stoppedRow = row(dbPath, label);
   check(stoppedRow.is_running === 0, `${label}: stop did not clear is_running`);
   check(
-    stoppedRow.status === IN_PROGRESS,
-    `${label}: a plain stop must leave the status alone, got '${stoppedRow.status}'`
+    stoppedRow.status === TODO,
+    `${label}: a stop on an unfinished task must read To Do (${TODO}), got '${stoppedRow.status}'`
   );
 
   const done = runCli(fixture, ['done', label]);
@@ -181,6 +182,18 @@ function statusSyncHolds(fixture, { preChange }) {
   check(
     doneRow.status === DONE,
     `${label}: a done task must read Done (${DONE}), got '${doneRow.status}'`
+  );
+
+  // Un-done: the row must leave Done rather than keeping a status its state no
+  // longer implies.
+  const undone = runCli(fixture, ['done', label, '--undo']);
+  check(undone.status === 0, `done --undo exited ${undone.status}: ${undone.stderr}${undone.stdout}`);
+
+  const undoneRow = row(dbPath, label);
+  check(undoneRow.done === 0, `${label}: done --undo did not clear the done flag`);
+  check(
+    undoneRow.status === TODO,
+    `${label}: an un-done task must read To Do (${TODO}), got '${undoneRow.status}'`
   );
 
   return failures.length === 0;

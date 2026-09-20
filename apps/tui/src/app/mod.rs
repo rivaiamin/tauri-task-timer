@@ -428,17 +428,21 @@ impl App {
             vec![]
         };
         tasks::start_timer(&self.conn, &self.user_id, id, exclusive)?;
-        let mut warnings = Warnings::new();
+        // Every local write lands before any JIRA call: the list must read
+        // correctly even while a slow or unreachable JIRA is being asked.
+        jira::auto_status(&self.conn, &self.user_id, id);
+        for worklog in &stopped {
+            jira::auto_status(&self.conn, &self.user_id, worklog.task_id);
+        }
         // Fire JIRA: focus-switched tasks → worklog + To Do
+        let mut warnings = Warnings::new();
         for worklog in &stopped {
             warnings.extend(worklog.record_and_reopen());
-            jira::auto_status(&self.conn, &self.user_id, worklog.task_id, false, false);
         }
         // Fire JIRA: started task → In Progress
         if let Some(t) = self.tasks.iter().find(|t| t.id == id) {
             warnings.extend(jira::fire_on_start(&t.label, t.description_text()));
         }
-        jira::auto_status(&self.conn, &self.user_id, id, true, false);
         Ok(warnings)
     }
 
@@ -450,6 +454,10 @@ impl App {
             .find(|t| t.id == id)
             .and_then(|t| Worklog::capture(t, now_ms()));
         tasks::stop_timer(&self.conn, &self.user_id, id)?;
+        // A run ending on an unfinished task reads To Do again — the row must
+        // not keep showing In Progress with no timer behind it. Written before
+        // the JIRA call so the list is correct even while JIRA is slow.
+        jira::auto_status(&self.conn, &self.user_id, id);
         Ok(worklog
             .as_ref()
             .map(Worklog::record_and_reopen)
@@ -469,6 +477,10 @@ impl App {
         let had = !stopped.is_empty();
         for worklog in &stopped {
             tasks::stop_timer(&self.conn, &self.user_id, worklog.task_id)?;
+        }
+        // Local state first, JIRA second — a slow JIRA must not delay the list.
+        for worklog in &stopped {
+            jira::auto_status(&self.conn, &self.user_id, worklog.task_id);
         }
         let mut warnings = Warnings::new();
         for worklog in &stopped {
@@ -1677,7 +1689,12 @@ impl App {
                 match key.code {
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
                         let date = self.date_str();
+                        // A reset stops every timer, so no row stays In Progress.
+                        let ids: Vec<i64> = self.tasks.iter().map(|t| t.id).collect();
                         tasks::reset_all(&self.conn, &self.user_id, &date)?;
+                        for id in ids {
+                            jira::auto_status(&self.conn, &self.user_id, id);
+                        }
                         self.overlay = Overlay::None;
                         self.reload()?;
                     }
@@ -1783,6 +1800,9 @@ impl App {
                 if let Some(t) = self.selected_task().cloned() {
                     let new_done = !t.done;
                     let result = tasks::set_done(&self.conn, &self.user_id, t.id, new_done)?;
+                    // Local state first: the row reads Done / To Do immediately,
+                    // whether or not the JIRA hook below can be reached.
+                    jira::auto_status(&self.conn, &self.user_id, t.id);
                     let mut warnings = Warnings::new();
                     if let Some((_, delta, start_ms)) = result {
                         if new_done {
@@ -1790,7 +1810,6 @@ impl App {
                                 jira::fire_on_done(&t.label, t.description_text(), delta, start_ms);
                         }
                     }
-                    jira::auto_status(&self.conn, &self.user_id, t.id, false, new_done);
                     self.reload()?;
                     self.set_status(if new_done { "marked done" } else { "unmarked done" });
                     self.show_jira(warnings);
@@ -1799,6 +1818,8 @@ impl App {
             KeyCode::Char('r') => {
                 if let Some(id) = self.selected_task().map(|t| t.id) {
                     tasks::reset_task(&self.conn, &self.user_id, id)?;
+                    // A reset stops the timer, so the row is no longer In Progress.
+                    jira::auto_status(&self.conn, &self.user_id, id);
                     self.reload()?;
                 }
             }

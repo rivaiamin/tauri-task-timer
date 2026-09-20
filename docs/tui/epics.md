@@ -52,7 +52,7 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 - [x] Single migration; `pnpm db:migrate` succeeds on existing DB
 - [x] Web API CRUD for comments and integrations
 - [x] TUI create/edit shows code, notes, tags, status
-- [x] TUI status is chosen from `JIRA_STATUSES` and follows the timer (start → In Progress, done → Done; stop leaves it alone)
+- [x] TUI status is chosen from `JIRA_STATUSES` and follows the timer (start → In Progress, stop → To Do, done → Done)
 - [x] MCP can set extended fields and add comments
 - [x] [erd.md](./erd.md) matches deployed schema
 

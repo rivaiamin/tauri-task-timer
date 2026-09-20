@@ -244,34 +244,56 @@ pub fn run(
             let id = task.id;
             let started = db::tasks::start_timer(conn, user_id, id, exclusive)?
                 .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
+            // Local state first: the list is correct even while JIRA is slow.
+            jira::auto_status(conn, user_id, started.id);
+            for worklog in &stopped {
+                jira::auto_status(conn, user_id, worklog.task_id);
+            }
             for worklog in &stopped {
                 warn_jira(&worklog.record_and_reopen());
-                jira::auto_status(conn, user_id, worklog.task_id, false, false);
             }
             warn_jira(&jira::fire_on_start(&started.label, started.description_text()));
-            jira::auto_status(conn, user_id, started.id, true, false);
+            // Re-read so the emitted task carries the status the list will show.
+            let started = db::tasks::get_task(conn, user_id, started.id)?
+                .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             emit_task(&started, json)
         }
         Command::Stop { task } => {
             let task = resolve_task(conn, user_id, date_iso, &task)?;
             let worklog = Worklog::capture(&task, now_ms());
             let id = task.id;
-            let task = db::tasks::stop_timer(conn, user_id, id)?
+            db::tasks::stop_timer(conn, user_id, id)?
                 .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
+            // A stop on an unfinished task reads To Do again. Written before the
+            // JIRA call so the row is correct even while JIRA is slow.
+            jira::auto_status(conn, user_id, id);
             if let Some(worklog) = &worklog {
                 warn_jira(&worklog.record_and_reopen());
             }
+            let task = db::tasks::get_task(conn, user_id, id)?
+                .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             emit_task(&task, json)
         }
         Command::Reset { task } => {
             let task = resolve_task(conn, user_id, date_iso, &task)?;
             let id = task.id;
-            let task = db::tasks::reset_task(conn, user_id, id)?
+            db::tasks::reset_task(conn, user_id, id)?
+                .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
+            // A reset stops the timer, so the row is no longer In Progress.
+            jira::auto_status(conn, user_id, id);
+            let task = db::tasks::get_task(conn, user_id, id)?
                 .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             emit_task(&task, json)
         }
         Command::ResetAll => {
+            let ids: Vec<i64> = db::tasks::list_tasks(conn, user_id, date_iso)?
+                .iter()
+                .map(|t| t.id)
+                .collect();
             db::tasks::reset_all(conn, user_id, date_iso)?;
+            for id in ids {
+                jira::auto_status(conn, user_id, id);
+            }
             if json {
                 emit_json(&serde_json::json!({ "ok": true, "workDate": date_iso }))
             } else {
@@ -285,6 +307,9 @@ pub fn run(
             let Some((task, delta, start_ms)) = db::tasks::set_done(conn, user_id, id, !undo)? else {
                 bail!("task {id} not found");
             };
+            // Local state first: the row reads Done / To Do immediately, whether
+            // or not the JIRA hook below can be reached.
+            jira::auto_status(conn, user_id, id);
             if !undo {
                 warn_jira(&jira::fire_on_done(
                     &task.label,
@@ -293,7 +318,8 @@ pub fn run(
                     start_ms,
                 ));
             }
-            jira::auto_status(conn, user_id, id, false, !undo);
+            let task = db::tasks::get_task(conn, user_id, id)?
+                .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             emit_task(&task, json)
         }
         Command::Delete { task } => {

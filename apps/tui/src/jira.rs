@@ -291,39 +291,46 @@ pub fn status_when_run_ends(task_is_done: bool) -> String {
 }
 
 /// The status a task's own state implies, as a catalog id:
-/// running → In Progress, done → Done, otherwise nothing.
+/// running → In Progress, done → Done, stopped and unfinished → To Do.
 ///
 /// Mirror image of [`status_when_run_ends`], which resolves the JIRA status
 /// *name* a run's end should transition an issue to; this one resolves the local
 /// catalog id the same run write should store, so the list shows what the timer
 /// is doing without the operator editing the row.
-pub fn status_for_run_state(is_running: bool, is_done: bool) -> Option<&'static str> {
+///
+/// Total on purpose: every combination of the two flags names a status, so a
+/// stop cannot leave the row reading `In Progress` with no timer behind it.
+pub fn status_for_run_state(is_running: bool, is_done: bool) -> &'static str {
     if is_running {
-        Some("21")
+        "21"
     } else if is_done {
-        Some("31")
+        "31"
     } else {
-        None
+        "11"
     }
 }
 
-/// Overwrite a task's stored status with the one its state implies.
+/// Overwrite a task's stored status with the one its own row now implies.
 ///
 /// A layout change — start, stop, done — owns the stored status; leaving it
-/// untouched is what made a running task read `To Do` in the list. No-op when
-/// the state implies nothing (a plain stop) or the row is already correct.
-pub fn auto_status(conn: &rusqlite::Connection, user_id: &str, task_id: i64, is_running: bool, is_done: bool) {
-    let Some(status) = status_for_run_state(is_running, is_done) else {
-        return;
-    };
-    let already: Option<String> = conn
+/// untouched is what made a running task read `To Do` in the list and a stopped
+/// one read `In Progress`. The state is read back from the row rather than taken
+/// from the caller, so a caller holding a snapshot from before the write cannot
+/// apply a stale flag. No-op only when the row is already correct, so every
+/// caller can apply it unconditionally after mutating the timer.
+pub fn auto_status(conn: &rusqlite::Connection, user_id: &str, task_id: i64) {
+    let row: Option<(i64, i64, String)> = conn
         .query_row(
-            "SELECT status FROM tasks WHERE id = ?1 AND user_id = ?2",
+            "SELECT is_running, done, status FROM tasks WHERE id = ?1 AND user_id = ?2",
             rusqlite::params![task_id, user_id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .ok();
-    if already.as_deref() == Some(status) {
+    let Some((is_running, done, current)) = row else {
+        return;
+    };
+    let status = status_for_run_state(is_running != 0, done != 0);
+    if current == status {
         return;
     }
     let _ = conn.execute(
@@ -787,42 +794,51 @@ mod tests {
     }
 
     #[test]
-    fn run_state_implies_the_in_progress_and_done_ids() {
-        assert_eq!(status_for_run_state(true, false), Some("21"));
-        assert_eq!(status_for_run_state(false, true), Some("31"));
-        // A plain stop implies nothing: the stored status is left alone.
-        assert_eq!(status_for_run_state(false, false), None);
+    fn run_state_implies_the_in_progress_done_and_todo_ids() {
+        assert_eq!(status_for_run_state(true, false), "21");
+        assert_eq!(status_for_run_state(false, true), "31");
+        // A stop on an unfinished task reads To Do again, not nothing — the row
+        // must not keep claiming In Progress with no timer behind it.
+        assert_eq!(status_for_run_state(false, false), "11");
         // The implied ids must resolve through the catalog the picker shows.
-        assert_eq!(status_label(status_for_run_state(true, false).unwrap()), "In Progress");
-        assert_eq!(status_label(status_for_run_state(false, true).unwrap()), "Done");
+        assert_eq!(status_label(status_for_run_state(true, false)), "In Progress");
+        assert_eq!(status_label(status_for_run_state(false, true)), "Done");
+        assert_eq!(status_label(status_for_run_state(false, false)), "To Do");
     }
 
     #[test]
-    fn auto_status_overwrites_and_spares_the_manual_states() {
+    fn auto_status_follows_the_rows_own_state() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, user_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'todo');
-             INSERT INTO tasks (id, user_id, status) VALUES (1, 'u1', '51'), (2, 'u1', '81');",
+            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, user_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'todo',
+                                 is_running INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0);
+             INSERT INTO tasks (id, user_id, status) VALUES (1, 'u1', '51'), (2, 'u1', 'todo');",
         )
         .unwrap();
 
         // Start: the layout change wins over whatever the row said.
-        auto_status(&conn, "u1", 1, true, false);
+        conn.execute("UPDATE tasks SET is_running = 1 WHERE id = 1", []).unwrap();
+        auto_status(&conn, "u1", 1);
         assert_eq!(status_label(&status_of(&conn, 1)), "In Progress");
 
-        // A plain stop implies nothing, so a status a human moved the ticket to
-        // (Cek di Local, BLOCKED) survives it.
-        conn.execute("UPDATE tasks SET status = '51' WHERE id = 1", []).unwrap();
-        auto_status(&conn, "u1", 1, false, false);
-        assert_eq!(status_label(&status_of(&conn, 1)), "Cek di Local");
+        // Stop: back to To Do, so a finished run does not leave In Progress behind.
+        conn.execute("UPDATE tasks SET is_running = 0 WHERE id = 1", []).unwrap();
+        auto_status(&conn, "u1", 1);
+        assert_eq!(status_label(&status_of(&conn, 1)), "To Do");
 
-        // Done implies Done even straight from BLOCKED.
-        auto_status(&conn, "u1", 2, false, true);
+        // Done: Done, even straight from a legacy value.
+        conn.execute("UPDATE tasks SET done = 1 WHERE id = 2", []).unwrap();
+        auto_status(&conn, "u1", 2);
         assert_eq!(status_label(&status_of(&conn, 2)), "Done");
+
+        // Un-done: back to To Do rather than staying on Done.
+        conn.execute("UPDATE tasks SET done = 0 WHERE id = 2", []).unwrap();
+        auto_status(&conn, "u1", 2);
+        assert_eq!(status_label(&status_of(&conn, 2)), "To Do");
 
         // Idempotent: a second call leaves the same value.
-        auto_status(&conn, "u1", 2, false, true);
-        assert_eq!(status_label(&status_of(&conn, 2)), "Done");
+        auto_status(&conn, "u1", 2);
+        assert_eq!(status_label(&status_of(&conn, 2)), "To Do");
     }
 
     fn status_of(conn: &rusqlite::Connection, task_id: i64) -> String {

@@ -107,13 +107,17 @@ apart:
 | Function | Answers |
 |---|---|
 | `status_when_run_ends(task_is_done)` | the JIRA status **name** a run's end transitions the issue to (To Do / Cek di Local) |
-| `status_for_run_state(is_running, is_done)` | the local catalog **id** the same write stores (`21` running, `31` done, `None` otherwise) |
+| `status_for_run_state(is_running, is_done)` | the local catalog **id** the same write stores (`21` running, `31` done, `11` stopped) |
 
-`auto_status(conn, user_id, task_id, is_running, is_done)` applies the second: start
-and done overwrite the stored status, a plain stop leaves it alone so a
-hand-set status (Local OK, BLOCKED) survives. The write is unconditional rather
-than "only when empty", because start is a layout change that owns the field —
-otherwise a task left at Done would still read Done while its timer runs.
+`auto_status(conn, user_id, task_id)` applies the second, reading the state back
+from the row rather than taking it from the caller — a caller holding a snapshot
+from before its own write cannot apply a stale flag. Start, stop, reset, and the
+done toggle all route through it, and each writes local state *before* its JIRA
+hook, so the list is correct even while JIRA is slow or unreachable. The write is
+unconditional rather than "only when empty", because start is a layout change
+that owns the field — otherwise a task left at Done would still read Done while
+its timer runs. A hand-set status (Local OK, BLOCKED) is therefore owned by the
+timer too: it survives only until the next start/stop/done.
 
 `status` is `NOT NULL`, so `update_task` falls back to the stored value when the
 caller omits or blanks it; writing NULL is a constraint failure.
