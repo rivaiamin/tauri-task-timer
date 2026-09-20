@@ -5,11 +5,14 @@
 // is the reference: a layout change (start / stop / reset / done toggle) owns the
 // stored status, so the list shows what the timer is doing without the operator
 // editing the row. An explicit status edit does NOT call this — see taskService.
+//
+// Status is per DAY: the timer, the ordering and the lifecycle flags all live on
+// the day row, so `autoStatus` reads and writes that row, not the identity.
 import { and, eq } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from './db/schema';
 
-const { tasks } = schema;
+const { tasks, taskDays } = schema;
 
 /**
  * The status a task's own state implies, as a catalog id:
@@ -25,30 +28,33 @@ export function statusForRunState(isRunning: boolean, isDone: boolean): string {
 }
 
 /**
- * Overwrite a task's stored status with the one its own row now implies.
+ * Overwrite a day row's stored status with the one its own state now implies.
  *
- * Reads the state back from the row rather than taking it from the caller, so a
- * caller holding a snapshot from before its own write cannot apply a stale flag.
- * No-op only when the row is already correct, so every caller can apply it
- * unconditionally after mutating the timer. A missing row is a no-op, not an error.
+ * Reads the state back from the day row rather than taking it from the caller, so
+ * a caller holding a snapshot from before its own write cannot apply a stale
+ * flag. No-op only when the row is already correct, so every caller can apply it
+ * unconditionally after mutating the timer. A missing row is a no-op, not an
+ * error — including a task that has no row on that date at all.
  */
 export function autoStatus(
 	db: BetterSQLite3Database<typeof schema>,
 	userId: string,
-	taskId: number
+	taskId: number,
+	workDate: string
 ): void {
 	const row = db
-		.select({ isRunning: tasks.isRunning, done: tasks.done, status: tasks.status })
-		.from(tasks)
-		.where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+		.select({ id: taskDays.id, isRunning: taskDays.isRunning, done: taskDays.done, status: taskDays.status })
+		.from(taskDays)
+		.innerJoin(tasks, eq(tasks.id, taskDays.taskId))
+		.where(and(eq(tasks.id, taskId), eq(tasks.userId, userId), eq(taskDays.workDate, workDate)))
 		.get();
 	if (!row) return;
 
 	const status = statusForRunState(row.isRunning, row.done);
 	if (row.status === status) return;
 
-	db.update(tasks)
+	db.update(taskDays)
 		.set({ status, updatedAt: new Date() })
-		.where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
+		.where(eq(taskDays.id, row.id))
 		.run();
 }

@@ -3,16 +3,19 @@ import { z } from 'zod';
 import { resolveActor, requireScope } from '$lib/server/actor';
 import { reorderTasks } from '$lib/server/taskService';
 
-const bodySchema = z.object({ ids: z.array(z.number().int()).min(1) });
+const bodySchema = z.object({
+  ids: z.array(z.number().int()).min(1),
+  workDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+});
 
-// POST /api/tasks/reorder — set positions to match the given id order.
-// Body: { ids: [3, 1, 2] }
+// POST /api/tasks/reorder — set the named day's positions to match the given id order.
+// Body: { ids: [3, 1, 2], workDate? } — default today.
 export const POST: RequestHandler = async (event) => {
   const actor = await resolveActor(event);
   requireScope(actor, 'tasks:write');
 
   const parsed = bodySchema.safeParse(await event.request.json().catch(() => null));
-  if (!parsed.success) throw error(400, 'Body must be { ids: number[] }');
+  if (!parsed.success) throw error(400, 'Body must be { ids: number[], workDate?: "YYYY-MM-DD" }');
 
-  return json(reorderTasks(actor.userId, parsed.data.ids));
+  return json(reorderTasks(actor.userId, parsed.data.ids, parsed.data.workDate));
 };

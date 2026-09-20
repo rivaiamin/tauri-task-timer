@@ -9,7 +9,7 @@
 // real database. The mock is set up before the dynamic imports below.
 import { describe, it, expect, beforeAll, afterAll, vi } from 'vitest';
 import { rmSync } from 'node:fs';
-import { eq } from 'drizzle-orm';
+import { and, eq } from 'drizzle-orm';
 import * as schema from './db/schema';
 import type * as TaskService from './taskService';
 import type * as Db from './db';
@@ -58,11 +58,12 @@ afterAll(() => {
 	rmSync(dir, { recursive: true, force: true });
 });
 
-function statusOf(id: number): string {
+/** The status of the task's day row on the viewed day. */
+function statusOf(taskId: number): string {
 	return dbmod.db
-		.select({ status: schema.tasks.status })
-		.from(schema.tasks)
-		.where(eq(schema.tasks.id, id))
+		.select({ status: schema.taskDays.status })
+		.from(schema.taskDays)
+		.where(and(eq(schema.taskDays.taskId, taskId), eq(schema.taskDays.workDate, DAY)))
 		.get()!.status;
 }
 
@@ -76,27 +77,27 @@ describe('taskService status wiring', () => {
 		const id = await newTask('WIRE-1');
 		expect(statusOf(id)).toBe('todo'); // schema default
 
-		svc.startTimer(USER, id);
+		svc.startTimer(USER, id, DAY);
 		expect(statusOf(id)).toBe('21');
 
-		svc.stopTimer(USER, id);
+		svc.stopTimer(USER, id, DAY);
 		expect(statusOf(id)).toBe('11');
 
-		svc.updateTask(USER, id, { done: true });
+		svc.updateTask(USER, id, { done: true }, DAY);
 		expect(statusOf(id)).toBe('31');
 
-		svc.updateTask(USER, id, { done: false });
+		svc.updateTask(USER, id, { done: false }, DAY);
 		expect(statusOf(id)).toBe('11');
 	});
 
 	it('returns the status to To Do on reset and reset-all', async () => {
 		const id = await newTask('WIRE-2');
-		svc.startTimer(USER, id);
+		svc.startTimer(USER, id, DAY);
 		expect(statusOf(id)).toBe('21');
-		svc.resetTask(USER, id);
+		svc.resetTask(USER, id, DAY);
 		expect(statusOf(id)).toBe('11');
 
-		svc.startTimer(USER, id);
+		svc.startTimer(USER, id, DAY);
 		expect(statusOf(id)).toBe('21');
 		svc.resetAll(USER, DAY);
 		expect(statusOf(id)).toBe('11');
@@ -105,19 +106,19 @@ describe('taskService status wiring', () => {
 	it('keeps Done through a stop, and demotes a focus-switch victim', async () => {
 		// A done task that runs and stops is still done.
 		const done = await newTask('WIRE-3');
-		svc.updateTask(USER, done, { done: true });
-		svc.startTimer(USER, done);
+		svc.updateTask(USER, done, { done: true }, DAY);
+		svc.startTimer(USER, done, DAY);
 		expect(statusOf(done)).toBe('21');
-		svc.stopTimer(USER, done);
+		svc.stopTimer(USER, done, DAY);
 		expect(statusOf(done)).toBe('31');
 
 		// Focus mode: starting B stops A, and A must not stay In Progress.
 		svc.setTimerMode(USER, 'focus');
 		const a = await newTask('WIRE-4A');
 		const b = await newTask('WIRE-4B');
-		svc.startTimer(USER, a);
+		svc.startTimer(USER, a, DAY);
 		expect(statusOf(a)).toBe('21');
-		svc.startTimer(USER, b);
+		svc.startTimer(USER, b, DAY);
 		expect(statusOf(a)).toBe('11');
 		expect(statusOf(b)).toBe('21');
 		svc.setTimerMode(USER, 'parallel');
@@ -125,7 +126,7 @@ describe('taskService status wiring', () => {
 
 	it('lets an explicit status in the same PATCH win over the automatic write', async () => {
 		const id = await newTask('WIRE-5');
-		svc.updateTask(USER, id, { done: true, status: '81' });
+		svc.updateTask(USER, id, { done: true, status: '81' }, DAY);
 		expect(statusOf(id)).toBe('81');
 	});
 });

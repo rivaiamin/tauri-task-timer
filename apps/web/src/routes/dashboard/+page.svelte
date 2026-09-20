@@ -11,7 +11,8 @@
   interface TaskDTO {
     id: number;
     label: string;
-    workDate: string;
+    /** The viewed day (YYYY-MM-DD); null only on archive queries. */
+    workDate: string | null;
     description: string | null;
     code: string | null;
     link: string | null;
@@ -236,9 +237,9 @@
     if (editMode) return;
     try {
       if (task.isRunning) {
-        await api(`/tasks/${task.id}/stop`, { method: 'POST' });
+        await api(`/tasks/${task.id}/stop`, { method: 'POST', body: { workDate } });
       } else {
-        await api(`/tasks/${task.id}/start`, { method: 'POST', body: { exclusive: timerMode === 'focus' } });
+        await api(`/tasks/${task.id}/start`, { method: 'POST', body: { exclusive: timerMode === 'focus', workDate } });
       }
       scheduleRefresh();
     } catch (e) {
@@ -248,7 +249,7 @@
 
   async function toggleDone(task: TaskDTO, done: boolean) {
     try {
-      await api(`/tasks/${task.id}`, { method: 'PATCH', body: { done } });
+      await api(`/tasks/${task.id}`, { method: 'PATCH', body: { done, workDate } });
       scheduleRefresh();
     } catch (e) {
       fail(e);
@@ -257,7 +258,7 @@
 
   async function resetTimer(id: number) {
     try {
-      await api(`/tasks/${id}/reset`, { method: 'POST' });
+      await api(`/tasks/${id}/reset`, { method: 'POST', body: { workDate } });
       scheduleRefresh();
     } catch (e) {
       fail(e);
@@ -290,7 +291,7 @@
 
   async function persistOrder(orderedIds: number[]) {
     try {
-      await api('/tasks/reorder', { method: 'POST', body: { ids: orderedIds } });
+      await api('/tasks/reorder', { method: 'POST', body: { ids: orderedIds, workDate } });
       scheduleRefresh();
     } catch (e) {
       fail(e);
@@ -451,7 +452,7 @@
       return;
     }
     try {
-      await api(`/tasks/${task.id}`, { method: 'PATCH', body: { elapsed_seconds: secs } });
+      await api(`/tasks/${task.id}`, { method: 'PATCH', body: { elapsed_seconds: secs, workDate } });
       buf.time = formatTime(secs);
       editBuffers = editBuffers;
       scheduleRefresh();
@@ -517,7 +518,8 @@
           link: editLink.trim() || null,
           status: editStatus || undefined,
           notes: editNotes.trim() || null,
-          tags: parsedTags
+          tags: parsedTags,
+          workDate
         }
       });
       closeEditModal();

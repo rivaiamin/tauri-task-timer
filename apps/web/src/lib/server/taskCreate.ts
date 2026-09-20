@@ -1,11 +1,19 @@
 // Pure, synchronous create-task logic — accepts a Drizzle db instance so it can
 // be tested against in-memory SQLite without SvelteKit env / module-level db.
-import { and, desc, eq, sql } from 'drizzle-orm';
+//
+// A task is an identity (one row per user + label) plus one row per day it is
+// worked on. Creating a task finds or inserts the identity, then makes sure that
+// day's row exists — so the same label on a new day is the same task with one
+// more day, never a second task.
+import { and, eq, sql } from 'drizzle-orm';
 import type { BetterSQLite3Database } from 'drizzle-orm/better-sqlite3';
 import * as schema from './db/schema';
 import type { Task } from './db/schema';
 
-const { tasks } = schema;
+const { tasks, taskDays } = schema;
+
+/** One day's row, as stored. */
+export type TaskDay = typeof taskDays.$inferSelect;
 
 export interface CreateInput {
   label: string; // already trimmed
@@ -18,60 +26,27 @@ export interface CreateInput {
   tags?: string[] | null;
 }
 
-/** Check for existing same-label-same-day row; if none, resolve description + position. */
-export function resolveCreate(
+/** The task identity for (user, label), or undefined when the user has no such task. */
+export function findIdentity(
+  db: BetterSQLite3Database<typeof schema>,
+  userId: string,
+  label: string
+): Task | undefined {
+  return db
+    .select()
+    .from(tasks)
+    .where(and(eq(tasks.userId, userId), eq(tasks.label, label)))
+    .get();
+}
+
+/**
+ * Insert a new task identity. The label is the identity, so the content fields —
+ * description, code, link, notes, tags — live here and are shared by every day.
+ */
+export function insertIdentity(
   db: BetterSQLite3Database<typeof schema>,
   userId: string,
   input: CreateInput
-): { existing: Task } | { existing: null; description: string | null; position: number } {
-  const { label, workDate } = input;
-
-  // 1. Same label + same day → return existing (TUI dedup).
-  const existing = db
-    .select()
-    .from(tasks)
-    .where(and(eq(tasks.userId, userId), eq(tasks.workDate, workDate), eq(tasks.label, label)))
-    .get();
-  if (existing) return { existing };
-
-  // 2. Resolve description: caller's or copy from most recent same-label row.
-  let description = input.description ?? null;
-  if (!description || description.trim() === '') {
-    const copied = db
-      .select({ description: tasks.description })
-      .from(tasks)
-      .where(
-        and(
-          eq(tasks.userId, userId),
-          eq(tasks.label, label),
-          sql`${tasks.description} IS NOT NULL`,
-          sql`${tasks.description} != ''`
-        )
-      )
-      .orderBy(desc(tasks.workDate), desc(tasks.id))
-      .limit(1)
-      .get();
-    if (copied?.description) description = copied.description;
-  }
-
-  // 3. Position = MAX(position) + 1 for this user+day.
-  const posRow = db
-    .select({ max: sql<number>`coalesce(max(${tasks.position}), -1)` })
-    .from(tasks)
-    .where(and(eq(tasks.userId, userId), eq(tasks.workDate, workDate)))
-    .get();
-  const position = (posRow?.max ?? -1) + 1;
-
-  return { existing: null, description, position };
-}
-
-/** Insert a new task row. Returns the raw row. */
-export function insertTask(
-  db: BetterSQLite3Database<typeof schema>,
-  userId: string,
-  input: CreateInput,
-  description: string | null,
-  position: number
 ): Task {
   const now = new Date();
   return db
@@ -79,16 +54,57 @@ export function insertTask(
     .values({
       userId,
       label: input.label,
-      workDate: input.workDate,
       code: input.code ?? null,
-      description,
+      description: input.description,
       link: input.link ?? null,
-      status: input.status ?? 'todo',
       notes: input.notes ?? null,
       tags: input.tags ?? null,
-      elapsedTime: 0,
-      position,
-      isRunning: false,
+      createdAt: now,
+      updatedAt: now
+    })
+    .returning()
+    .get();
+}
+
+/**
+ * The day row for (task, date), created at the end of that day's list when
+ * missing. `status` only applies to a row being created: an existing day is
+ * returned untouched, so creating the same task again never resets its day.
+ *
+ * This is what "starting a task on a new day" calls: the identity already
+ * exists, and the day row is the only thing that is new.
+ */
+export function ensureDayRow(
+  db: BetterSQLite3Database<typeof schema>,
+  userId: string,
+  taskId: number,
+  workDate: string,
+  status?: string
+): TaskDay {
+  const existing = db
+    .select({ day: taskDays })
+    .from(taskDays)
+    .innerJoin(tasks, eq(tasks.id, taskDays.taskId))
+    .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId), eq(taskDays.workDate, workDate)))
+    .get();
+  if (existing) return existing.day;
+
+  // `position` orders one day's list across the user's tasks, so it counts that
+  // date's rows only.
+  const posRow = db
+    .select({ max: sql<number>`coalesce(max(${taskDays.position}), -1)` })
+    .from(taskDays)
+    .innerJoin(tasks, eq(tasks.id, taskDays.taskId))
+    .where(and(eq(tasks.userId, userId), eq(taskDays.workDate, workDate)))
+    .get();
+  const now = new Date();
+  return db
+    .insert(taskDays)
+    .values({
+      taskId,
+      workDate,
+      status: status ?? 'todo',
+      position: (posRow?.max ?? -1) + 1,
       createdAt: now,
       updatedAt: now
     })

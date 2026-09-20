@@ -5,15 +5,18 @@ import { updateTask, deleteTask } from '$lib/server/taskService';
 
 const patchSchema = z
   .object({
+    // Identity fields — they belong to the task, not to one day.
     label: z.string().trim().min(1).max(200).optional(),
     description: z.string().trim().max(2000).nullable().optional(),
-    elapsed_seconds: z.number().int().min(0).optional(),
-    done: z.boolean().optional(),
     code: z.string().trim().max(100).nullable().optional(),
     link: z.string().url().max(2000).nullable().optional(),
-    status: z.string().trim().max(50).optional(),
     notes: z.string().max(10000).nullable().optional(),
     tags: z.array(z.string().trim().min(1).max(50)).max(50).nullable().optional(),
+    // Day fields — they apply to `workDate` (default today).
+    workDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+    elapsed_seconds: z.number().int().min(0).optional(),
+    done: z.boolean().optional(),
+    status: z.string().trim().max(50).optional(),
     is_completed: z.boolean().optional(),
     is_cancelled: z.boolean().optional(),
     is_deleted: z.boolean().optional(),
@@ -23,7 +26,9 @@ const patchSchema = z
   })
   .refine((v) => Object.keys(v).length > 0, { message: 'No fields to update' });
 
-// PATCH /api/tasks/:id — update label / description / elapsed_seconds.
+// PATCH /api/tasks/:id — update the task's content and/or the named day's state.
+// Body: { label?, description?, code?, link?, notes?, tags? } → the task;
+//       { elapsed_seconds?, done?, status?, is_*?, workDate? } → that day.
 export const PATCH: RequestHandler = async (event) => {
   const actor = await resolveActor(event);
   requireScope(actor, 'tasks:write');
@@ -50,12 +55,12 @@ export const PATCH: RequestHandler = async (event) => {
     isArchived: parsed.data.is_archived,
     isPinned: parsed.data.is_pinned,
     isImportant: parsed.data.is_important
-  });
+  }, parsed.data.workDate);
   if (!task) throw error(404, 'Task not found');
   return json(task);
 };
 
-// DELETE /api/tasks/:id
+// DELETE /api/tasks/:id — delete the task; its days, comments and integrations go with it.
 export const DELETE: RequestHandler = async (event) => {
   const actor = await resolveActor(event);
   requireScope(actor, 'tasks:write');
