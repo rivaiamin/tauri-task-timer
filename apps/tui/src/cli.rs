@@ -156,11 +156,14 @@ fn resolve_task(
     if selector.is_empty() {
         bail!("task selector is required");
     }
+    // A numeric selector names a task; the day comes from `--date`, so a task
+    // with no row for that day is not resolvable on it.
     if selector.chars().all(|c| c.is_ascii_digit()) {
         if let Ok(id) = selector.parse::<i64>() {
-            if let Some(task) = db::tasks::get_task(conn, user_id, id)? {
+            if let Some(task) = db::tasks::get_task_on(conn, user_id, id, date_iso)? {
                 return Ok(task);
             }
+            bail!("task {selector} is not worked on {date_iso}");
         }
     }
     let matches = db::tasks::find_tasks_by_label(conn, user_id, date_iso, selector)?;
@@ -231,30 +234,26 @@ pub fn run(
                 timer_mode == "focus"
             };
             let task = resolve_task(conn, user_id, date_iso, &task)?;
-            let stopped: Vec<Worklog> = if exclusive {
-                let now = now_ms();
-                db::tasks::list_tasks(conn, user_id, date_iso)?
-                    .iter()
-                    .filter(|t| t.id != task.id)
-                    .filter_map(|t| Worklog::capture(t, now))
-                    .collect()
-            } else {
-                vec![]
-            };
             let id = task.id;
-            let started = db::tasks::start_timer(conn, user_id, id, exclusive)?
-                .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
+            let day_id = task.day_id;
+            let (started, stopped_rows) =
+                db::tasks::start_timer(conn, user_id, day_id, exclusive)?
+                    .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             // Local state first: the list is correct even while JIRA is slow.
-            jira::auto_status(conn, user_id, started.id);
-            for worklog in &stopped {
-                jira::auto_status(conn, user_id, worklog.task_id);
+            // The victim's run is over, so its own day row stops reading In
+            // Progress; this is the same demotion the TUI applies on a switch.
+            jira::auto_status(conn, user_id, started.day_id);
+            for victim in &stopped_rows {
+                jira::auto_status(conn, user_id, victim.day_id);
             }
-            for worklog in &stopped {
-                warn_jira(&worklog.record_and_reopen());
+            for victim in &stopped_rows {
+                if let Some(worklog) = Worklog::capture(victim, now_ms()) {
+                    warn_jira(&worklog.record_and_reopen());
+                }
             }
             warn_jira(&jira::fire_on_start(&started.label, started.description_text()));
             // Re-read so the emitted task carries the status the list will show.
-            let started = db::tasks::get_task(conn, user_id, started.id)?
+            let started = db::tasks::get_task_by_day(conn, user_id, started.day_id)?
                 .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             emit_task(&started, json)
         }
@@ -262,37 +261,39 @@ pub fn run(
             let task = resolve_task(conn, user_id, date_iso, &task)?;
             let worklog = Worklog::capture(&task, now_ms());
             let id = task.id;
-            db::tasks::stop_timer(conn, user_id, id)?
+            let day_id = task.day_id;
+            db::tasks::stop_timer(conn, user_id, day_id)?
                 .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             // A stop on an unfinished task reads To Do again. Written before the
             // JIRA call so the row is correct even while JIRA is slow.
-            jira::auto_status(conn, user_id, id);
+            jira::auto_status(conn, user_id, day_id);
             if let Some(worklog) = &worklog {
                 warn_jira(&worklog.record_and_reopen());
             }
-            let task = db::tasks::get_task(conn, user_id, id)?
+            let task = db::tasks::get_task_by_day(conn, user_id, day_id)?
                 .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             emit_task(&task, json)
         }
         Command::Reset { task } => {
             let task = resolve_task(conn, user_id, date_iso, &task)?;
             let id = task.id;
-            db::tasks::reset_task(conn, user_id, id)?
+            let day_id = task.day_id;
+            db::tasks::reset_task(conn, user_id, day_id)?
                 .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             // A reset stops the timer, so the row is no longer In Progress.
-            jira::auto_status(conn, user_id, id);
-            let task = db::tasks::get_task(conn, user_id, id)?
+            jira::auto_status(conn, user_id, day_id);
+            let task = db::tasks::get_task_by_day(conn, user_id, day_id)?
                 .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             emit_task(&task, json)
         }
         Command::ResetAll => {
-            let ids: Vec<i64> = db::tasks::list_tasks(conn, user_id, date_iso)?
+            let day_ids: Vec<i64> = db::tasks::list_tasks(conn, user_id, date_iso)?
                 .iter()
-                .map(|t| t.id)
+                .map(|t| t.day_id)
                 .collect();
             db::tasks::reset_all(conn, user_id, date_iso)?;
-            for id in ids {
-                jira::auto_status(conn, user_id, id);
+            for day_id in day_ids {
+                jira::auto_status(conn, user_id, day_id);
             }
             if json {
                 emit_json(&serde_json::json!({ "ok": true, "workDate": date_iso }))
@@ -304,12 +305,14 @@ pub fn run(
         Command::Done { task, undo } => {
             let task = resolve_task(conn, user_id, date_iso, &task)?;
             let id = task.id;
-            let Some((task, delta, start_ms)) = db::tasks::set_done(conn, user_id, id, !undo)? else {
+            let day_id = task.day_id;
+            let Some((task, delta, start_ms)) = db::tasks::set_done(conn, user_id, day_id, !undo)?
+            else {
                 bail!("task {id} not found");
             };
             // Local state first: the row reads Done / To Do immediately, whether
             // or not the JIRA hook below can be reached.
-            jira::auto_status(conn, user_id, id);
+            jira::auto_status(conn, user_id, day_id);
             if !undo {
                 warn_jira(&jira::fire_on_done(
                     &task.label,
@@ -318,13 +321,15 @@ pub fn run(
                     start_ms,
                 ));
             }
-            let task = db::tasks::get_task(conn, user_id, id)?
+            let task = db::tasks::get_task_by_day(conn, user_id, day_id)?
                 .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
             emit_task(&task, json)
         }
         Command::Delete { task } => {
             let task = resolve_task(conn, user_id, date_iso, &task)?;
             let id = task.id;
+            // Deleting removes the task itself, and its days with it — the
+            // selector's day only decided which task was meant.
             if !db::tasks::delete_task(conn, user_id, id)? {
                 bail!("task {id} not found");
             }

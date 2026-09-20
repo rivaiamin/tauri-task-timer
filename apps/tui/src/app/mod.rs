@@ -403,65 +403,63 @@ impl App {
     }
 
     fn start_stop(&mut self) -> Result<()> {
-        let Some((id, running)) = self.selected_task().map(|t| (t.id, t.is_running)) else {
+        let Some((day_id, running)) = self.selected_task().map(|t| (t.day_id, t.is_running)) else {
             return Ok(());
         };
         let warnings = if running {
-            self.stop_task(id)?
+            self.stop_task(day_id)?
         } else {
-            self.start_task(id)?
+            self.start_task(day_id)?
         };
         self.reload()?;
         self.show_jira(warnings);
         Ok(())
     }
 
-    /// Start a task. In focus mode, stops other running tasks (with worklog + To Do transition).
-    /// Fires In Progress transition for the started task.
-    fn start_task(&mut self, id: i64) -> Result<Warnings> {
+    /// Start a task's timer for the day being viewed. In focus mode, stops every
+    /// other running day row (with worklog + To Do transition), including one
+    /// left running on an earlier day. Fires the In Progress transition for the
+    /// started task.
+    fn start_task(&mut self, day_id: i64) -> Result<Warnings> {
         let exclusive = self.timer_mode == "focus";
-        // Snapshot running tasks before exclusive start stops them
-        let stopped: Vec<Worklog> = if exclusive {
-            let now = now_ms();
-            self.tasks
-                .iter()
-                .filter(|t| t.id != id)
-                .filter_map(|t| Worklog::capture(t, now))
-                .collect()
-        } else {
-            vec![]
-        };
-        tasks::start_timer(&self.conn, &self.user_id, id, exclusive)?;
+        let (started, stopped_rows) =
+            match tasks::start_timer(&self.conn, &self.user_id, day_id, exclusive)? {
+                Some(pair) => pair,
+                None => return Ok(Warnings::new()),
+            };
         // Every local write lands before any JIRA call: the list must read
         // correctly even while a slow or unreachable JIRA is being asked.
-        jira::auto_status(&self.conn, &self.user_id, id);
-        for worklog in &stopped {
-            jira::auto_status(&self.conn, &self.user_id, worklog.task_id);
+        jira::auto_status(&self.conn, &self.user_id, day_id);
+        for victim in &stopped_rows {
+            jira::auto_status(&self.conn, &self.user_id, victim.day_id);
         }
         // Fire JIRA: focus-switched tasks → worklog + To Do
         let mut warnings = Warnings::new();
-        for worklog in &stopped {
-            warnings.extend(worklog.record_and_reopen());
+        for victim in &stopped_rows {
+            if let Some(worklog) = Worklog::capture(victim, now_ms()) {
+                warnings.extend(worklog.record_and_reopen());
+            }
         }
         // Fire JIRA: started task → In Progress
-        if let Some(t) = self.tasks.iter().find(|t| t.id == id) {
-            warnings.extend(jira::fire_on_start(&t.label, t.description_text()));
-        }
+        warnings.extend(jira::fire_on_start(
+            &started.label,
+            started.description_text(),
+        ));
         Ok(warnings)
     }
 
-    /// Stop a task. Fires worklog + To Do; Shift-D is what moves an issue to done.
-    fn stop_task(&mut self, id: i64) -> Result<Warnings> {
+    /// Stop a day's timer. Fires worklog + To Do; Shift-D is what moves an issue to done.
+    fn stop_task(&mut self, day_id: i64) -> Result<Warnings> {
         let worklog = self
             .tasks
             .iter()
-            .find(|t| t.id == id)
+            .find(|t| t.day_id == day_id)
             .and_then(|t| Worklog::capture(t, now_ms()));
-        tasks::stop_timer(&self.conn, &self.user_id, id)?;
+        tasks::stop_timer(&self.conn, &self.user_id, day_id)?;
         // A run ending on an unfinished task reads To Do again — the row must
         // not keep showing In Progress with no timer behind it. Written before
         // the JIRA call so the list is correct even while JIRA is slow.
-        jira::auto_status(&self.conn, &self.user_id, id);
+        jira::auto_status(&self.conn, &self.user_id, day_id);
         Ok(worklog
             .as_ref()
             .map(Worklog::record_and_reopen)
@@ -473,18 +471,20 @@ impl App {
     /// Returns whether any tasks were running, plus any JIRA hook failures.
     fn stop_all_running(&mut self) -> Result<(bool, Warnings)> {
         let now = now_ms();
-        let stopped: Vec<Worklog> = self
-            .tasks
+        // Running timers are found across every day, not only the one on screen:
+        // a run left going on an earlier date still has to be closed out.
+        let running = tasks::list_running(&self.conn, &self.user_id)?;
+        let stopped: Vec<Worklog> = running
             .iter()
             .filter_map(|t| Worklog::capture(t, now))
             .collect();
         let had = !stopped.is_empty();
-        for worklog in &stopped {
-            tasks::stop_timer(&self.conn, &self.user_id, worklog.task_id)?;
+        for task in &running {
+            tasks::stop_timer(&self.conn, &self.user_id, task.day_id)?;
         }
         // Local state first, JIRA second — a slow JIRA must not delay the list.
-        for worklog in &stopped {
-            jira::auto_status(&self.conn, &self.user_id, worklog.task_id);
+        for task in &running {
+            jira::auto_status(&self.conn, &self.user_id, task.day_id);
         }
         let mut warnings = Warnings::new();
         for worklog in &stopped {
@@ -695,10 +695,11 @@ impl App {
             let created = tasks::create_task(&self.conn, &self.user_id, &date, &label, desc)?;
             // `create_task` only knows label and description, so everything else
             // the form collected — including the link and the flags — lands here.
+            // It writes the day row the create just made.
             tasks::update_task(
                 &self.conn,
                 &self.user_id,
-                created.id,
+                created.day_id,
                 tasks::TaskPatch {
                     elapsed_seconds: Some(elapsed_secs),
                     code: code_opt,
@@ -733,8 +734,9 @@ impl App {
         if i < 0 || i >= self.tasks.len() as isize {
             return Ok(());
         }
-        let a = self.tasks[self.selected].id;
-        let b = self.tasks[i as usize].id;
+        // Ordering is a property of the day, so the swap names day rows.
+        let a = self.tasks[self.selected].day_id;
+        let b = self.tasks[i as usize].day_id;
         tasks::reorder_swap(&self.conn, &self.user_id, a, b)?;
         self.selected = i as usize;
         self.reload()
@@ -973,7 +975,7 @@ impl App {
                                         let _ = tasks::update_task(
                                             &self.conn,
                                             &self.user_id,
-                                            task.id,
+                                            task.day_id,
                                             tasks::TaskPatch {
                                                 status: Some(&status_id),
                                                 ..Default::default()
@@ -1722,10 +1724,10 @@ impl App {
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
                         let date = self.date_str();
                         // A reset stops every timer, so no row stays In Progress.
-                        let ids: Vec<i64> = self.tasks.iter().map(|t| t.id).collect();
+                        let day_ids: Vec<i64> = self.tasks.iter().map(|t| t.day_id).collect();
                         tasks::reset_all(&self.conn, &self.user_id, &date)?;
-                        for id in ids {
-                            jira::auto_status(&self.conn, &self.user_id, id);
+                        for day_id in day_ids {
+                            jira::auto_status(&self.conn, &self.user_id, day_id);
                         }
                         self.overlay = Overlay::None;
                         self.reload()?;
@@ -1836,10 +1838,10 @@ impl App {
                 // Shift-D: toggle done flag (JIRA → Cek di Local on false→true)
                 if let Some(t) = self.selected_task().cloned() {
                     let new_done = !t.done;
-                    let result = tasks::set_done(&self.conn, &self.user_id, t.id, new_done)?;
+                    let result = tasks::set_done(&self.conn, &self.user_id, t.day_id, new_done)?;
                     // Local state first: the row reads Done / To Do immediately,
                     // whether or not the JIRA hook below can be reached.
-                    jira::auto_status(&self.conn, &self.user_id, t.id);
+                    jira::auto_status(&self.conn, &self.user_id, t.day_id);
                     let mut warnings = Warnings::new();
                     if let Some((_, delta, start_ms)) = result {
                         if new_done {
@@ -1853,10 +1855,10 @@ impl App {
                 }
             }
             KeyCode::Char('r') => {
-                if let Some(id) = self.selected_task().map(|t| t.id) {
-                    tasks::reset_task(&self.conn, &self.user_id, id)?;
+                if let Some(day_id) = self.selected_task().map(|t| t.day_id) {
+                    tasks::reset_task(&self.conn, &self.user_id, day_id)?;
                     // A reset stops the timer, so the row is no longer In Progress.
-                    jira::auto_status(&self.conn, &self.user_id, id);
+                    jira::auto_status(&self.conn, &self.user_id, day_id);
                     self.reload()?;
                 }
             }
@@ -1873,17 +1875,31 @@ impl App {
         use crate::hooks::HookEvent;
         match ev {
             HookEvent::SessionStart { task_id } => {
-                let id = if let Some(tid) = task_id {
-                    tid
+                // A hook names a task, not a day: start it on the day being
+                // viewed, creating that day's row if this is the first run.
+                let (task_id, label) = if let Some(tid) = task_id {
+                    match tasks::get_task_on(&self.conn, &self.user_id, tid, &self.date_str())? {
+                        Some(t) => (tid, t.label),
+                        None => {
+                            self.set_status(format!("hook: task {tid} is not on this day"));
+                            return Ok(());
+                        }
+                    }
                 } else if let Some(t) = self.selected_task() {
-                    t.id
+                    (t.id, t.label.clone())
                 } else {
                     self.set_status("hook: no task selected");
                     return Ok(());
                 };
-                let warnings = self.start_task(id)?;
+                let day = tasks::ensure_day_row(
+                    &self.conn,
+                    &self.user_id,
+                    task_id,
+                    &self.date_str(),
+                )?;
+                let warnings = self.start_task(day.day_id)?;
                 self.reload()?;
-                self.set_status(format!("hook: timer started (task {id})"));
+                self.set_status(format!("hook: timer started ({label})"));
                 self.show_jira(warnings);
             }
             HookEvent::WaitingUser => {
@@ -2004,7 +2020,10 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL);
-             CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, label TEXT NOT NULL, description TEXT, code TEXT, link TEXT, status TEXT NOT NULL DEFAULT 'todo', notes TEXT, tags TEXT, elapsed_time INTEGER NOT NULL DEFAULT 0, total_time INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0, is_running INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, is_completed INTEGER NOT NULL DEFAULT 0, is_cancelled INTEGER NOT NULL DEFAULT 0, is_deleted INTEGER NOT NULL DEFAULT 0, is_archived INTEGER NOT NULL DEFAULT 0, is_pinned INTEGER NOT NULL DEFAULT 0, is_important INTEGER NOT NULL DEFAULT 0, start_time INTEGER, end_time INTEGER, work_date TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, label TEXT NOT NULL, code TEXT, description TEXT, link TEXT, notes TEXT, tags TEXT, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
+             CREATE UNIQUE INDEX idx_tasks_user_label ON tasks (user_id, label);
+             CREATE TABLE task_days (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, work_date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'todo', elapsed_time INTEGER NOT NULL DEFAULT 0, total_time INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0, is_running INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, is_completed INTEGER NOT NULL DEFAULT 0, is_cancelled INTEGER NOT NULL DEFAULT 0, is_deleted INTEGER NOT NULL DEFAULT 0, is_archived INTEGER NOT NULL DEFAULT 0, is_pinned INTEGER NOT NULL DEFAULT 0, is_important INTEGER NOT NULL DEFAULT 0, start_time INTEGER, end_time INTEGER, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE);
+             CREATE UNIQUE INDEX idx_task_days_task_date ON task_days (task_id, work_date);
              CREATE TABLE user_settings (user_id TEXT PRIMARY KEY, timer_mode TEXT NOT NULL DEFAULT 'focus', updated_at INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, subject TEXT, summary TEXT, branch TEXT, pr TEXT, created_at INTEGER NOT NULL);
              CREATE TABLE task_integrations (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, \"group\" TEXT NOT NULL, field TEXT NOT NULL, value TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
@@ -2179,9 +2198,9 @@ mod tests {
     #[test]
     fn editing_a_task_opens_the_dropdown_on_its_own_status() {
         let mut app = test_app();
-        tasks::create_task(&app.conn, "u1", "2026-09-17", "US-42", None).unwrap();
+        let t = tasks::create_task(&app.conn, "u1", "2026-09-17", "US-42", None).unwrap();
         app.conn
-            .execute("UPDATE tasks SET status = '51' WHERE label = 'US-42'", [])
+            .execute("UPDATE task_days SET status = '51' WHERE id = ?1", [t.day_id])
             .unwrap();
         app.reload().unwrap();
         app.selected = 0;
@@ -2316,7 +2335,7 @@ mod tests {
         let a = tasks::create_task(&app.conn, "u1", "2026-09-16", "US-1", None).unwrap();
         tasks::create_task(&app.conn, "u1", "2026-09-16", "US-2", None).unwrap();
         app.conn
-            .execute("UPDATE tasks SET status = '21' WHERE id = ?1", [a.id])
+            .execute("UPDATE task_days SET status = '21' WHERE id = ?1", [a.day_id])
             .unwrap();
         app.mode = AppMode::Archive;
         app.archive.filter_status = Some("In Progress".into());
