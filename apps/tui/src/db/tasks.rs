@@ -2,9 +2,19 @@ use crate::timer::{current_elapsed_seconds, now_ms};
 use anyhow::{bail, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
+/// One task, joined with one of its days.
+///
+/// `tasks` holds the identity (label, description, code, link, notes, tags);
+/// `task_days` holds everything that varies per day (the timer, the day's
+/// ordering, and the day's lifecycle state). A `Task` is therefore always "this
+/// task, on one particular day" — `day_id` is the day it was read from, and the
+/// flat timer/status fields come from that day's row.
 #[derive(Clone, Debug)]
 pub struct Task {
+    /// The task identity's id. Stable across every day the task is worked.
     pub id: i64,
+    /// The `task_days` row this snapshot came from. Day-scoped writes key on it.
+    pub day_id: i64,
     pub label: String,
     pub description: Option<String>,
     pub code: Option<String>,
@@ -34,6 +44,11 @@ pub struct Task {
     pub is_archived: bool,
     pub is_pinned: bool,
     pub is_important: bool,
+
+    /// Every day this task was worked. Empty on a daily query, which only ever
+    /// needs the one day; `list_archive` fills it so the archive can show the
+    /// per-day breakdown under a single entry per task.
+    pub days: Vec<TaskDay>,
 }
 
 impl Task {
@@ -51,7 +66,46 @@ impl Task {
     pub fn description_text(&self) -> &str {
         self.description.as_deref().unwrap_or("")
     }
+
+    /// Recorded time across every day of this task. Only meaningful when `days`
+    /// is populated; a daily query reports that one day.
+    pub fn total_elapsed(&self, now: i64) -> i64 {
+        if self.days.is_empty() {
+            self.current_elapsed(now)
+        } else {
+            self.days.iter().map(|d| d.current_elapsed(now)).sum()
+        }
+    }
 }
+
+/// One day of work on a task, as the archive shows it.
+#[derive(Clone, Debug)]
+pub struct TaskDay {
+    pub work_date: String,
+    pub elapsed_time: i64,
+    pub is_running: bool,
+    pub start_time: Option<i64>,
+    pub status: String,
+    pub done: bool,
+}
+
+impl TaskDay {
+    pub fn current_elapsed(&self, now: i64) -> i64 {
+        current_elapsed_seconds(self.elapsed_time, self.is_running, self.start_time, now)
+    }
+}
+
+/// The joined projection every read uses: the identity's content fields plus the
+/// day row's timer, ordering, and lifecycle columns. Ordinals are pinned by
+/// `map_row` — change both together.
+const COLS: &str = "t.id, t.label, t.description, t.code, t.link, t.notes, t.tags, \
+     td.id, td.status, td.elapsed_time, td.total_time, td.position, \
+     td.is_running, td.done, td.is_completed, td.is_cancelled, td.is_deleted, \
+     td.is_archived, td.is_pinned, td.is_important, td.start_time, td.end_time, td.work_date";
+
+/// `COLS` plus the identity's `user_id`, for the few reads that must verify
+/// ownership. Kept separate so the shared projection stays a fixed width.
+const JOIN: &str = "FROM tasks t JOIN task_days td ON td.task_id = t.id";
 
 fn map_row(row: &rusqlite::Row) -> rusqlite::Result<Task> {
     Ok(Task {
@@ -60,112 +114,73 @@ fn map_row(row: &rusqlite::Row) -> rusqlite::Result<Task> {
         description: row.get(2)?,
         code: row.get(3)?,
         link: row.get(4)?,
-        status: row.get(5)?,
-        notes: row.get(6)?,
-        tags: row.get(7)?,
-        elapsed_time: row.get(8)?,
-        total_time: row.get(9)?,
-        position: row.get(10)?,
-        is_running: row.get::<_, i64>(11)? != 0,
-        done: row.get::<_, i64>(12)? != 0,
-        is_completed: row.get::<_, i64>(13)? != 0,
-        is_cancelled: row.get::<_, i64>(14)? != 0,
-        is_deleted: row.get::<_, i64>(15)? != 0,
-        is_archived: row.get::<_, i64>(16)? != 0,
-        is_pinned: row.get::<_, i64>(17)? != 0,
-        is_important: row.get::<_, i64>(18)? != 0,
-        start_time: row.get(19)?,
-        end_time: row.get(20)?,
-        work_date: row.get(21)?,
+        notes: row.get(5)?,
+        tags: row.get(6)?,
+        day_id: row.get(7)?,
+        status: row.get(8)?,
+        elapsed_time: row.get(9)?,
+        total_time: row.get(10)?,
+        position: row.get(11)?,
+        is_running: row.get::<_, i64>(12)? != 0,
+        done: row.get::<_, i64>(13)? != 0,
+        is_completed: row.get::<_, i64>(14)? != 0,
+        is_cancelled: row.get::<_, i64>(15)? != 0,
+        is_deleted: row.get::<_, i64>(16)? != 0,
+        is_archived: row.get::<_, i64>(17)? != 0,
+        is_pinned: row.get::<_, i64>(18)? != 0,
+        is_important: row.get::<_, i64>(19)? != 0,
+        start_time: row.get(20)?,
+        end_time: row.get(21)?,
+        work_date: row.get(22)?,
+        days: Vec::new(),
     })
 }
 
-const COLS: &str =
-    "id, label, description, code, link, status, notes, tags, elapsed_time, total_time, position, is_running, done, is_completed, is_cancelled, is_deleted, is_archived, is_pinned, is_important, start_time, end_time, work_date";
-
+/// The day's tasks, in the day's order. A task with no row for `work_date` is
+/// not on that day and does not appear.
 pub fn list_tasks(conn: &Connection, user_id: &str, work_date: &str) -> Result<Vec<Task>> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLS} FROM tasks WHERE user_id = ?1 AND work_date = ?2 ORDER BY position ASC, id ASC"
+        "SELECT {COLS} {JOIN}
+         WHERE t.user_id = ?1 AND td.work_date = ?2
+         ORDER BY td.position ASC, td.id ASC"
     ))?;
     let rows = stmt.query_map(params![user_id, work_date], map_row)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-#[derive(Clone, Debug, Default)]
-pub struct ArchiveFilter {
-    pub q: Option<String>,
-    pub tag: Option<String>,
-    /// A resolved status catalog id, not a label: the caller maps a typed name
-    /// through the catalog before it gets here.
-    pub status: Option<String>,
-    /// Case-insensitive substring matched against any integration group, field,
-    /// or value on the task.
-    pub integration: Option<String>,
-}
-
-/// Backlog of unfinished tasks across days: not done/archived/deleted/completed/cancelled.
-/// Optional substring filters on label and tags (case-insensitive LIKE).
-/// Ordered newest work_date first so recent backlog surfaces at top.
-pub fn list_archive(
-    conn: &Connection,
-    user_id: &str,
-    filter: &ArchiveFilter,
-) -> Result<Vec<Task>> {
-    let mut sql = format!(
-        "SELECT {COLS} FROM tasks WHERE user_id = ?1
-         AND COALESCE(is_deleted, 0) = 0
-         AND COALESCE(is_archived, 0) = 0
-         AND COALESCE(done, 0) = 0
-         AND COALESCE(is_cancelled, 0) = 0"
-    );
-    let mut params_vec: Vec<String> = vec![user_id.to_string()];
-    let mut next_idx = 2usize;
-    if let Some(q) = filter.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        sql.push_str(&format!(" AND label LIKE ?{next_idx} COLLATE NOCASE"));
-        params_vec.push(format!("%{q}%"));
-        next_idx += 1;
-    }
-    if let Some(tag) = filter.tag.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        sql.push_str(&format!(" AND COALESCE(tags, '') LIKE ?{next_idx} COLLATE NOCASE"));
-        params_vec.push(format!("%{tag}%"));
-        next_idx += 1;
-    }
-    if let Some(status) = filter.status.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-        sql.push_str(&format!(" AND status = ?{next_idx} COLLATE NOCASE"));
-        params_vec.push(status.to_string());
-        next_idx += 1;
-    }
-    if let Some(int) = filter
-        .integration
-        .as_deref()
-        .map(str::trim)
-        .filter(|s| !s.is_empty())
-    {
-        // One bound value, three comparisons — a task matches when any of the
-        // integration's group/field/value carries the substring, and EXISTS
-        // keeps a multi-match task from being listed twice.
-        sql.push_str(&format!(
-            " AND EXISTS (SELECT 1 FROM task_integrations ti WHERE ti.task_id = tasks.id
-               AND (ti.\"group\" LIKE ?{next_idx} COLLATE NOCASE
-                 OR ti.field LIKE ?{next_idx} COLLATE NOCASE
-                 OR COALESCE(ti.value, '') LIKE ?{next_idx} COLLATE NOCASE))"
-        ));
-        params_vec.push(format!("%{int}%"));
-        next_idx += 1;
-    }
-    let _ = next_idx;
-    sql.push_str(" ORDER BY work_date DESC, position ASC, id ASC");
-    let mut stmt = conn.prepare(&sql)?;
-    let param_refs: Vec<&dyn rusqlite::ToSql> =
-        params_vec.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
-    let rows = stmt.query_map(param_refs.as_slice(), map_row)?;
+/// Every running day row of this user, across all days. A run left going on an
+/// earlier date still has to be closable, so this is deliberately not date-scoped.
+pub fn list_running(conn: &Connection, user_id: &str) -> Result<Vec<Task>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLS} {JOIN}
+         WHERE t.user_id = ?1 AND td.is_running = 1
+         ORDER BY td.work_date ASC, td.id ASC"
+    ))?;
+    let rows = stmt.query_map(params![user_id], map_row)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-pub fn get_task(conn: &Connection, user_id: &str, task_id: i64) -> Result<Option<Task>> {
+/// The task's row for one specific day.
+pub fn get_task_on(
+    conn: &Connection,
+    user_id: &str,
+    task_id: i64,
+    work_date: &str,
+) -> Result<Option<Task>> {
     conn.query_row(
-        &format!("SELECT {COLS} FROM tasks WHERE id = ?1 AND user_id = ?2"),
-        params![task_id, user_id],
+        &format!("SELECT {COLS} {JOIN} WHERE t.id = ?1 AND t.user_id = ?2 AND td.work_date = ?3"),
+        params![task_id, user_id, work_date],
+        map_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// The day row by its own id — what a mutation returns after writing.
+pub fn get_task_by_day(conn: &Connection, user_id: &str, day_id: i64) -> Result<Option<Task>> {
+    conn.query_row(
+        &format!("SELECT {COLS} {JOIN} WHERE td.id = ?1 AND t.user_id = ?2"),
+        params![day_id, user_id],
         map_row,
     )
     .optional()
@@ -179,23 +194,52 @@ pub fn find_tasks_by_label(
     label: &str,
 ) -> Result<Vec<Task>> {
     let mut stmt = conn.prepare(&format!(
-        "SELECT {COLS} FROM tasks WHERE user_id = ?1 AND work_date = ?2 AND label = ?3 COLLATE NOCASE ORDER BY id ASC"
+        "SELECT {COLS} {JOIN}
+         WHERE t.user_id = ?1 AND td.work_date = ?2 AND t.label = ?3 COLLATE NOCASE
+         ORDER BY t.id ASC"
     ))?;
     let rows = stmt.query_map(params![user_id, work_date, label], map_row)?;
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
-fn next_position(conn: &Connection, user_id: &str, work_date: &str) -> Result<i64> {
+fn next_position(conn: &Connection, work_date: &str) -> Result<i64> {
     let max: Option<i64> = conn.query_row(
-        "SELECT MAX(position) FROM tasks WHERE user_id = ?1 AND work_date = ?2",
-        params![user_id, work_date],
+        "SELECT MAX(position) FROM task_days WHERE work_date = ?1",
+        params![work_date],
         |r| r.get(0),
     )?;
     Ok(max.unwrap_or(-1) + 1)
 }
 
-/// Same label on this day → return existing. Else insert; copy description from
-/// the most recent same-label row if the caller didn't supply one.
+/// The day's row for this task, created if the task has never been worked that
+/// day. This is what "start on a new day" means now: the same task gains a day.
+pub fn ensure_day_row(
+    conn: &Connection,
+    user_id: &str,
+    task_id: i64,
+    work_date: &str,
+) -> Result<Task> {
+    if let Some(existing) = get_task_on(conn, user_id, task_id, work_date)? {
+        return Ok(existing);
+    }
+    let now = now_ms();
+    let pos = next_position(conn, work_date)?;
+    conn.execute(
+        "INSERT INTO task_days (task_id, work_date, position, created_at, updated_at)
+         VALUES (?1, ?2, ?3, ?4, ?4)",
+        params![task_id, work_date, pos, now],
+    )?;
+    get_task_on(conn, user_id, task_id, work_date)?
+        .ok_or_else(|| anyhow::anyhow!("day row vanished after insert"))
+}
+
+/// Create the task if its label is new, then make sure it has a row for
+/// `work_date`. An existing day row is returned untouched.
+///
+/// The description belongs to the task, so it is stored on the identity: a
+/// caller-supplied description fills in a task that has none, and a task that
+/// already has one keeps it. That is what "the description carries over to the
+/// next day" means now — there is only ever one.
 pub fn create_task(
     conn: &Connection,
     user_id: &str,
@@ -207,110 +251,128 @@ pub fn create_task(
     if label.is_empty() {
         bail!("label is required");
     }
-    if let Some(existing) = conn
-        .query_row(
-            &format!(
-                "SELECT {COLS} FROM tasks WHERE user_id = ?1 AND work_date = ?2 AND label = ?3"
-            ),
-            params![user_id, work_date, label],
-            map_row,
-        )
-        .optional()?
-    {
-        return Ok(existing);
-    }
+    let now = now_ms();
+    let supplied = description.map(str::trim).filter(|d| !d.is_empty());
 
-    let desc: Option<String> = match description {
-        Some(d) if !d.is_empty() => Some(d.to_string()),
-        _ => conn
-            .query_row(
-                "SELECT description FROM tasks
-                 WHERE user_id = ?1 AND label = ?2 AND description IS NOT NULL AND description != ''
-                 ORDER BY work_date DESC, id DESC LIMIT 1",
-                params![user_id, label],
-                |r| r.get(0),
-            )
-            .optional()?,
+    let existing_id: Option<i64> = conn
+        .query_row(
+            "SELECT id FROM tasks WHERE user_id = ?1 AND label = ?2",
+            params![user_id, label],
+            |r| r.get(0),
+        )
+        .optional()?;
+
+    let task_id = match existing_id {
+        Some(id) => {
+            if let Some(desc) = supplied {
+                // Only fill a gap: an existing description is the task's, not
+                // this day's to overwrite.
+                conn.execute(
+                    "UPDATE tasks SET description = ?1, updated_at = ?2
+                     WHERE id = ?3 AND (description IS NULL OR description = '')",
+                    params![desc, now, id],
+                )?;
+            }
+            id
+        }
+        None => {
+            conn.execute(
+                "INSERT INTO tasks (user_id, label, description, created_at, updated_at)
+                 VALUES (?1, ?2, ?3, ?4, ?4)",
+                params![user_id, label, supplied, now],
+            )?;
+            conn.last_insert_rowid()
+        }
     };
 
-    let now = now_ms();
-    let pos = next_position(conn, user_id, work_date)?;
-    conn.execute(
-        "INSERT INTO tasks (user_id, label, work_date, description, elapsed_time, position, is_running, done, created_at, updated_at)
-         VALUES (?1, ?2, ?3, ?4, 0, ?5, 0, 0, ?6, ?6)",
-        params![user_id, label, work_date, desc, pos, now],
-    )?;
-    let id = conn.last_insert_rowid();
-    get_task(conn, user_id, id)?.ok_or_else(|| anyhow::anyhow!("insert vanished"))
+    ensure_day_row(conn, user_id, task_id, work_date)
 }
 
+/// Close a running day row, committing its live seconds. Returns the delta that
+/// was added, for worklogging.
 fn stop_row(conn: &Connection, user_id: &str, row: &Task, now: i64) -> Result<i64> {
     let elapsed = row.current_elapsed(now);
     conn.execute(
-        "UPDATE tasks SET is_running = 0, elapsed_time = ?1, start_time = NULL, updated_at = ?2
-         WHERE id = ?3 AND user_id = ?4",
-        params![elapsed, now, row.id, user_id],
+        "UPDATE task_days SET is_running = 0, elapsed_time = ?1, start_time = NULL, updated_at = ?2
+         WHERE id = ?3
+           AND task_id IN (SELECT id FROM tasks WHERE user_id = ?4)",
+        params![elapsed, now, row.day_id, user_id],
     )?;
     Ok(elapsed - row.elapsed_time)
 }
 
+/// Every running day row of this user, other than `day_id`. A running timer is
+/// running whatever day it was started on, so focus mode stops across days.
+fn other_running(conn: &Connection, user_id: &str, day_id: i64) -> Result<Vec<Task>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLS} {JOIN}
+         WHERE t.user_id = ?1 AND td.is_running = 1 AND td.id != ?2
+         ORDER BY td.id ASC"
+    ))?;
+    let rows = stmt.query_map(params![user_id, day_id], map_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+/// Start one day's timer. In exclusive mode every other running day row stops
+/// first; the caller is told which ones so it can worklog and re-status them.
 pub fn start_timer(
     conn: &Connection,
     user_id: &str,
-    task_id: i64,
+    day_id: i64,
     exclusive: bool,
-) -> Result<Option<Task>> {
-    let Some(row) = get_task(conn, user_id, task_id)? else {
+) -> Result<Option<(Task, Vec<Task>)>> {
+    if get_task_by_day(conn, user_id, day_id)?.is_none() {
         return Ok(None);
-    };
+    }
     let now = now_ms();
+    let mut stopped = Vec::new();
     if exclusive {
-        let running = list_tasks(conn, user_id, &row.work_date)?
-            .into_iter()
-            .filter(|t| t.is_running && t.id != task_id)
-            .collect::<Vec<_>>();
-        for t in running {
+        for t in other_running(conn, user_id, day_id)? {
             stop_row(conn, user_id, &t, now)?;
+            stopped.push(t);
         }
     }
     conn.execute(
-        "UPDATE tasks SET is_running = 1, start_time = ?1, updated_at = ?1 WHERE id = ?2 AND user_id = ?3",
-        params![now, task_id, user_id],
+        "UPDATE task_days SET is_running = 1, start_time = ?1, updated_at = ?1 WHERE id = ?2",
+        params![now, day_id],
     )?;
-    get_task(conn, user_id, task_id)
+    Ok(get_task_by_day(conn, user_id, day_id)?.map(|t| (t, stopped)))
 }
 
-pub fn stop_timer(conn: &Connection, user_id: &str, task_id: i64) -> Result<Option<Task>> {
-    let Some(row) = get_task(conn, user_id, task_id)? else {
+pub fn stop_timer(conn: &Connection, user_id: &str, day_id: i64) -> Result<Option<Task>> {
+    let Some(row) = get_task_by_day(conn, user_id, day_id)? else {
         return Ok(None);
     };
     stop_row(conn, user_id, &row, now_ms())?;
-    get_task(conn, user_id, task_id)
+    get_task_by_day(conn, user_id, day_id)
 }
 
-pub fn reset_task(conn: &Connection, user_id: &str, task_id: i64) -> Result<Option<Task>> {
+pub fn reset_task(conn: &Connection, user_id: &str, day_id: i64) -> Result<Option<Task>> {
     let now = now_ms();
     let n = conn.execute(
-        "UPDATE tasks SET is_running = 0, elapsed_time = 0, start_time = NULL, updated_at = ?1
-         WHERE id = ?2 AND user_id = ?3",
-        params![now, task_id, user_id],
+        "UPDATE task_days SET is_running = 0, elapsed_time = 0, start_time = NULL, updated_at = ?1
+         WHERE id = ?2",
+        params![now, day_id],
     )?;
     if n == 0 {
         return Ok(None);
     }
-    get_task(conn, user_id, task_id)
+    get_task_by_day(conn, user_id, day_id)
 }
 
+/// Zero every task's time for one day. Other days keep their recorded time.
 pub fn reset_all(conn: &Connection, user_id: &str, work_date: &str) -> Result<()> {
     let now = now_ms();
     conn.execute(
-        "UPDATE tasks SET is_running = 0, elapsed_time = 0, start_time = NULL, updated_at = ?1
-         WHERE user_id = ?2 AND work_date = ?3",
-        params![now, user_id, work_date],
+        "UPDATE task_days SET is_running = 0, elapsed_time = 0, start_time = NULL, updated_at = ?1
+         WHERE work_date = ?2
+           AND task_id IN (SELECT id FROM tasks WHERE user_id = ?3)",
+        params![now, work_date, user_id],
     )?;
     Ok(())
 }
 
+/// Delete the task itself. Its day rows, comments and integrations cascade.
 pub fn delete_task(conn: &Connection, user_id: &str, task_id: i64) -> Result<bool> {
     let n = conn.execute(
         "DELETE FROM tasks WHERE id = ?1 AND user_id = ?2",
@@ -321,6 +383,10 @@ pub fn delete_task(conn: &Connection, user_id: &str, task_id: i64) -> Result<boo
 
 /// The fields a patch may change. `None` leaves the stored value alone; `status`
 /// is the exception, where a blank value also keeps the stored one.
+///
+/// The content fields (`label`, `description`, `code`, `notes`, `tags`, `link`)
+/// belong to the task and are written to `tasks`; the timer, status and flags
+/// belong to the day and are written to `task_days`.
 #[derive(Default, Clone, Copy)]
 pub struct TaskPatch<'a> {
     pub label: Option<&'a str>,
@@ -342,7 +408,7 @@ pub struct TaskPatch<'a> {
 pub fn update_task(
     conn: &Connection,
     user_id: &str,
-    task_id: i64,
+    day_id: i64,
     patch: TaskPatch,
 ) -> Result<Option<Task>> {
     let TaskPatch {
@@ -361,7 +427,7 @@ pub fn update_task(
         is_deleted,
         is_completed,
     } = patch;
-    let Some(row) = get_task(conn, user_id, task_id)? else {
+    let Some(row) = get_task_by_day(conn, user_id, day_id)? else {
         return Ok(None);
     };
     if let Some(s) = elapsed_seconds {
@@ -370,18 +436,30 @@ pub fn update_task(
         }
     }
     let now = now_ms();
+
+    // --- task identity -------------------------------------------------------
     let new_label = label
         .map(str::trim)
         .filter(|s| !s.is_empty())
         .unwrap_or(&row.label);
-    let new_desc = description.or(row.description.as_deref());
+    // A blank description clears it; an absent one leaves it.
+    let new_desc = match description {
+        Some(d) => Some(d.trim().to_string()).filter(|s| !s.is_empty()),
+        None => row.description.clone(),
+    };
+    let new_code = code.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let new_notes = notes.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    let new_tags = tags.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    // An empty link clears the column rather than storing whitespace.
+    let new_link = link.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+
+    // --- the day -------------------------------------------------------------
     let new_elapsed = elapsed_seconds.unwrap_or(row.elapsed_time);
     let new_start = if elapsed_seconds.is_some() && row.is_running {
         Some(now)
     } else {
         row.start_time
     };
-    let new_code = code.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     // `status` is NOT NULL in the schema, so an absent or blank value must land
     // on the existing one — writing NULL is a constraint failure, which is what
     // made saving a status-less task impossible.
@@ -390,10 +468,6 @@ pub fn update_task(
         .filter(|s| !s.is_empty())
         .map(str::to_string)
         .unwrap_or_else(|| row.status.clone());
-    let new_notes = notes.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-    let new_tags = tags.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
-    // An empty link clears the column rather than storing whitespace.
-    let new_link = link.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
     let flag = |set: Option<bool>, stored: bool| i64::from(set.unwrap_or(stored));
     let new_pinned = flag(is_pinned, row.is_pinned);
     let new_important = flag(is_important, row.is_important);
@@ -401,48 +475,77 @@ pub fn update_task(
     let new_cancelled = flag(is_cancelled, row.is_cancelled);
     let new_deleted = flag(is_deleted, row.is_deleted);
     let new_completed = flag(is_completed, row.is_completed);
-    match conn.execute(
-        "UPDATE tasks SET label = ?1, description = ?2, elapsed_time = ?3, start_time = ?4, updated_at = ?5,
-         code = ?6, status = ?7, notes = ?8, tags = ?9, link = ?10, is_pinned = ?11, is_important = ?12,
-         is_archived = ?13, is_cancelled = ?14, is_deleted = ?15, is_completed = ?16
-         WHERE id = ?17 AND user_id = ?18",
+
+    // The day write and the identity write are separate tables now, so they are
+    // wrapped so a failure in the second cannot leave the first applied.
+    let tx = conn.unchecked_transaction()?;
+    let day_res = tx.execute(
+        "UPDATE task_days SET status = ?1, elapsed_time = ?2, start_time = ?3, updated_at = ?4,
+         is_pinned = ?5, is_important = ?6, is_archived = ?7, is_cancelled = ?8,
+         is_deleted = ?9, is_completed = ?10
+         WHERE id = ?11",
         params![
-            new_label,
-            new_desc,
+            new_status,
             new_elapsed,
             new_start,
             now,
-            new_code,
-            new_status,
-            new_notes,
-            new_tags,
-            new_link,
             new_pinned,
             new_important,
             new_archived,
             new_cancelled,
             new_deleted,
             new_completed,
-            task_id,
-            user_id
+            day_id
         ],
-    ) {
-        Ok(_) => get_task(conn, user_id, task_id),
-        Err(e) if is_unique(&e) => bail!("a task with that title already exists this day"),
-        Err(e) => Err(e.into()),
+    );
+    let day_res = match day_res {
+        Ok(_) => Ok(()),
+        Err(e) => Err(e),
+    };
+    let id_res = day_res.and_then(|_| {
+        tx.execute(
+            "UPDATE tasks SET label = ?1, description = ?2, code = ?3, notes = ?4, tags = ?5,
+             link = ?6, updated_at = ?7
+             WHERE id = ?8 AND user_id = ?9",
+            params![
+                new_label,
+                new_desc,
+                new_code,
+                new_notes,
+                new_tags,
+                new_link,
+                now,
+                row.id,
+                user_id
+            ],
+        )
+        .map(|_| ())
+    });
+    match id_res {
+        Ok(()) => {
+            tx.commit()?;
+            get_task_by_day(conn, user_id, day_id)
+        }
+        Err(e) => {
+            drop(tx);
+            if is_unique(&e) {
+                bail!("a task with that title already exists");
+            }
+            Err(e.into())
+        }
     }
 }
 
-/// Set the `done` flag on a task. If becoming done while the task is running,
+/// Set the `done` flag on one day. If becoming done while that day is running,
 /// stops the timer first. Returns `(updated_task, worklog_delta_seconds, start_ms_before_stop)`.
 /// If un-done, just flips the flag (delta=0, start_ms=None).
 pub fn set_done(
     conn: &Connection,
     user_id: &str,
-    task_id: i64,
+    day_id: i64,
     done: bool,
 ) -> Result<Option<(Task, i64, Option<i64>)>> {
-    let Some(row) = get_task(conn, user_id, task_id)? else {
+    let Some(row) = get_task_by_day(conn, user_id, day_id)? else {
         return Ok(None);
     };
     if row.done == done {
@@ -457,40 +560,176 @@ pub fn set_done(
         stop_row(conn, user_id, &row, now)?;
     }
     conn.execute(
-        "UPDATE tasks SET done = ?1, updated_at = ?2 WHERE id = ?3 AND user_id = ?4",
-        params![done as i64, now, task_id, user_id],
+        "UPDATE task_days SET done = ?1, updated_at = ?2 WHERE id = ?3",
+        params![done as i64, now, day_id],
     )?;
-    let updated = get_task(conn, user_id, task_id)?
+    let updated = get_task_by_day(conn, user_id, day_id)?
         .ok_or_else(|| anyhow::anyhow!("task vanished after set_done"))?;
     Ok(Some((updated, delta, start_ms)))
 }
 
+/// Swap two day rows' positions. Both ids are `task_days.id`, because ordering
+/// is a property of the day, not of the task.
 pub fn reorder_swap(conn: &Connection, user_id: &str, a: i64, b: i64) -> Result<()> {
     let now = now_ms();
-    let pa: i64 = conn.query_row(
-        "SELECT position FROM tasks WHERE id = ?1 AND user_id = ?2",
-        params![a, user_id],
-        |r| r.get(0),
-    )?;
-    let pb: i64 = conn.query_row(
-        "SELECT position FROM tasks WHERE id = ?1 AND user_id = ?2",
-        params![b, user_id],
-        |r| r.get(0),
+    let owned = |day_id: i64| -> Result<bool> {
+        Ok(conn
+            .query_row(
+                "SELECT 1 FROM task_days td JOIN tasks t ON t.id = td.task_id
+                 WHERE td.id = ?1 AND t.user_id = ?2",
+                params![day_id, user_id],
+                |_| Ok(()),
+            )
+            .optional()?
+            .is_some())
+    };
+    if !owned(a)? || !owned(b)? {
+        bail!("cannot reorder a task that is not yours");
+    }
+    let pa: i64 = conn.query_row("SELECT position FROM task_days WHERE id = ?1", params![a], |r| {
+        r.get(0)
+    })?;
+    let pb: i64 = conn.query_row("SELECT position FROM task_days WHERE id = ?1", params![b], |r| {
+        r.get(0)
+    })?;
+    conn.execute(
+        "UPDATE task_days SET position = ?1, updated_at = ?2 WHERE id = ?3",
+        params![pb, now, a],
     )?;
     conn.execute(
-        "UPDATE tasks SET position = ?1, updated_at = ?2 WHERE id = ?3 AND user_id = ?4",
-        params![pb, now, a, user_id],
-    )?;
-    conn.execute(
-        "UPDATE tasks SET position = ?1, updated_at = ?2 WHERE id = ?3 AND user_id = ?4",
-        params![pa, now, b, user_id],
+        "UPDATE task_days SET position = ?1, updated_at = ?2 WHERE id = ?3",
+        params![pa, now, b],
     )?;
     Ok(())
 }
 
-/// True only for the label-uniqueness index, so an unrelated constraint failure
-/// (a NOT NULL miss, a foreign key) is reported as itself rather than as a
-/// duplicate title.
+#[derive(Clone, Debug, Default)]
+pub struct ArchiveFilter {
+    pub q: Option<String>,
+    pub tag: Option<String>,
+    /// A resolved status catalog id, not a label: the caller maps a typed name
+    /// through the catalog before it gets here. Selects which days are shown.
+    pub status: Option<String>,
+    /// Case-insensitive substring matched against any integration group, field,
+    /// or value on the task.
+    pub integration: Option<String>,
+}
+
+/// Every task, each carrying the days it was worked.
+///
+/// The archive is a per-task view, so a task appears once with all of its days
+/// rather than once per day. `q` and `tag` select tasks; `status` selects which
+/// of a task's days are shown, and a task with no surviving day is dropped.
+/// Ordered so the most recently worked task surfaces first.
+pub fn list_archive(
+    conn: &Connection,
+    user_id: &str,
+    filter: &ArchiveFilter,
+) -> Result<Vec<Task>> {
+    // The identity query. It selects one representative day row so the shared
+    // `map_row` projection still applies; the real per-day data comes from the
+    // second query below and replaces it.
+    let mut sql = format!(
+        "SELECT {COLS} {JOIN} WHERE t.user_id = ?1
+         AND td.id = (SELECT MAX(d2.id) FROM task_days d2 WHERE d2.task_id = t.id)"
+    );
+    let mut params_vec: Vec<String> = vec![user_id.to_string()];
+    let mut next_idx = 2usize;
+    if let Some(q) = filter.q.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        sql.push_str(&format!(" AND t.label LIKE ?{next_idx} COLLATE NOCASE"));
+        params_vec.push(format!("%{q}%"));
+        next_idx += 1;
+    }
+    if let Some(tag) = filter.tag.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        sql.push_str(&format!(" AND COALESCE(t.tags, '') LIKE ?{next_idx} COLLATE NOCASE"));
+        params_vec.push(format!("%{tag}%"));
+        next_idx += 1;
+    }
+    if let Some(int) = filter
+        .integration
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        // One bound value, three comparisons — a task matches when any of the
+        // integration's group/field/value carries the substring, and EXISTS
+        // keeps a multi-match task from being listed twice.
+        sql.push_str(&format!(
+            " AND EXISTS (SELECT 1 FROM task_integrations ti WHERE ti.task_id = t.id
+               AND (ti.\"group\" LIKE ?{next_idx} COLLATE NOCASE
+                 OR ti.field LIKE ?{next_idx} COLLATE NOCASE
+                 OR COALESCE(ti.value, '') LIKE ?{next_idx} COLLATE NOCASE))"
+        ));
+        params_vec.push(format!("%{int}%"));
+        next_idx += 1;
+    }
+    let _ = next_idx;
+    let mut stmt = conn.prepare(&sql)?;
+    let param_refs: Vec<&dyn rusqlite::ToSql> =
+        params_vec.iter().map(|s| s as &dyn rusqlite::ToSql).collect();
+    let mut tasks = stmt
+        .query_map(param_refs.as_slice(), map_row)?
+        .collect::<rusqlite::Result<Vec<_>>>()?;
+
+    // Every day of every task, oldest first, grouped onto its task in one pass
+    // rather than one query per task.
+    let mut day_stmt = conn.prepare(
+        "SELECT td.task_id, td.work_date, td.elapsed_time, td.is_running,
+                td.start_time, td.status, td.done
+         FROM task_days td JOIN tasks t ON t.id = td.task_id
+         WHERE t.user_id = ?1
+         ORDER BY td.work_date ASC, td.id ASC",
+    )?;
+    let mut by_task: std::collections::HashMap<i64, Vec<TaskDay>> = std::collections::HashMap::new();
+    let day_rows = day_stmt.query_map(params![user_id], |row| {
+        Ok((
+            row.get::<_, i64>(0)?,
+            TaskDay {
+                work_date: row.get(1)?,
+                elapsed_time: row.get(2)?,
+                is_running: row.get::<_, i64>(3)? != 0,
+                start_time: row.get(4)?,
+                status: row.get(5)?,
+                done: row.get::<_, i64>(6)? != 0,
+            },
+        ))
+    })?;
+    for row in day_rows {
+        let (task_id, day) = row?;
+        by_task.entry(task_id).or_default().push(day);
+    }
+
+    let status_filter = filter
+        .status
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty());
+    tasks.retain_mut(|t| {
+        let Some(days) = by_task.remove(&t.id) else {
+            return false;
+        };
+        t.days = match status_filter {
+            Some(want) => days
+                .into_iter()
+                .filter(|d| d.status.eq_ignore_ascii_case(want))
+                .collect(),
+            None => days,
+        };
+        !t.days.is_empty()
+    });
+
+    // Most recently worked first, then by label so the order is stable.
+    tasks.sort_by(|a, b| {
+        let a_newest = a.days.last().map(|d| d.work_date.as_str()).unwrap_or("");
+        let b_newest = b.days.last().map(|d| d.work_date.as_str()).unwrap_or("");
+        b_newest.cmp(a_newest).then_with(|| a.label.cmp(&b.label))
+    });
+    Ok(tasks)
+}
+
+/// True only for a label-uniqueness or same-day-uniqueness violation, so an
+/// unrelated constraint failure (a NOT NULL miss, a foreign key) is reported as
+/// itself rather than as a duplicate title.
 fn is_unique(e: &rusqlite::Error) -> bool {
     matches!(
         e.sqlite_error_code(),
@@ -500,7 +739,7 @@ fn is_unique(e: &rusqlite::Error) -> bool {
         rusqlite::Error::SqliteFailure(
             _,
             Some(msg),
-        ) if msg.contains("idx_tasks_user_date_label")
+        ) if msg.contains("idx_tasks_user_label") || msg.contains("idx_task_days_task_date")
     )
 }
 
@@ -517,13 +756,20 @@ mod tests {
                id INTEGER PRIMARY KEY AUTOINCREMENT,
                user_id TEXT NOT NULL,
                label TEXT NOT NULL,
-               work_date TEXT NOT NULL DEFAULT (date('now')),
-               description TEXT,
                code TEXT,
+               description TEXT,
                link TEXT,
-               status TEXT NOT NULL DEFAULT 'todo',
                notes TEXT,
                tags TEXT,
+               created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL
+             );
+             CREATE UNIQUE INDEX idx_tasks_user_label ON tasks (user_id, label);
+             CREATE TABLE task_days (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               task_id INTEGER NOT NULL,
+               work_date TEXT NOT NULL DEFAULT (date('now')),
+               status TEXT NOT NULL DEFAULT 'todo',
                elapsed_time INTEGER NOT NULL DEFAULT 0,
                total_time INTEGER NOT NULL DEFAULT 0,
                position INTEGER NOT NULL DEFAULT 0,
@@ -538,9 +784,10 @@ mod tests {
                start_time INTEGER,
                end_time INTEGER,
                created_at INTEGER NOT NULL,
-               updated_at INTEGER NOT NULL
+               updated_at INTEGER NOT NULL,
+               FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE
              );
-             CREATE UNIQUE INDEX idx_tasks_user_date_label ON tasks (user_id, work_date, label);
+             CREATE UNIQUE INDEX idx_task_days_task_date ON task_days (task_id, work_date);
              CREATE TABLE task_integrations (
                id INTEGER PRIMARY KEY AUTOINCREMENT,
                task_id INTEGER NOT NULL,
@@ -562,48 +809,143 @@ mod tests {
         let a = create_task(&conn, "u1", "2026-08-30", "US-1", Some("first")).unwrap();
         let b = create_task(&conn, "u1", "2026-08-30", "US-1", Some("ignored")).unwrap();
         assert_eq!(a.id, b.id);
+        assert_eq!(a.day_id, b.day_id);
         assert_eq!(b.description.as_deref(), Some("first"));
         assert_eq!(list_tasks(&conn, "u1", "2026-08-30").unwrap().len(), 1);
     }
 
+    /// The point of the split: a new day is the same task, with its own row.
     #[test]
-    fn create_same_label_new_day_copies_description() {
+    fn create_same_label_new_day_is_the_same_task_with_its_own_day() {
         let conn = setup();
-        create_task(&conn, "u1", "2026-08-29", "US-1", Some("from yesterday")).unwrap();
+        let a = create_task(&conn, "u1", "2026-08-29", "US-1", Some("from yesterday")).unwrap();
         let b = create_task(&conn, "u1", "2026-08-30", "US-1", None).unwrap();
+
+        // One task, two days.
+        assert_eq!(a.id, b.id, "the same label must not create a second task");
+        assert_ne!(a.day_id, b.day_id, "each day keeps its own row");
+        assert_eq!(b.work_date, "2026-08-30");
+        // The description lives on the task, so the new day still sees it.
         assert_eq!(b.description.as_deref(), Some("from yesterday"));
-        assert_ne!(b.work_date, "2026-08-29");
-    }
 
-    #[test]
-    fn focus_start_stops_other_running_same_day() {
-        let conn = setup();
-        let a = create_task(&conn, "u1", "2026-08-30", "A", None).unwrap();
-        let b = create_task(&conn, "u1", "2026-08-30", "B", None).unwrap();
-        start_timer(&conn, "u1", a.id, true).unwrap();
-        start_timer(&conn, "u1", b.id, true).unwrap();
-        let a2 = get_task(&conn, "u1", a.id).unwrap().unwrap();
-        let b2 = get_task(&conn, "u1", b.id).unwrap().unwrap();
-        assert!(!a2.is_running);
-        assert!(b2.is_running);
-    }
-
-    fn set_flag(conn: &Connection, id: i64, col: &str) {
-        conn.execute(&format!("UPDATE tasks SET {col} = 1 WHERE id = ?1"), [id])
+        let day_count: i64 = conn
+            .query_row("SELECT COUNT(*) FROM task_days WHERE task_id = ?1", [a.id], |r| r.get(0))
             .unwrap();
+        assert_eq!(day_count, 2);
+        assert_eq!(list_tasks(&conn, "u1", "2026-08-29").unwrap().len(), 1);
+        assert_eq!(list_tasks(&conn, "u1", "2026-08-30").unwrap().len(), 1);
+    }
+
+    /// Each day carries its own recorded time, not the task's total.
+    #[test]
+    fn each_day_keeps_its_own_elapsed_time() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-08-29", "US-1", None).unwrap();
+        let b = create_task(&conn, "u1", "2026-08-30", "US-1", None).unwrap();
+        conn.execute("UPDATE task_days SET elapsed_time = 3600 WHERE id = ?1", [a.day_id])
+            .unwrap();
+        conn.execute("UPDATE task_days SET elapsed_time = 1800 WHERE id = ?1", [b.day_id])
+            .unwrap();
+
+        let day1 = &list_tasks(&conn, "u1", "2026-08-29").unwrap()[0];
+        let day2 = &list_tasks(&conn, "u1", "2026-08-30").unwrap()[0];
+        assert_eq!(day1.elapsed_time, 3600);
+        assert_eq!(day2.elapsed_time, 1800);
+        assert_eq!(day1.id, day2.id);
     }
 
     #[test]
-    fn archive_excludes_done_and_archived() {
+    fn a_day_without_a_row_does_not_list_the_task() {
+        let conn = setup();
+        create_task(&conn, "u1", "2026-08-29", "US-1", None).unwrap();
+        assert!(list_tasks(&conn, "u1", "2026-08-28").unwrap().is_empty());
+    }
+
+    #[test]
+    fn position_is_per_day_across_tasks() {
         let conn = setup();
         let a = create_task(&conn, "u1", "2026-08-28", "A", None).unwrap();
         let b = create_task(&conn, "u1", "2026-08-28", "B", None).unwrap();
         let c = create_task(&conn, "u1", "2026-08-29", "C", None).unwrap();
-        set_flag(&conn, b.id, "done");
-        set_flag(&conn, c.id, "is_archived");
+        assert_eq!(a.position, 0);
+        assert_eq!(b.position, 1);
+        assert_eq!(c.position, 0, "a new day starts its own ordering");
+    }
+
+    #[test]
+    fn focus_start_stops_other_running_day_rows() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-08-30", "A", None).unwrap();
+        let b = create_task(&conn, "u1", "2026-08-30", "B", None).unwrap();
+        start_timer(&conn, "u1", a.day_id, true).unwrap();
+        let (_, stopped) = start_timer(&conn, "u1", b.day_id, true).unwrap().unwrap();
+        assert_eq!(stopped.len(), 1);
+        assert_eq!(stopped[0].day_id, a.day_id);
+        assert!(!get_task_by_day(&conn, "u1", a.day_id).unwrap().unwrap().is_running);
+        assert!(get_task_by_day(&conn, "u1", b.day_id).unwrap().unwrap().is_running);
+    }
+
+    /// A running timer is running whatever day it was started on, so a focus
+    /// switch on today must also stop yesterday's leftover run.
+    #[test]
+    fn focus_start_stops_a_running_row_from_another_day() {
+        let conn = setup();
+        let old = create_task(&conn, "u1", "2026-08-29", "Old", None).unwrap();
+        let new = create_task(&conn, "u1", "2026-08-30", "New", None).unwrap();
+        start_timer(&conn, "u1", old.day_id, true).unwrap();
+        start_timer(&conn, "u1", new.day_id, true).unwrap();
+        assert!(!get_task_by_day(&conn, "u1", old.day_id).unwrap().unwrap().is_running);
+    }
+
+    #[test]
+    fn starting_a_new_day_adds_that_day() {
+        let conn = setup();
+        let t = create_task(&conn, "u1", "2026-08-29", "A", None).unwrap();
+        let day = ensure_day_row(&conn, "u1", t.id, "2026-08-31").unwrap();
+        assert_eq!(day.work_date, "2026-08-31");
+        assert_eq!(day.id, t.id);
+        assert_ne!(day.day_id, t.day_id);
+        assert_eq!(
+            conn.query_row("SELECT COUNT(*) FROM task_days WHERE task_id = ?1", [t.id], |r| r
+                .get::<_, i64>(0))
+                .unwrap(),
+            2
+        );
+    }
+
+    fn set_day(conn: &Connection, day_id: i64, col: &str) {
+        conn.execute(&format!("UPDATE task_days SET {col} = 1 WHERE id = ?1"), [day_id])
+            .unwrap();
+    }
+
+    #[test]
+    fn archive_lists_every_task_with_all_its_days() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-08-28", "A", None).unwrap();
+        create_task(&conn, "u1", "2026-08-29", "A", None).unwrap();
+        create_task(&conn, "u1", "2026-08-28", "B", None).unwrap();
+
         let rows = list_archive(&conn, "u1", &ArchiveFilter::default()).unwrap();
-        assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].id, a.id);
+        // Two tasks, not three days.
+        assert_eq!(rows.len(), 2);
+        let a_row = rows.iter().find(|t| t.id == a.id).unwrap();
+        assert_eq!(a_row.days.len(), 2);
+        assert_eq!(
+            a_row.days.iter().map(|d| d.work_date.as_str()).collect::<Vec<_>>(),
+            vec!["2026-08-28", "2026-08-29"]
+        );
+    }
+
+    /// The archive shows finished work too — it is the whole history now.
+    #[test]
+    fn archive_includes_done_and_archived_tasks() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-08-28", "A", None).unwrap();
+        let b = create_task(&conn, "u1", "2026-08-28", "B", None).unwrap();
+        set_day(&conn, b.day_id, "done");
+        set_day(&conn, a.day_id, "is_archived");
+        let rows = list_archive(&conn, "u1", &ArchiveFilter::default()).unwrap();
+        assert_eq!(rows.len(), 2);
     }
 
     #[test]
@@ -629,11 +971,8 @@ mod tests {
         let conn = setup();
         let a = create_task(&conn, "u1", "2026-08-28", "A", None).unwrap();
         let _b = create_task(&conn, "u1", "2026-08-28", "B", None).unwrap();
-        conn.execute(
-            "UPDATE tasks SET tags = '[\"backend\"]' WHERE id = ?1",
-            [a.id],
-        )
-        .unwrap();
+        conn.execute("UPDATE tasks SET tags = '[\"backend\"]' WHERE id = ?1", [a.id])
+            .unwrap();
         let rows = list_archive(
             &conn,
             "u1",
@@ -647,12 +986,15 @@ mod tests {
         assert_eq!(rows[0].id, a.id);
     }
 
+    /// The status filter selects which DAYS show, so a task worked on two days
+    /// with only one of them In Progress lists that one day.
     #[test]
-    fn archive_filter_by_status_matches_the_catalog_id() {
+    fn archive_status_filter_selects_days() {
         let conn = setup();
         let a = create_task(&conn, "u1", "2026-08-28", "A", None).unwrap();
-        let _b = create_task(&conn, "u1", "2026-08-28", "B", None).unwrap();
-        conn.execute("UPDATE tasks SET status = '21' WHERE id = ?1", [a.id])
+        let a2 = create_task(&conn, "u1", "2026-08-29", "A", None).unwrap();
+        create_task(&conn, "u1", "2026-08-28", "B", None).unwrap();
+        conn.execute("UPDATE task_days SET status = '21' WHERE id = ?1", [a.day_id])
             .unwrap();
 
         let rows = list_archive(
@@ -664,8 +1006,12 @@ mod tests {
             },
         )
         .unwrap();
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.len(), 1, "only the task with an In Progress day survives");
         assert_eq!(rows[0].id, a.id);
+        assert_eq!(rows[0].days.len(), 1);
+        assert_eq!(rows[0].days[0].work_date, "2026-08-28");
+        // The other day of the same task is excluded by the filter.
+        assert_ne!(rows[0].days[0].work_date, a2.work_date);
     }
 
     #[test]
@@ -717,22 +1063,33 @@ mod tests {
         // Start the timer with a start_time 5 seconds in the past
         let five_sec_ago = crate::timer::now_ms() - 5000;
         conn.execute(
-            "UPDATE tasks SET is_running = 1, start_time = ?1 WHERE id = ?2",
-            [five_sec_ago, t.id],
+            "UPDATE task_days SET is_running = 1, start_time = ?1 WHERE id = ?2",
+            [five_sec_ago, t.day_id],
         )
         .unwrap();
 
-        let (updated, delta, start_ms) = set_done(&conn, "u1", t.id, true).unwrap().unwrap();
+        let (updated, delta, start_ms) = set_done(&conn, "u1", t.day_id, true).unwrap().unwrap();
         assert!(updated.done);
         assert!(!updated.is_running);
         assert!(delta >= 4); // at least ~5s minus rounding
         assert!(start_ms.is_some());
 
         // Second call is idempotent (already done)
-        let (again, d2, s2) = set_done(&conn, "u1", t.id, true).unwrap().unwrap();
+        let (again, d2, s2) = set_done(&conn, "u1", t.day_id, true).unwrap().unwrap();
         assert!(again.done);
         assert_eq!(d2, 0);
         assert!(s2.is_none());
+    }
+
+    /// Marking one day done must leave the task's other days alone.
+    #[test]
+    fn set_done_only_touches_that_day() {
+        let conn = setup();
+        let t = create_task(&conn, "u1", "2026-09-12", "Run", None).unwrap();
+        let other = create_task(&conn, "u1", "2026-09-13", "Run", None).unwrap();
+        set_done(&conn, "u1", t.day_id, true).unwrap();
+        assert!(get_task_by_day(&conn, "u1", t.day_id).unwrap().unwrap().done);
+        assert!(!get_task_by_day(&conn, "u1", other.day_id).unwrap().unwrap().done);
     }
 
     /// `status` is NOT NULL, so an update that omits it must keep the stored
@@ -742,12 +1099,13 @@ mod tests {
     fn update_without_a_status_keeps_the_stored_one() {
         let conn = setup();
         let t = create_task(&conn, "u1", "2026-09-17", "Keep", None).unwrap();
-        conn.execute("UPDATE tasks SET status = '51' WHERE id = ?1", [t.id]).unwrap();
+        conn.execute("UPDATE task_days SET status = '51' WHERE id = ?1", [t.day_id])
+            .unwrap();
 
         let updated = update_task(
             &conn,
             "u1",
-            t.id,
+            t.day_id,
             TaskPatch {
                 label: Some("Renamed"),
                 description: Some("desc"),
@@ -767,12 +1125,13 @@ mod tests {
     fn update_with_a_blank_status_keeps_the_stored_one() {
         let conn = setup();
         let t = create_task(&conn, "u1", "2026-09-17", "Keep", None).unwrap();
-        conn.execute("UPDATE tasks SET status = '41' WHERE id = ?1", [t.id]).unwrap();
+        conn.execute("UPDATE task_days SET status = '41' WHERE id = ?1", [t.day_id])
+            .unwrap();
 
         let updated = update_task(
             &conn,
             "u1",
-            t.id,
+            t.day_id,
             TaskPatch {
                 label: Some("Renamed"),
                 status: Some("  "),
@@ -792,7 +1151,7 @@ mod tests {
         let updated = update_task(
             &conn,
             "u1",
-            t.id,
+            t.day_id,
             TaskPatch {
                 status: Some("31"),
                 ..Default::default()
@@ -807,12 +1166,13 @@ mod tests {
     fn update_sets_link_and_flags_leaving_the_rest_alone() {
         let conn = setup();
         let t = create_task(&conn, "u1", "2026-09-17", "Link me", Some("keep")).unwrap();
-        conn.execute("UPDATE tasks SET status = '21' WHERE id = ?1", [t.id]).unwrap();
+        conn.execute("UPDATE task_days SET status = '21' WHERE id = ?1", [t.day_id])
+            .unwrap();
 
         let updated = update_task(
             &conn,
             "u1",
-            t.id,
+            t.day_id,
             TaskPatch {
                 link: Some("https://example.com"),
                 is_pinned: Some(true),
@@ -838,15 +1198,17 @@ mod tests {
         let conn = setup();
         let t = create_task(&conn, "u1", "2026-09-17", "Clear me", None).unwrap();
         conn.execute(
-            "UPDATE tasks SET is_pinned = 1, link = 'https://old' WHERE id = ?1",
-            [t.id],
+            "UPDATE task_days SET is_pinned = 1 WHERE id = ?1",
+            [t.day_id],
         )
         .unwrap();
+        conn.execute("UPDATE tasks SET link = 'https://old' WHERE id = ?1", [t.id])
+            .unwrap();
 
         let updated = update_task(
             &conn,
             "u1",
-            t.id,
+            t.day_id,
             TaskPatch {
                 link: Some("   "),
                 is_pinned: Some(false),
@@ -860,6 +1222,30 @@ mod tests {
         assert!(!updated.is_pinned);
     }
 
+    /// A label edit is a task-level change: it must show on every day.
+    #[test]
+    fn renaming_a_task_changes_it_on_every_day() {
+        let conn = setup();
+        let t = create_task(&conn, "u1", "2026-09-17", "Before", None).unwrap();
+        create_task(&conn, "u1", "2026-09-18", "Before", None).unwrap();
+        update_task(
+            &conn,
+            "u1",
+            t.day_id,
+            TaskPatch {
+                label: Some("After"),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        for date in ["2026-09-17", "2026-09-18"] {
+            let rows = list_tasks(&conn, "u1", date).unwrap();
+            assert_eq!(rows[0].label, "After");
+        }
+    }
+
     #[test]
     fn find_by_label_is_case_insensitive_and_date_scoped() {
         let conn = setup();
@@ -868,21 +1254,76 @@ mod tests {
         let rows = find_tasks_by_label(&conn, "u1", "2026-09-13", "us-2092").unwrap();
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].id, a.id);
+        assert_eq!(rows[0].day_id, a.day_id);
     }
 
     #[test]
     fn find_by_label_returns_all_nocase_matches() {
         let conn = setup();
         let a = create_task(&conn, "u1", "2026-09-13", "US-2092", None).unwrap();
+        conn.execute("INSERT INTO tasks (user_id, label, created_at, updated_at) VALUES ('u1', 'Us-2092', 0, 0)", [])
+            .unwrap();
+        let other = conn.last_insert_rowid();
         conn.execute(
-            "INSERT INTO tasks (user_id, label, work_date, elapsed_time, position, is_running, done, created_at, updated_at)
-             VALUES ('u1', 'Us-2092', '2026-09-13', 0, 1, 0, 0, 0, 0)",
-            [],
+            "INSERT INTO task_days (task_id, work_date, position, created_at, updated_at) VALUES (?1, '2026-09-13', 1, 0, 0)",
+            [other],
         )
         .unwrap();
         let rows = find_tasks_by_label(&conn, "u1", "2026-09-13", "US-2092").unwrap();
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].id, a.id);
         assert!(rows[1].id > a.id);
+    }
+
+    /// Deleting a task takes its days with it, so the archive cannot show a
+    /// task whose time has nowhere to live.
+    #[test]
+    fn deleting_a_task_removes_every_day() {
+        let conn = setup();
+        let t = create_task(&conn, "u1", "2026-09-13", "Gone", None).unwrap();
+        create_task(&conn, "u1", "2026-09-14", "Gone", None).unwrap();
+        assert!(delete_task(&conn, "u1", t.id).unwrap());
+        let days: i64 = conn
+            .query_row("SELECT COUNT(*) FROM task_days WHERE task_id = ?1", [t.id], |r| r.get(0))
+            .unwrap();
+        assert_eq!(days, 0);
+        assert!(list_archive(&conn, "u1", &ArchiveFilter::default()).unwrap().is_empty());
+    }
+
+    #[test]
+    fn reset_all_zeroes_one_day_and_leaves_the_others() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-09-13", "A", None).unwrap();
+        let b = create_task(&conn, "u1", "2026-09-14", "A", None).unwrap();
+        conn.execute("UPDATE task_days SET elapsed_time = 60", []).unwrap();
+        reset_all(&conn, "u1", "2026-09-13").unwrap();
+        assert_eq!(get_task_by_day(&conn, "u1", a.day_id).unwrap().unwrap().elapsed_time, 0);
+        assert_eq!(get_task_by_day(&conn, "u1", b.day_id).unwrap().unwrap().elapsed_time, 60);
+    }
+
+    /// Reordering is a property of the day: swapping two rows on one day must
+    /// not disturb the same tasks on another day.
+    #[test]
+    fn reorder_swaps_positions_within_a_day() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-09-13", "A", None).unwrap();
+        let b = create_task(&conn, "u1", "2026-09-13", "B", None).unwrap();
+        let a2 = create_task(&conn, "u1", "2026-09-14", "A", None).unwrap();
+        reorder_swap(&conn, "u1", a.day_id, b.day_id).unwrap();
+
+        let day1 = list_tasks(&conn, "u1", "2026-09-13").unwrap();
+        assert_eq!(day1.iter().map(|t| t.label.as_str()).collect::<Vec<_>>(), vec!["B", "A"]);
+        // The other day keeps its own order.
+        let day2 = list_tasks(&conn, "u1", "2026-09-14").unwrap();
+        assert_eq!(day2[0].day_id, a2.day_id);
+    }
+
+    #[test]
+    fn reorder_refuses_a_day_row_that_is_not_yours() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-09-13", "A", None).unwrap();
+        let b = create_task(&conn, "u1", "2026-09-13", "B", None).unwrap();
+        conn.execute("INSERT INTO users VALUES ('u2', 'b@b.c', 'x', 0)", []).unwrap();
+        assert!(reorder_swap(&conn, "u2", a.day_id, b.day_id).is_err());
     }
 }

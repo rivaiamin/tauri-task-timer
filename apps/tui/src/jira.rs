@@ -340,7 +340,7 @@ pub fn status_for_run_state(is_running: bool, is_done: bool) -> &'static str {
     }
 }
 
-/// Overwrite a task's stored status with the one its own row now implies.
+/// Overwrite a day row's stored status with the one its own state now implies.
 ///
 /// A layout change — start, stop, done — owns the stored status; leaving it
 /// untouched is what made a running task read `To Do` in the list and a stopped
@@ -348,11 +348,17 @@ pub fn status_for_run_state(is_running: bool, is_done: bool) -> &'static str {
 /// from the caller, so a caller holding a snapshot from before the write cannot
 /// apply a stale flag. No-op only when the row is already correct, so every
 /// caller can apply it unconditionally after mutating the timer.
-pub fn auto_status(conn: &rusqlite::Connection, user_id: &str, task_id: i64) {
+///
+/// Status is per day, like the timer it describes: `day_id` is a
+/// `task_days.id`. The `user_id` check goes through the task so a caller cannot
+/// reach another user's day by guessing an id.
+pub fn auto_status(conn: &rusqlite::Connection, user_id: &str, day_id: i64) {
     let row: Option<(i64, i64, String)> = conn
         .query_row(
-            "SELECT is_running, done, status FROM tasks WHERE id = ?1 AND user_id = ?2",
-            rusqlite::params![task_id, user_id],
+            "SELECT td.is_running, td.done, td.status
+             FROM task_days td JOIN tasks t ON t.id = td.task_id
+             WHERE td.id = ?1 AND t.user_id = ?2",
+            rusqlite::params![day_id, user_id],
             |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .ok();
@@ -364,8 +370,8 @@ pub fn auto_status(conn: &rusqlite::Connection, user_id: &str, task_id: i64) {
         return;
     }
     let _ = conn.execute(
-        "UPDATE tasks SET status = ?1 WHERE id = ?2 AND user_id = ?3",
-        rusqlite::params![status, task_id, user_id],
+        "UPDATE task_days SET status = ?1 WHERE id = ?2",
+        rusqlite::params![status, day_id],
     );
 }
 
@@ -444,9 +450,12 @@ fn resolve_transition_id(transitions: &[Transition], status_name: &str) -> Resul
 ///
 /// Capture it *before* the timer stops: the live seconds only exist while the
 /// task runs, and a stopped task has nothing left to report.
+///
+/// The label and description are what JIRA needs (the issue key is parsed out of
+/// them), so no task or day id is carried: the caller already holds the row it
+/// captured from, and uses its `day_id` for the local status write.
 #[derive(Debug)]
 pub struct Worklog {
-    pub task_id: i64,
     pub label: String,
     pub description: String,
     pub seconds: i64,
@@ -458,7 +467,6 @@ impl Worklog {
     /// reopen an issue for a task that has nothing to report.
     pub fn capture(task: &Task, now: i64) -> Option<Self> {
         task.is_running.then(|| Self {
-            task_id: task.id,
             label: task.label.clone(),
             description: task.description_text().to_string(),
             seconds: task.running_delta(now),
@@ -858,45 +866,54 @@ mod tests {
     fn auto_status_follows_the_rows_own_state() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, user_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'todo',
-                                 is_running INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0);
-             INSERT INTO tasks (id, user_id, status) VALUES (1, 'u1', '51'), (2, 'u1', 'todo');",
+            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, user_id TEXT NOT NULL);
+             CREATE TABLE task_days (id INTEGER PRIMARY KEY, task_id INTEGER NOT NULL,
+                                     status TEXT NOT NULL DEFAULT 'todo',
+                                     is_running INTEGER NOT NULL DEFAULT 0,
+                                     done INTEGER NOT NULL DEFAULT 0);
+             INSERT INTO tasks (id, user_id) VALUES (1, 'u1'), (2, 'u1');
+             INSERT INTO task_days (id, task_id, status) VALUES (1, 1, '51'), (2, 2, 'todo');",
         )
         .unwrap();
 
         // Start: the layout change wins over whatever the row said.
-        conn.execute("UPDATE tasks SET is_running = 1 WHERE id = 1", []).unwrap();
+        conn.execute("UPDATE task_days SET is_running = 1 WHERE id = 1", []).unwrap();
         auto_status(&conn, "u1", 1);
         assert_eq!(status_label(&status_of(&conn, 1)), "In Progress");
 
         // Stop: back to To Do, so a finished run does not leave In Progress behind.
-        conn.execute("UPDATE tasks SET is_running = 0 WHERE id = 1", []).unwrap();
+        conn.execute("UPDATE task_days SET is_running = 0 WHERE id = 1", []).unwrap();
         auto_status(&conn, "u1", 1);
         assert_eq!(status_label(&status_of(&conn, 1)), "To Do");
 
         // Done: Done, even straight from a legacy value.
-        conn.execute("UPDATE tasks SET done = 1 WHERE id = 2", []).unwrap();
+        conn.execute("UPDATE task_days SET done = 1 WHERE id = 2", []).unwrap();
         auto_status(&conn, "u1", 2);
         assert_eq!(status_label(&status_of(&conn, 2)), "Done");
 
         // Un-done: back to To Do rather than staying on Done.
-        conn.execute("UPDATE tasks SET done = 0 WHERE id = 2", []).unwrap();
+        conn.execute("UPDATE task_days SET done = 0 WHERE id = 2", []).unwrap();
         auto_status(&conn, "u1", 2);
         assert_eq!(status_label(&status_of(&conn, 2)), "To Do");
 
         // Idempotent: a second call leaves the same value.
         auto_status(&conn, "u1", 2);
         assert_eq!(status_label(&status_of(&conn, 2)), "To Do");
+
+        // Another user's day is unreachable by id.
+        auto_status(&conn, "u2", 1);
+        assert_eq!(status_label(&status_of(&conn, 1)), "To Do");
     }
 
-    fn status_of(conn: &rusqlite::Connection, task_id: i64) -> String {
-        conn.query_row("SELECT status FROM tasks WHERE id = ?1", [task_id], |r| r.get(0))
+    fn status_of(conn: &rusqlite::Connection, day_id: i64) -> String {
+        conn.query_row("SELECT status FROM task_days WHERE id = ?1", [day_id], |r| r.get(0))
             .unwrap()
     }
 
     fn task(id: i64, is_running: bool, elapsed_time: i64, start_time: Option<i64>) -> Task {
         Task {
             id,
+            day_id: id,
             label: "US-2092".into(),
             description: Some("fix login".into()),
             code: None,
@@ -918,6 +935,7 @@ mod tests {
             start_time,
             end_time: None,
             work_date: "2026-09-13".into(),
+            days: Vec::new(),
         }
     }
 
@@ -927,7 +945,6 @@ mod tests {
         // 60s committed, started 5s ago: only the live 5s are reportable.
         let running = task(7, true, 60, Some(now - 5_000));
         let worklog = Worklog::capture(&running, now).expect("running task has a worklog");
-        assert_eq!(worklog.task_id, 7);
         assert_eq!(worklog.seconds, 5);
         assert_eq!(worklog.label, "US-2092");
         assert_eq!(worklog.description, "fix login");
