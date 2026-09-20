@@ -114,3 +114,13 @@ tests the previous schema and fails with `no such column: status`.
 G6/G7/G9 are the two projects' own regression suites. G8 mirrors the crate's
 existing clippy gate.
 -->
+
+- [x] G14: renaming onto a label the user already has answers 409, not 500
+  CHECK: pnpm --filter sv-task-timer exec vitest run --testNamePattern="409, not 500"
+  EXPECT: /Tests\s+1 passed/
+  EVIDENCE: automatic-evidence=v1; definition-sha256=529162e32fc716645ee8bd936071ac5174f854a29fef7aa1cb8210b9c19fc692; exit=0; EXPECT=matched; output-sha256=0526162d3a51923d61ff55cffb6c08150c2e4e7f341e14d1d6c2b41c0d173ff2; output-bytes=238; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
+
+- [x] G15: the archive honours the archived day filter
+  CHECK: pnpm --filter sv-task-timer exec vitest run --testNamePattern="archived selects which days appear"
+  EXPECT: /Tests\s+1 passed/
+  EVIDENCE: automatic-evidence=v1; definition-sha256=aee0f848a25f3654c38c8f88555667bddf25094a67082a708b6fa72fb50778dd; exit=0; EXPECT=matched; output-sha256=9ace167004101de0390b7bb2d058d69a526f94c599724d0dd520629f32ee7818; output-bytes=237; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries

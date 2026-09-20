@@ -22,14 +22,15 @@ export const GET: RequestHandler = async (event) => {
   const filter = {
     status: status ?? undefined,
     q: q ?? undefined,
-    tag: tag ?? undefined,
+    tag: tag ?? undefined
   };
+  const archivedBool = parseBool(archived);
   if (date === null) {
-    // Archive: q/tag pick the tasks, status/done pick which of their days show.
-    return json(listArchive(actor.userId, { ...filter, done: parseBool(done) }));
+    // Archive: q/tag pick the tasks, status/done/archived pick which of their days show.
+    return json(listArchive(actor.userId, { ...filter, done: parseBool(done), archived: archivedBool }));
   }
   // Day view: the same params narrow that day's list.
-  return json(listTasks(actor.userId, date, { ...filter, done: parseBool(done), archived: parseBool(archived) }));
+  return json(listTasks(actor.userId, date, { ...filter, done: parseBool(done), archived: archivedBool }));
 };
 
 const createSchema = z.object({

@@ -242,3 +242,25 @@ describe('renaming onto a label the user already has', () => {
 		);
 	});
 });
+
+describe('the archive day filters', () => {
+	it('archived selects which days appear, and drops tasks with none left', async () => {
+		const id = await work('ARCHFLT-1', [[DAY1, 60], [DAY2, 120]]);
+		svc.updateTask(USER, id, { isArchived: true }, DAY2);
+
+		// Only the archived day survives the filter, so the task shows one day.
+		const archived = svc.listArchive(USER, { archived: true }).tasks.filter((t) => t.id === id);
+		expect(archived).toHaveLength(1);
+		expect(archived[0].days!.map((d) => d.workDate)).toEqual([DAY2]);
+
+		const notArchived = svc.listArchive(USER, { archived: false }).tasks.filter((t) => t.id === id);
+		expect(notArchived).toHaveLength(1);
+		expect(notArchived[0].days!.map((d) => d.workDate)).toEqual([DAY1]);
+
+		// A task whose every day is filtered out is not in the archive at all.
+		const other = await work('ARCHFLT-2', [[DAY1, 60]]);
+		expect(
+			svc.listArchive(USER, { archived: true }).tasks.filter((t) => t.id === other)
+		).toHaveLength(0);
+	});
+});
