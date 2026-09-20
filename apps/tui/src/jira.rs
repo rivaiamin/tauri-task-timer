@@ -4,6 +4,7 @@ use serde::Deserialize;
 use std::env;
 use std::fs;
 use std::path::PathBuf;
+use std::process::Command;
 
 use crate::db::tasks::Task;
 
@@ -127,6 +128,35 @@ pub fn jira_fetch(
 /// Extract a JIRA issue key (e.g. "US-1459") from a task's label or description.
 pub fn issue_key_from_task(label: &str, description: &str) -> Option<String> {
     issue_key(label, description)
+}
+
+/// The browsable URL for an issue key on the configured site.
+///
+/// Pure and network-free, so the one place the URL shape is decided can be
+/// asserted directly rather than by reading the source that builds it.
+pub fn issue_url(key: &str) -> String {
+    format!("{}/browse/{}", jira_site(), key)
+}
+
+/// Hand a URL to the platform's browser.
+///
+/// The TUI owns the alternate screen, so the opener is spawned and never waited
+/// on: blocking here would freeze the frame until the browser exits. `open` and
+/// `start` are the macOS and Windows spellings of the same handoff.
+pub fn open_in_browser(url: &str) -> Result<()> {
+    let (program, args): (&str, &[&str]) = if cfg!(target_os = "macos") {
+        ("open", &[])
+    } else if cfg!(target_os = "windows") {
+        ("cmd", &["/C", "start", ""])
+    } else {
+        ("xdg-open", &[])
+    };
+    Command::new(program)
+        .args(args)
+        .arg(url)
+        .spawn()
+        .with_context(|| format!("could not launch the browser ({program})"))?;
+    Ok(())
 }
 
 fn issue_key(label: &str, description: &str) -> Option<String> {
@@ -654,6 +684,24 @@ mod tests {
         assert_eq!(issue_key("US-1459 fix", ""), Some("US-1459".into()));
         assert_eq!(issue_key("fix", "see AIM-22"), Some("AIM-22".into()));
         assert_eq!(issue_key("ordinary task", "no ticket"), None);
+    }
+
+    /// The browser handoff is only as good as the URL it builds, and the site
+    /// is configurable, so the shape is asserted against a pinned host rather
+    /// than whatever the environment happens to hold.
+    #[test]
+    fn issue_url_points_at_the_browse_path_on_the_configured_site() {
+        let previous = env::var("JIRA_SITE").ok();
+        env::set_var("JIRA_SITE", "https://example.atlassian.net/");
+        assert_eq!(
+            issue_url("US-1459"),
+            "https://example.atlassian.net/browse/US-1459",
+            "a trailing slash on the site must not become a double slash"
+        );
+        match previous {
+            Some(value) => env::set_var("JIRA_SITE", value),
+            None => env::remove_var("JIRA_SITE"),
+        }
     }
 
     #[test]

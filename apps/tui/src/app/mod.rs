@@ -791,6 +791,27 @@ impl App {
             .and_then(|t| jira::issue_key_from_task(&t.label, t.description.as_deref().unwrap_or("")))
     }
 
+    /// Open the focused task's JIRA issue in the browser.
+    ///
+    /// JIRA renders its own issue better than a TUI panel can, and the PRD's
+    /// non-goals rule out replicating it, so the TUI's part is the handoff: a
+    /// key in the label or description is enough, and a task without one gets a
+    /// status line rather than a failed spawn.
+    fn open_jira_issue(&mut self) {
+        let Some(task) = self.focused_task() else {
+            return;
+        };
+        let Some(key) = jira::issue_key_from_task(&task.label, task.description_text()) else {
+            self.set_status("no JIRA key in task label/description");
+            return;
+        };
+        let url = jira::issue_url(&key);
+        match jira::open_in_browser(&url) {
+            Ok(()) => self.set_status(format!("opened {key} in browser")),
+            Err(e) => self.set_status(format!("{e:#}")),
+        }
+    }
+
     fn handle_jira_key(&mut self, key: KeyEvent) -> Result<bool> {
         let jira = std::mem::replace(&mut self.overlay, Overlay::None);
         let Overlay::Jira { mut mode } = jira else {
@@ -1712,6 +1733,8 @@ impl App {
                     }
                     // The detail footer advertises it, so `C` works from here too.
                     KeyCode::Char('C') => self.open_comments(),
+                    // The footer advertises this too: hand the issue to the browser.
+                    KeyCode::Char('o') => self.open_jira_issue(),
                     _ => {}
                 }
                 return Ok(false);
@@ -1750,6 +1773,9 @@ impl App {
                 }
                 KeyCode::Char('C') if self.archive_selected_task().is_some() => {
                     self.open_comments();
+                }
+                KeyCode::Char('o') if self.archive_selected_task().is_some() => {
+                    self.open_jira_issue();
                 }
                 _ => {}
             }
@@ -1826,6 +1852,7 @@ impl App {
             KeyCode::Char('R') => self.overlay = Overlay::ConfirmResetAll,
             KeyCode::Char('m') => self.toggle_mode()?,
             KeyCode::Char('x') => self.export_markdown(),
+            KeyCode::Char('o') => self.open_jira_issue(),
             _ => {}
         }
         Ok(false)
