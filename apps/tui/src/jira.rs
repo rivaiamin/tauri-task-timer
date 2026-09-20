@@ -13,18 +13,6 @@ struct Credentials {
     token: String,
 }
 
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct IssueResponse {
-    fields: Option<IssueFields>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-struct IssueFields {
-    summary: Option<String>,
-}
-
 #[derive(Debug, Clone, Deserialize)]
 pub struct Transition {
     pub id: String,
@@ -45,27 +33,23 @@ struct TransitionsResponse {
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct SprintIssue {
     key: String,
     fields: Option<SprintIssueFields>,
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct SprintIssueFields {
     summary: Option<String>,
     status: Option<IssueStatus>,
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct IssueStatus {
     name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
-#[allow(dead_code)]
 struct SprintIssuesResponse {
     issues: Vec<SprintIssue>,
 }
@@ -493,9 +477,7 @@ pub type Warnings = Vec<String>;
 /// The issue key to report for a task, or `None` when JIRA is not configured or
 /// the task is not a ticket. Both are legitimate no-ops, not failures.
 fn jira_key(label: &str, description: &str) -> Option<String> {
-    if load_credentials().is_none() {
-        return None;
-    }
+    load_credentials()?;
     issue_key_from_task(label, description)
 }
 
@@ -538,11 +520,6 @@ pub fn fire_run_end(
     warnings
 }
 
-/// Timer stopped and the task is not done → worklog, then back to To Do.
-pub fn fire_on_stop(label: &str, description: &str, seconds: i64, started_ms: Option<i64>) -> Warnings {
-    fire_run_end(label, description, seconds, started_ms, false)
-}
-
 /// Mark done → worklog, then to the done status.
 pub fn fire_on_done(label: &str, description: &str, seconds: i64, started_ms: Option<i64>) -> Warnings {
     fire_run_end(label, description, seconds, started_ms, true)
@@ -550,7 +527,6 @@ pub fn fire_on_done(label: &str, description: &str, seconds: i64, started_ms: Op
 
 /// Fetch issues from a JIRA sprint (Agile REST API).
 /// Returns (issue_key, summary, status_name) tuples.
-#[allow(dead_code)]
 pub fn fetch_sprint_issues(board: &str, sprint_id: &str) -> Result<Vec<(String, String, String)>> {
     let creds = load_credentials().context("JIRA not configured")?;
     let client = jira_client()?;

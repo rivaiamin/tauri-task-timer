@@ -63,11 +63,6 @@ impl HookListener {
             .unwrap_or_else(|| PathBuf::from("/tmp/task-timer-tui-hook.sock"))
     }
 
-    /// Returns true if the socket is listening (agents can connect).
-    pub fn is_active(&self) -> bool {
-        self.listener.is_some()
-    }
-
     /// Non-blocking poll: accept any pending connection, read a JSON line,
     /// parse it, and return the event. Returns `None` if nothing available.
     pub fn poll(&self) -> Option<HookEvent> {
@@ -133,8 +128,6 @@ mod tests {
     #[test]
     fn socket_roundtrip() {
         let listener = HookListener::new();
-        assert!(listener.is_active());
-
         let path = listener.socket_path.clone();
 
         // Connect in a thread and send an event.

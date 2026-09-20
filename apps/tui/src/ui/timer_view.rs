@@ -123,13 +123,15 @@ pub fn draw(frame: &mut Frame, app: &App) {
             frame,
             edit_id.is_some(),
             *field,
-            label,
-            description,
-            elapsed,
-            status,
-            code,
-            notes,
-            tags,
+            FormFields {
+                label,
+                description,
+                elapsed,
+                status,
+                code,
+                notes,
+                tags,
+            },
         ),
         Overlay::Detail => {
             if let Some(t) = app.selected_task() {
@@ -179,18 +181,27 @@ fn draw_confirm(frame: &mut Frame, msg: &str) {
     frame.render_widget(p, area);
 }
 
-fn draw_form(
-    frame: &mut Frame,
-    editing: bool,
-    field: Field,
-    label: &str,
-    description: &str,
-    elapsed: &str,
-    status: &str,
-    code: &str,
-    notes: &str,
-    tags: &str,
-) {
+/// The form's editable text, grouped so the form renderer takes one value.
+pub struct FormFields<'a> {
+    pub label: &'a str,
+    pub description: &'a str,
+    pub elapsed: &'a str,
+    pub status: &'a str,
+    pub code: &'a str,
+    pub notes: &'a str,
+    pub tags: &'a str,
+}
+
+fn draw_form(frame: &mut Frame, editing: bool, field: Field, f: FormFields) {
+    let FormFields {
+        label,
+        description,
+        elapsed,
+        status,
+        code,
+        notes,
+        tags,
+    } = f;
     let area = centered(frame.area(), 56, 18);
     frame.render_widget(Clear, area);
     let title = if editing { " edit task " } else { " new task " };

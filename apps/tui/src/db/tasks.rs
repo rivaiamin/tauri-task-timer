@@ -8,26 +8,46 @@ pub struct Task {
     pub label: String,
     pub description: Option<String>,
     pub code: Option<String>,
-    pub link: Option<String>,
     pub status: String,
     pub notes: Option<String>,
     pub tags: Option<String>,
     pub elapsed_time: i64,
+    pub is_running: bool,
+    /// The live done flag: the web dashboard's checkbox PATCHes `<id>` with
+    /// `{done:…}`, which writes this column, and the shift-D toggle and the
+    /// archive filter read it back. `is_completed` — the column the web archive
+    /// page filters on — is never written by the web app at all (every row in
+    /// the shared database has it at 0 while `done` is set), so this is the one
+    /// to use.
+    pub done: bool,
+    pub start_time: Option<i64>,
+    pub work_date: String,
+
+    /// Columns this crate stores but does not read. The schema is shared with
+    /// the web app, which reads and writes all of them; the TUI reads a subset.
+    /// They stay until both apps agree on one set of flags — see the `done`
+    /// field below, which the TUI has to read because the web app is the one
+    /// writing it.
+    #[allow(dead_code)]
+    pub end_time: Option<i64>,
+    #[allow(dead_code)]
+    pub link: Option<String>,
+    #[allow(dead_code)]
     pub total_time: i64,
     #[allow(dead_code)]
     pub position: i64,
-    pub is_running: bool,
     #[allow(dead_code)]
-    pub done: bool,
     pub is_completed: bool,
+    #[allow(dead_code)]
     pub is_cancelled: bool,
+    #[allow(dead_code)]
     pub is_deleted: bool,
+    #[allow(dead_code)]
     pub is_archived: bool,
+    #[allow(dead_code)]
     pub is_pinned: bool,
+    #[allow(dead_code)]
     pub is_important: bool,
-    pub start_time: Option<i64>,
-    pub end_time: Option<i64>,
-    pub work_date: String,
 }
 
 impl Task {
@@ -102,9 +122,8 @@ pub fn list_archive(
     let mut sql = format!(
         "SELECT {COLS} FROM tasks WHERE user_id = ?1
          AND COALESCE(is_deleted, 0) = 0
-         AND COALESCE(done, 0) = 0
          AND COALESCE(is_archived, 0) = 0
-         AND COALESCE(is_completed, 0) = 0
+         AND COALESCE(done, 0) = 0
          AND COALESCE(is_cancelled, 0) = 0"
     );
     let mut params_vec: Vec<String> = vec![user_id.to_string()];
@@ -284,18 +303,34 @@ pub fn delete_task(conn: &Connection, user_id: &str, task_id: i64) -> Result<boo
     Ok(n > 0)
 }
 
+/// The fields a patch may change. `None` leaves the stored value alone; `status`
+/// is the exception, where a blank value also keeps the stored one.
+#[derive(Default, Clone, Copy)]
+pub struct TaskPatch<'a> {
+    pub label: Option<&'a str>,
+    pub description: Option<&'a str>,
+    pub elapsed_seconds: Option<i64>,
+    pub code: Option<&'a str>,
+    pub status: Option<&'a str>,
+    pub notes: Option<&'a str>,
+    pub tags: Option<&'a str>,
+}
+
 pub fn update_task(
     conn: &Connection,
     user_id: &str,
     task_id: i64,
-    label: Option<&str>,
-    description: Option<&str>,
-    elapsed_seconds: Option<i64>,
-    code: Option<&str>,
-    status: Option<&str>,
-    notes: Option<&str>,
-    tags: Option<&str>,
+    patch: TaskPatch,
 ) -> Result<Option<Task>> {
+    let TaskPatch {
+        label,
+        description,
+        elapsed_seconds,
+        code,
+        status,
+        notes,
+        tags,
+    } = patch;
     let Some(row) = get_task(conn, user_id, task_id)? else {
         return Ok(None);
     };
@@ -591,7 +626,15 @@ mod tests {
         conn.execute("UPDATE tasks SET status = '51' WHERE id = ?1", [t.id]).unwrap();
 
         let updated = update_task(
-            &conn, "u1", t.id, Some("Renamed"), Some("desc"), Some(60), None, None, None, None,
+            &conn,
+            "u1",
+            t.id,
+            TaskPatch {
+                label: Some("Renamed"),
+                description: Some("desc"),
+                elapsed_seconds: Some(60),
+                ..Default::default()
+            },
         )
         .unwrap()
         .unwrap();
@@ -608,7 +651,14 @@ mod tests {
         conn.execute("UPDATE tasks SET status = '41' WHERE id = ?1", [t.id]).unwrap();
 
         let updated = update_task(
-            &conn, "u1", t.id, Some("Renamed"), None, None, None, Some("  "), None, None,
+            &conn,
+            "u1",
+            t.id,
+            TaskPatch {
+                label: Some("Renamed"),
+                status: Some("  "),
+                ..Default::default()
+            },
         )
         .unwrap()
         .unwrap();
@@ -621,7 +671,13 @@ mod tests {
         let conn = setup();
         let t = create_task(&conn, "u1", "2026-09-17", "Set", None).unwrap();
         let updated = update_task(
-            &conn, "u1", t.id, None, None, None, None, Some("31"), None, None,
+            &conn,
+            "u1",
+            t.id,
+            TaskPatch {
+                status: Some("31"),
+                ..Default::default()
+            },
         )
         .unwrap()
         .unwrap();

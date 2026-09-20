@@ -1,5 +1,4 @@
 /// Port of `packages/shared/src/timer.ts` + `formatTime`.
-
 pub fn now_ms() -> i64 {
     chrono::Utc::now().timestamp_millis()
 }

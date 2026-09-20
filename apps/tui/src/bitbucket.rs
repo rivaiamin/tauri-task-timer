@@ -10,46 +10,30 @@ struct Credentials {
     token: String,
 }
 
+/// Bitbucket's shape, not ours: the TUI renders `state` and `title` and the
+/// rest is what the API sends, so the unused fields stay only to keep the type a
+/// faithful mirror of the response.
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct PullRequest {
+    #[allow(dead_code)]
     pub id: u64,
     pub title: String,
     pub state: String,        // "OPEN", "MERGED", "DECLINED"
+    #[allow(dead_code)]
     pub author: Option<Author>,
+    #[allow(dead_code)]
     pub url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize)]
-#[allow(dead_code)]
 pub struct Author {
+    #[allow(dead_code)]
     pub display_name: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct PrComment {
-    pub id: u64,
-    pub content: Option<PrContent>,
-    pub user: Option<Author>,
-    pub created_on: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-#[allow(dead_code)]
-pub struct PrContent {
-    pub raw: Option<String>,
-    pub html: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PrListResponse {
     values: Vec<PullRequest>,
-}
-
-#[derive(Debug, Deserialize)]
-struct PrCommentResponse {
-    values: Vec<PrComment>,
 }
 
 fn load_credentials() -> Option<Credentials> {
@@ -114,28 +98,8 @@ pub fn list_prs(workspace: &str, repo: &str, branch: &str) -> Result<Vec<PullReq
     Ok(resp.values)
 }
 
-/// Get the status of a specific PR by ID.
-pub fn get_pr_status(workspace: &str, repo: &str, pr_id: u64) -> Result<PullRequest> {
-    let path = format!("/pullrequests/{pr_id}");
-    let data = bb_fetch(workspace, repo, &path, "GET")?;
-    let pr: PullRequest =
-        serde_json::from_value(data).context("parse PR response")?;
-    Ok(pr)
-}
-
-/// Get comments on a PR. Returns up to 20 most recent.
-pub fn get_pr_comments(workspace: &str, repo: &str, pr_id: u64) -> Result<Vec<PrComment>> {
-    let path = format!("/pullrequests/{pr_id}/comments?sort=-created_on&pagelen=20");
-    let data = bb_fetch(workspace, repo, &path, "GET")?;
-    let resp: PrCommentResponse =
-        serde_json::from_value(data).context("parse PR comments response")?;
-    Ok(resp.values)
-}
-
 #[cfg(test)]
 mod tests {
-    use super::*;
-
     #[test]
     fn bb_fetch_url_construction() {
         // Just verify the URL would be well-formed; actual API call needs auth.

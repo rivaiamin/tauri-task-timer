@@ -3,8 +3,6 @@ use rusqlite::{params, Connection};
 
 #[derive(Clone, Debug)]
 pub struct Integration {
-    pub id: i64,
-    pub task_id: i64,
     pub group: String,
     pub field: String,
     pub value: Option<String>,
@@ -17,8 +15,6 @@ pub fn list(conn: &Connection, task_id: i64) -> Result<Vec<Integration>> {
     )?;
     let rows = stmt.query_map([task_id], |r| {
         Ok(Integration {
-            id: r.get(0)?,
-            task_id: r.get(1)?,
             group: r.get(2)?,
             field: r.get(3)?,
             value: r.get(4)?,

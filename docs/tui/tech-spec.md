@@ -41,8 +41,7 @@ apps/tui/
       mod.rs                       # Connection, WAL pragmas
       user.rs                      # user_id from email
       tasks.rs                     # CRUD + timer ops
-      comments.rs                  # E2
-      integrations.rs              # E2
+      integrations.rs              # E2 — read/write
     app/
       mod.rs                       # Event loop, App state, modals
       keymap.rs                    # Bindings + HELP text
@@ -241,8 +240,6 @@ Hybrid approach: local git CLI for branch/commit info, Bitbucket REST API for PR
 | `git::branch_ahead_behind` | Ahead/behind count vs upstream or main |
 | `bitbucket::bb_fetch` | Shared Bitbucket REST API fetcher |
 | `bitbucket::list_prs` | List PRs for a branch |
-| `bitbucket::get_pr_status` | Get PR status by ID |
-| `bitbucket::get_pr_comments` | Get PR comments |
 
 **TUI controls:** Ctrl+B opens Git menu → link branch (1), show commits (2), PR status (3).
 Credentials via env vars (`BITBUCKET_EMAIL`, `BITBUCKET_TOKEN`).

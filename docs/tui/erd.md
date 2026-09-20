@@ -190,7 +190,7 @@ When E2 lands, update all consumers in one PR:
 | Table/column | Web schema | taskService | REST | MCP | TUI db |
 |--------------|------------|-------------|------|-----|--------|
 | tasks.* | ✓ | ✓ | ✓ | ✓ | ✓ |
-| task_comments | ✓ | ✓ | ✓ | ✓ | ✓ |
-| task_integrations | ✓ | ✓ | ✓ | optional | ✓ |
+| task_comments | ✓ | ✓ | ✓ | ✓ | ✗ not implemented |
+| task_integrations | ✓ | ✓ | ✓ | optional | ✓ (read/write) |
 
 See [tasks.md](./tasks.md) E2 checklist.

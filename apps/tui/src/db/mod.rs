@@ -1,6 +1,5 @@
 pub mod tasks;
 pub mod user;
-pub mod comments;
 pub mod integrations;
 
 use anyhow::{Context, Result};
