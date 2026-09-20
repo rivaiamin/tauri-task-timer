@@ -123,6 +123,10 @@ erDiagram
 | bitbucket | pr_id | 42 |
 | git | branch | US-1459-fix |
 
+`jira/issue_key` and `jira/status` are both written by the TUI's sprint sync and
+fetch-by-key ingest. `jira/status` holds the status JIRA reported for the issue,
+not the task's own `status` column — that one follows the timer (`auto_status`).
+
 ### `tags` storage
 
 A JSON text column on `tasks`, as E2 shipped. Not a join table.

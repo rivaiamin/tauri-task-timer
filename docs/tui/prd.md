@@ -112,11 +112,16 @@ Rename alignment: `label` = title in IDEA; keep `label` in DB for compatibility.
 
 ---
 
-## E4 — JIRA integration
+## E4 — JIRA integration ✅
 
 - Sprint sync: unassigned, reporter undone, assignee undone, fetch by key
-- Task detail, comment, status transition
-- Metadata in `task_integrations` (`group = jira`)
+- Fetched issues are saved as tasks; the issue key **and its status** are stored
+  in `task_integrations` (`group = jira`)
+- `o` (daily list, archive, and the detail view) hands the issue to the browser
+  at `{JIRA_SITE}/browse/{KEY}`; the detail view lists the stored integration rows
+
+**Not replicated:** JIRA's own issue page. Reading the ticket in full is the
+browser's job — see the non-goals. The TUI fetches, saves, and hands off.
 
 **Web:** reuse/extend `apps/web/src/lib/server/jira.ts` where possible; TUI may call same logic via shared TS sidecar or Rust port.
 

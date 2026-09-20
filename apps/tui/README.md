@@ -40,7 +40,20 @@ reloads every second.
 ## Keys
 
 Press `?` in the app for the full map. Daily view, vim-style navigation,
-`n`/`e`/`d` for CRUD, Space to start/stop, `x` to copy the daily markdown report.
+`n`/`e`/`d` for CRUD, Space to start/stop, `x` to copy the daily markdown report,
+`o` to open the selected task's JIRA issue in the browser.
+
+## JIRA
+
+`Ctrl+J` opens the JIRA menu: post a comment, transition the issue, or run a
+sprint picker (unassigned / reporter undone / assignee undone) or fetch one issue
+by key. A fetched issue becomes a task labelled `KEY summary`, and both its
+`jira/issue_key` and the status JIRA reported are stored in `task_integrations`.
+
+Reading the ticket in full is the browser's job: `o` (in the daily list, the
+archive, or the detail view) hands `{JIRA_SITE}/browse/{KEY}` to your default
+browser. The detail view (`i`) shows the stored integration rows alongside
+comments and PR state.
 
 ## Status
 

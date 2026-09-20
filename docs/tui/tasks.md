@@ -108,7 +108,8 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 
 - [x] Sprint picker: unassigned / reporter undone / assignee undone / fetch by key (JQL, no board)
 - [x] Detail, comment, transition UI
-- [x] Store in `task_integrations`
+- [x] Store in `task_integrations` (`jira/issue_key` + the fetched `jira/status`)
+- [x] `o` opens the issue in the browser (`{JIRA_SITE}/browse/{KEY}`); the detail view lists the stored rows
 
 ### Web
 

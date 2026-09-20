@@ -269,12 +269,24 @@ Chose option A: standalone `reqwest` calls from TUI. No web server dependency.
 | `jql_for` | Build the JQL for one sprint mode (unassigned / reporter / assignee undone) |
 | `search_issues` | POST JQL search, retrying `/search/jql` when the old path is gone |
 | `fetch_issue` | GET one issue by key (validated as a JIRA key first) |
+| `issue_url` | Build `{JIRA_SITE}/browse/{KEY}` (pure, no network) |
+| `open_in_browser` | Spawn the platform opener (`xdg-open` / `open` / `start`) |
 
 **TUI controls:** Ctrl+J opens JIRA menu → comment (1), transition (2), sprint picker (3).
 The picker offers unassigned (1), reporter undone (2), assignee undone (3), fetch by key (4).
 Credentials via env vars (`JIRA_SITE`, `JIRA_EMAIL`, `JIRA_TOKEN`).
 Sprint config in `config.toml` (`jira_sprint_id`) — the four modes are JQL scoped by
 sprint id, so `jira_board` is loaded but unused.
+
+Ingest writes two `task_integrations` rows per issue — `jira/issue_key` and
+`jira/status` (the status JIRA reported). The task's own `status` column is still
+owned by `auto_status`, never by a fetch.
+
+`o` (daily list, archive, detail) opens `{JIRA_SITE}/browse/{KEY}` in the browser
+via `jira::issue_url` + `jira::open_in_browser`. The opener is spawned, not
+waited on, so the frame never blocks on the browser. A task with no key in its
+label or description gets a status line instead of a spawn. The detail overlay
+renders the stored `task_integrations` rows.
 
 ## E5 — Git / Bitbucket Integration (implemented)
 
