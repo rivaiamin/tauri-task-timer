@@ -49,17 +49,17 @@ weaken an oracle:
 - [x] G4: the TUI crate builds and every unit test passes
   CHECK: cargo test -p task-timer-tui
   EXPECT: test result: ok
-  EVIDENCE: automatic-evidence=v1; definition-sha256=2e6c8eaa72a84af3d130ed3274aa97333a8d57496a1f1e5e9ab9131028d00c8d; exit=0; EXPECT=matched; output-sha256=4e5957d43ab69e5a44ce70d30c20546e992a4b283d8dea11f3055ffe6db5cb4c; output-bytes=4983; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
+  EVIDENCE: automatic-evidence=v1; definition-sha256=2e6c8eaa72a84af3d130ed3274aa97333a8d57496a1f1e5e9ab9131028d00c8d; exit=0; EXPECT=matched; output-sha256=ecea98c3b3b2d5899b222a759ce50532ba96cae44b37dda0f0a46749c3934566; output-bytes=4894; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
 
 - [x] G5: the JIRA stop behavior and its negative control still hold
   CHECK: node scripts/verify-jira-stop.mjs
   EXPECT: stop verification passed
-  EVIDENCE: automatic-evidence=v1; definition-sha256=d6d9615d9e208ff3a21a658bcaa3d943ee8ce37eb3ea5cae4e0da00f2308c560; exit=0; EXPECT=matched; output-sha256=e3addc9543c850a791c595078bc8ad333489e6b4d30b5bf1099eb30c7d4d67b1; output-bytes=196; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
+  EVIDENCE: automatic-evidence=v1; definition-sha256=d6d9615d9e208ff3a21a658bcaa3d943ee8ce37eb3ea5cae4e0da00f2308c560; exit=0; EXPECT=matched; output-sha256=3a9f0d8a527a04bf169aa7aeb59c2c93f580ee460468a3d0254562efa080ccaa; output-bytes=196; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
 
 - [x] G6: the JIRA stop oracle's control still fails on a worklog-only stop
   CHECK: node scripts/verify-jira-stop.mjs --self-test
   EXPECT: stop oracle control passed
-  EVIDENCE: automatic-evidence=v1; definition-sha256=6d012ec9901606222715a102394dcfb53f1301a56a554ee8a3778e47a262d321; exit=0; EXPECT=matched; output-sha256=a40ae65c47ff70878e431e144e0be4ca1b5598d446526f5920b1bf802fdf10e7; output-bytes=198; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
+  EVIDENCE: automatic-evidence=v1; definition-sha256=6d012ec9901606222715a102394dcfb53f1301a56a554ee8a3778e47a262d321; exit=0; EXPECT=matched; output-sha256=947eda36a5f5f2f726cbddf2274ddf1ba0d5f5fd04115e4b79b33b0296896dfd; output-bytes=198; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
 
 - [x] G7: the status-sync oracle still holds, and its control still fails on pre-change behavior
   CHECK: node scripts/verify-status-sync.mjs --self-test
@@ -69,7 +69,7 @@ weaken an oracle:
 - [x] G8: the status-picker oracle still holds through a real pty session
   CHECK: node scripts/verify-status-picker.mjs
   EXPECT: status picker verification passed
-  EVIDENCE: automatic-evidence=v1; definition-sha256=b14d9caa2655dfc2efe3e1ec792b750330bfefa921891a775cb292e5ad5c58b7; exit=0; EXPECT=matched; output-sha256=9d3c70845ef3fef74c3875125b95c9f653c38c9021c3ce305c130259673575de; output-bytes=205; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
+  EVIDENCE: automatic-evidence=v1; definition-sha256=b14d9caa2655dfc2efe3e1ec792b750330bfefa921891a775cb292e5ad5c58b7; exit=0; EXPECT=matched; output-sha256=e7efaf2040197426f137eb4e241d4b96f19d6a6652a70c5cfdfea68d22b6f41a; output-bytes=205; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
 
 <!--
 G2 is the negative control for G1: the same assertion logic is fed a captured

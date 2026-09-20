@@ -76,7 +76,7 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 - [x] TUI toggles daily ↔ archive
 - [x] Archive lists non-finished tasks per agreed rules
-- [x] Filter by label substring and tag
+- [x] Filter by label substring, tag, status, and integration substring
 - [x] Continue today creates row via E1 dedup rules
 
 ---
@@ -131,6 +131,8 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 - [x] Task linked to branch name via `task_integrations` (`group=git, field=branch`)
 - [x] Commits listed for branch (git CLI, Ctrl+B → 2)
 - [x] PR status visible (Bitbucket API, Ctrl+B → 3)
+- [x] PR comments imported into `task_comments`, deduped on `(pr, summary)` (Ctrl+B → 4)
+- [x] Commit build/report statuses shown in the detail view (404 → empty, not an error)
 - [x] `cargo test -p task-timer-tui` passes
 - [x] Tech spec updated
 
@@ -167,6 +169,11 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 **Status:** Done (`main`) · **Depends on:** E1, E2, E3 · **Plan:** [e7-plan.md](./e7-plan.md)
 
 **Goal:** Web dashboard matches TUI daily workflow.
+
+**Known gap, deliberately excluded:** the web dashboard writes no task `status` on
+start/done, so a task started in the browser keeps its old status while the TUI
+would move it to In Progress. Closing that is a cross-app behavior change tracked
+as its own work — see [tech-spec.md](./tech-spec.md) E7.
 
 ### Tasks
 

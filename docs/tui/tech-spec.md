@@ -1,6 +1,6 @@
 # Tech Spec — Task Timer TUI (monorepo)
 
-**Last updated:** 2026-09-10
+**Last updated:** 2026-09-21
 
 ## System context
 
@@ -26,6 +26,7 @@ graph TD
 - **Web** owns migrations (Drizzle in `apps/web/drizzle/`).
 - **MCP** is a thin HTTP client to web REST API — never touches DB directly.
 - **Timer rules** must match in three places: `packages/shared/src/timer.ts`, `apps/web/src/lib/server/taskService.ts`, `apps/tui/src/timer.rs` + `db/tasks.rs`.
+- **Task `status` is the one rule that does not match yet.** The TUI and CLI own it (`auto_status`); the web dashboard writes nothing on start/done. Tracked as its own cross-app change — see E7 below. Do not assume the three-way parity above extends to this column.
 
 ## TUI crate layout
 
@@ -117,7 +118,11 @@ hook, so the list is correct even while JIRA is slow or unreachable. The write i
 unconditional rather than "only when empty", because start is a layout change
 that owns the field — otherwise a task left at Done would still read Done while
 its timer runs. A hand-set status (Local OK, BLOCKED) is therefore owned by the
-timer too: it survives only until the next start/stop/done.
+timer too: it survives only until the next start (`21`), stop/reset (`11`), done
+(`31`), or un-done (`11`).
+
+The one asymmetry: a task already checked done keeps `31` through a stop, because
+the state after that stop is still "done". Un-checking it returns the row to `11`.
 
 `status` is `NOT NULL`, so `update_task` falls back to the stored value when the
 caller omits or blanks it; writing NULL is a constraint failure.
@@ -294,14 +299,23 @@ Branch linked via `task_integrations` (`group=git, field=branch`).
 
 ## E7 — Web dashboard parity
 
-Plan: [e7-plan.md](./e7-plan.md). TUI remains the reference; web catches up.
+Plan: [e7-plan.md](./e7-plan.md). TUI remains the reference; web has caught up on
+the daily workflow, fields, archive, and live refresh.
 
-| Already in web | Still to do |
-|----------------|-------------|
-| `?date=` load + date bar | `createTask` TUI dedup + optional `workDate` |
-| `GET /api/tasks?archived=` | `/dashboard/archive` UI + continue today |
-| PATCH extended fields | edit modal + card badges |
-| SSE `{ type: 'change' }` publish | client still listens for `tasks-changed` (never fires) |
+| Shipped | Known gap |
+|---------|-----------|
+| `?date=` load + date bar | **web writes no `status` on start/done** |
+| `createTask` TUI dedup + optional `workDate` | |
+| `POST /api/tasks { workDate }`; per-day position | |
+| Edit modal + card badges for code/status/tags | |
+| `/dashboard/archive` UI + continue today | |
+| SSE client listens for `{ type: 'change' }` | |
+
+The one row in the right column is deliberate, not an oversight: `taskService.ts`
+never moves the task's own `status`, so a task started from the web dashboard
+keeps whatever status it had. The TUI and CLI do write it (`auto_status` in
+`apps/tui/src/jira.rs`). Closing it is a cross-app behavior change, tracked
+separately rather than folded into the parity epic.
 
 Timer math stays in `packages/shared` + `taskService`. Do not re-filter `work_date` client-side.
 

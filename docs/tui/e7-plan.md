@@ -2,9 +2,12 @@
 
 **Status:** Done  
 **Epic:** [epics.md](./epics.md) E7 · **Checklist:** [tasks.md](./tasks.md)  
-**Last updated:** 2026-09-10
+**Last updated:** 2026-09-21
 
 TUI is the reference UX. This epic makes the SvelteKit dashboard match daily workflow, create/dedup rules, extended fields, archive, and live refresh. MCP stays a thin HTTP client — only optional `workDate` on create if we expose it.
+
+Every gap this plan opened with has since been closed. The waves below are kept
+as the record of how, with their status inline.
 
 ---
 
@@ -19,15 +22,24 @@ TUI is the reference UX. This epic makes the SvelteKit dashboard match daily wor
 | SSE **server** | Done — `GET /api/stream` emits `{ type: 'change', entity, taskId }`; `publish()` already fires on task / comment / integration |
 | MCP list filters | Done — `list_tasks` already forwards date/q/tag/status/done/archived |
 
-## Gaps that still fail acceptance
+## Gaps this epic opened with — all closed
 
-1. **Create ignores TUI dedup.** `createTask` always `INSERT`s for calendar today. Unique index `(user_id, work_date, label)` will throw on a same-day duplicate instead of returning the existing row. No copy of description from the most recent same-label row.
-2. **Create ignores the viewed day.** Dashboard `addTask` posts `{ label }` only. Creating while looking at yesterday still writes *today*. Position is `COUNT(*)` of all user tasks, not `MAX(position)+1` for that day (TUI).
-3. **Extended fields have no UI.** Edit modal is title / description / time. Cards don't show code, status, or tags. Local `TaskDTO` in `+page.svelte` omits the new fields.
-4. **No archive page.** `apps/web/src/routes/dashboard/archive/` does not exist. No daily ↔ archive nav.
-5. **SSE client listens for the wrong event.** Handler checks `payload.type === 'tasks-changed'`; server sends `type: 'change'`. Live refresh never runs. `docs/api.md` documents the old name.
+1. **Create ignored TUI dedup** — closed: `resolveCreate` in `taskCreate.ts` returns the existing `(user, workDate, label)` row and copies the latest non-empty description; covered by `taskCreate.test.ts`.
+2. **Create ignored the viewed day** — closed: `addTask` posts `workDate`, and position is `MAX(position)+1` per day.
+3. **Extended fields had no UI** — closed: the edit modal carries code/link/status/notes/tags, and cards show the code badge, status pill, and tag chips.
+4. **No archive page** — closed: `apps/web/src/routes/dashboard/archive/` exists with a filter bar and "Continue today".
+5. **SSE client listened for the wrong event** — closed: the handler checks `payload.type === 'change'` and `docs/api.md` documents the real payload.
 
-Known TUI/web timer mismatch (include in Wave 1, small): `resetAll()` zeros **every** task for the user. TUI `reset_all` is scoped to the viewed `work_date`. Scope web reset to the viewed day so daily totals stay comparable.
+`resetAll()` is scoped to the viewed `work_date`, matching TUI `reset_all`.
+
+## Known gap this epic does NOT close
+
+`apps/web/src/lib/server/taskService.ts` writes no `status` on start/done, so a task
+started from the web dashboard keeps whatever status it had. The TUI and CLI do
+write it (`apps/tui/src/jira.rs` `auto_status`). This is a cross-app behavior
+change, deliberately left to its own PR rather than smuggled into a parity epic —
+so "web matches TUI" is true for the daily workflow, archive, fields, and live
+refresh, and *not* yet true for the status column.
 
 Out of scope: Svelte 5 runes rewrite, JIRA/Bitbucket panels, comments UI, MCP new tools.
 
@@ -224,7 +236,7 @@ No timers start/stop on this page (TUI archive also doesn't start timers). Detai
 
 ## Wave 5 — Verify + tick docs
 
-Manual, same SQLite file (`apps/web/local.db`):
+**Done.** Manual, same SQLite file (`apps/web/local.db`):
 
 1. Same day, TUI header total vs web "Total Time" within 1s (start a timer in one, watch the other via SSE).
 2. Create in web → TUI refresh shows it; create in TUI → web SSE refresh shows it.
@@ -234,23 +246,28 @@ Manual, same SQLite file (`apps/web/local.db`):
 6. Edit code/status/notes/tags; reload; values persist.
 7. `pnpm --filter sv-task-timer test` and `pnpm --filter sv-task-timer check`.
 
-Then mark E7 Done in `epics.md` / `tasks.md` / this file.
+E7 is marked Done in `epics.md` / `tasks.md` / this file. Step 6's "status"
+means the field is editable and persists — it does not mean the web app moves
+that field on start/done; see "Known gap this epic does NOT close" above.
 
 ---
 
 ## File touch list
 
+Every path below landed. `TaskEditModal.svelte` was **not** extracted — the fields
+went inline into `dashboard/+page.svelte`, which the plan allowed for.
+
 | Path | Change |
 |------|--------|
-| `apps/web/src/lib/dates.ts` | **new** date helpers |
+| `apps/web/src/lib/dates.ts` | date helpers |
 | `apps/web/src/lib/server/taskService.ts` | dedup, workDate, per-day position, scoped resetAll |
-| `apps/web/src/lib/server/taskCreate.test.ts` | **new** vitest |
+| `apps/web/src/lib/server/taskCreate.ts` | `resolveCreate` extracted so it is testable |
+| `apps/web/src/lib/server/taskCreate.test.ts` | vitest |
 | `apps/web/src/routes/api/tasks/+server.ts` | optional `workDate` on POST |
 | `apps/web/src/routes/api/tasks/reset-all/+server.ts` | optional date |
 | `apps/web/src/routes/dashboard/+page.svelte` | SSE type, create workDate, extended UI, archive link |
-| `apps/web/src/lib/components/TaskEditModal.svelte` | **new** (or inline in page if extraction is noisy) |
-| `apps/web/src/routes/dashboard/archive/+page.svelte` | **new** |
-| `apps/web/src/routes/dashboard/archive/+page.server.ts` | **new** |
+| `apps/web/src/routes/dashboard/archive/+page.svelte` | archive UI |
+| `apps/web/src/routes/dashboard/archive/+page.server.ts` | load + URL filters |
 | `apps/web/package.json` / `vite.config.ts` | vitest |
 | `docs/api.md` | SSE payload + create `workDate` |
 | `docs/tui/tasks.md` `epics.md` `tech-spec.md` | status as waves land |
@@ -262,11 +279,9 @@ MCP: no required change. Optional later: `create_task` `date` param → `workDat
 ## Implementation order
 
 ```text
-Wave 1  createTask + tests + SSE listener + api.md
-Wave 2  viewed-day create, empty copy, Archive nav, reset-all date
-Wave 3  edit modal + card badges + optional create fields
-Wave 4  /dashboard/archive + continue today
-Wave 5  side-by-side verification, mark epic done
+Wave 1  createTask + tests + SSE listener + api.md      done
+Wave 2  viewed-day create, empty copy, Archive nav, reset-all date   done
+Wave 3  edit modal + card badges + optional create fields            done
+Wave 4  /dashboard/archive + continue today                          done
+Wave 5  side-by-side verification, mark epic done                    done
 ```
-
-Do not start Wave 4 until Wave 1 tests pass — Continue today is just `createTask`.

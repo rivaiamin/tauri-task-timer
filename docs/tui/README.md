@@ -22,8 +22,12 @@ E3 Archive view           ██████████  shipped (TUI + API; we
 E4 JIRA integration       ██████████  shipped
 E5 Git / Bitbucket        ██████████  shipped
 E6 AI agent hooks         ██████████  shipped
-E7 Web dashboard parity   ███░░░░░░░  in progress — [e7-plan.md](./e7-plan.md)
+E7 Web dashboard parity   ██████████  shipped — [e7-plan.md](./e7-plan.md)
 ```
+
+One deliberate gap remains outside every epic: the **web dashboard writes no
+`status` on start/done**, so a task started from the browser keeps its old status.
+The TUI and CLI do write it. See [tech-spec.md](./tech-spec.md) E7.
 
 ## Affected apps per epic
 
@@ -35,7 +39,7 @@ E7 Web dashboard parity   ███░░░░░░░  in progress — [e7-pl
 | E4 | ✅ | jira.ts | JIRA tools | — |
 | E5 | ✅ | Bitbucket module | optional tools | — |
 | E6 | ✅ | POST /api/session/hook | session tools | — |
-| E7 | — | dashboard daily + archive UI | optional workDate on create | — |
+| E7 | — | dashboard daily + archive UI, extended fields, SSE client | optional workDate on create | — |
 
 ## Related repo docs
 
