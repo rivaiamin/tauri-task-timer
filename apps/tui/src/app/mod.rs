@@ -82,6 +82,10 @@ pub enum Overlay {
         comments: Vec<crate::db::comments::Comment>,
         prs: Vec<crate::bitbucket::PullRequest>,
         statuses: Vec<crate::bitbucket::CommitStatus>,
+        /// Stored `task_integrations` rows — the `jira` key/status the sprint
+        /// fetch writes, and the linked `git` branch. Read from the DB rather
+        /// than re-fetched, so the detail view shows what was saved.
+        integrations: Vec<crate::db::integrations::Integration>,
     },
     /// The comment list for one task, optionally with a compose buffer open.
     Comments {
@@ -1065,10 +1069,16 @@ impl App {
         let mut created = 0u32;
         let mut updated = 0u32;
         let user_id = self.user_id.clone();
-        for (key, summary, _status) in issues {
+        for (key, summary, status) in issues {
             let label = format!("{key} {summary}");
             let task = tasks::create_task(&self.conn, &user_id, &today, label.trim(), Some(summary))?;
             db::integrations::upsert(&self.conn, task.id, "jira", "issue_key", Some(key))?;
+            // The issue's own status, kept beside the key so the detail view and
+            // the archive's integration filter can read what JIRA reported. The
+            // task's `status` column stays owned by the timer, not by a fetch.
+            if !status.is_empty() {
+                db::integrations::upsert(&self.conn, task.id, "jira", "status", Some(status))?;
+            }
             if task.description.as_deref() == Some(summary.as_str()) && !summary.is_empty() {
                 // newly created (description matched summary = no prior desc)
                 created += 1;
@@ -1197,6 +1207,7 @@ impl App {
             comments,
             prs,
             statuses,
+            integrations: db::integrations::list(&self.conn, task_id).unwrap_or_default(),
         };
     }
 
@@ -2313,6 +2324,38 @@ mod tests {
 
         assert_eq!(app.archive.tasks.len(), 1);
         assert_eq!(app.archive.tasks[0].id, a.id);
+    }
+
+    /// A sprint fetch must keep the issue's status, not just its key — that row
+    /// is what the detail view and the archive's integration filter read.
+    #[test]
+    fn ingesting_a_jira_issue_stores_its_key_and_status() {
+        let mut app = test_app();
+        let issues = vec![(
+            "US-1459".to_string(),
+            "Fix login".to_string(),
+            "In Progress".to_string(),
+        )];
+        app.ingest_jira_issues(&issues).unwrap();
+
+        let task_id: i64 = app
+            .conn
+            .query_row("SELECT id FROM tasks WHERE label LIKE 'US-1459%'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let rows = db::integrations::list(&app.conn, task_id).unwrap();
+        let value = |field: &str| {
+            rows.iter()
+                .find(|i| i.group == "jira" && i.field == field)
+                .and_then(|i| i.value.clone())
+        };
+        assert_eq!(value("issue_key").as_deref(), Some("US-1459"));
+        assert_eq!(
+            value("status").as_deref(),
+            Some("In Progress"),
+            "the fetched status must be persisted rather than discarded"
+        );
     }
 
     /// The integration filter is passed straight through to `list_archive`, and

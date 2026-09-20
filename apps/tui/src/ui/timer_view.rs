@@ -86,7 +86,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let list = List::new(items).block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
     frame.render_widget(list, body);
 
-    let hints = " a:archive  n:new  Space:start/stop  e:edit  i:detail  d:del  D:done  r:reset  R:reset all  x:export  ←/→:day  j/k:move  J/K:reorder  m:mode  Ctrl+J:jira  Ctrl+B:git  ?:help  q:quit ";
+    let hints = " a:archive  n:new  Space:start/stop  e:edit  i:detail  d:del  D:done  r:reset  R:reset all  x:export  o:jira  ←/→:day  j/k:move  J/K:reorder  m:mode  Ctrl+J:jira  Ctrl+B:git  ?:help  q:quit ";
     let (status_area, hints_area) = if app.status.is_empty() {
         (None, footer)
     } else {
@@ -156,9 +156,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
             comments,
             prs,
             statuses,
+            integrations,
         } => {
             if let Some(t) = app.selected_task() {
-                draw_detail(frame, t, comments, prs, statuses);
+                draw_detail(frame, t, comments, prs, statuses, integrations);
             }
         }
         Overlay::Comments {
@@ -499,6 +500,7 @@ pub fn draw_detail(
     comments: &[crate::db::comments::Comment],
     prs: &[crate::bitbucket::PullRequest],
     statuses: &[crate::bitbucket::CommitStatus],
+    integrations: &[crate::db::integrations::Integration],
 ) {
     let area = centered(frame.area(), 70, 22);
     frame.render_widget(Clear, area);
@@ -601,9 +603,33 @@ pub fn draw_detail(
             lines.push(Line::from(Span::raw(format!("   {} {}", s.name, s.state))));
         }
     }
+    if !integrations.is_empty() {
+        lines.push(Line::from(vec![]));
+        lines.push(Line::from(Span::styled(
+            " integrations:",
+            Style::default().fg(Color::DarkGray),
+        )));
+        for i in integrations {
+            let value = i.value.as_deref().unwrap_or("");
+            lines.push(Line::from(Span::raw(format!(
+                "   {} {}: {}",
+                i.group,
+                i.field,
+                truncate(value, 60)
+            ))));
+        }
+    }
     lines.push(Line::from(vec![]));
+    // Only advertise the handoff when there is a key to hand off, so the footer
+    // never promises a binding that would answer with "no JIRA key".
+    let jira_hint = if crate::jira::issue_key_from_task(&task.label, task.description_text()).is_some()
+    {
+        "o: open in JIRA  "
+    } else {
+        ""
+    };
     lines.push(Line::from(Span::styled(
-        " C: comments  Esc/i/q: close",
+        format!(" {jira_hint}C: comments  Esc/i/q: close"),
         Style::default().fg(Color::DarkGray),
     )));
 

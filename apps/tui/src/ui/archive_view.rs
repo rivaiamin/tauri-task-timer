@@ -114,9 +114,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
             comments,
             prs,
             statuses,
+            integrations,
         } => {
             if let Some(t) = app.focused_task() {
-                super::timer_view::draw_detail(frame, t, comments, prs, statuses);
+                super::timer_view::draw_detail(frame, t, comments, prs, statuses, integrations);
             }
         }
         Overlay::Comments {
