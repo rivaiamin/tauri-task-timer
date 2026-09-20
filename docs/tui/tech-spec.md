@@ -257,7 +257,8 @@ Chose option A: standalone `reqwest` calls from TUI. No web server dependency.
 | `search_issues` | POST JQL search, retrying `/search/jql` when the old path is gone |
 | `fetch_issue` | GET one issue by key (validated as a JIRA key first) |
 
-**TUI controls:** Ctrl+J opens JIRA menu → comment (1), transition (2), sprint sync (3).
+**TUI controls:** Ctrl+J opens JIRA menu → comment (1), transition (2), sprint picker (3).
+The picker offers unassigned (1), reporter undone (2), assignee undone (3), fetch by key (4).
 Credentials via env vars (`JIRA_SITE`, `JIRA_EMAIL`, `JIRA_TOKEN`).
 Sprint config in `config.toml` (`jira_sprint_id`) — the four modes are JQL scoped by
 sprint id, so `jira_board` is loaded but unused.
@@ -272,9 +273,12 @@ Hybrid approach: local git CLI for branch/commit info, Bitbucket REST API for PR
 | `git::commits_for_branch` | List recent commits on a branch |
 | `git::branch_ahead_behind` | Ahead/behind count vs upstream or main |
 | `bitbucket::bb_fetch` | Shared Bitbucket REST API fetcher |
-| `bitbucket::list_prs` | List PRs for a branch |
+| `bitbucket::list_prs` | List PRs for a branch (state carries `OPEN`/`MERGED`/`DECLINED`) |
+| `bitbucket::get_pr_comments` | Get the 20 newest comments on a PR |
+| `bitbucket::commit_statuses` | Build/report statuses for a commit (404 → empty) |
 
-**TUI controls:** Ctrl+B opens Git menu → link branch (1), show commits (2), PR status (3).
+**TUI controls:** Ctrl+B opens Git menu → link branch (1), show commits (2), PR status (3),
+import PR comments (4).
 Credentials via env vars (`BITBUCKET_EMAIL`, `BITBUCKET_TOKEN`).
 Workspace/repo in `config.toml` (`bitbucket_workspace`, `bitbucket_repo`).
 Repo path auto-detected from `database_path` or set via `git_repo_path`.

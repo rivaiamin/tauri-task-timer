@@ -74,7 +74,18 @@ pub enum Overlay {
     Help,
     ConfirmDelete,
     ConfirmResetAll,
-    Detail,
+    Detail {
+        comments: Vec<crate::db::comments::Comment>,
+        prs: Vec<crate::bitbucket::PullRequest>,
+        statuses: Vec<crate::bitbucket::CommitStatus>,
+    },
+    /// The comment list for one task, optionally with a compose buffer open.
+    Comments {
+        task_id: i64,
+        comments: Vec<crate::db::comments::Comment>,
+        selected: usize,
+        compose: Option<String>,
+    },
     Filter { input: ArchiveInput, buffer: String },
     Form {
         edit_id: Option<i64>,
@@ -1104,6 +1115,212 @@ impl App {
         self.overlay = Overlay::None;
     }
 
+    /// Pull the newest PR comments for a branch into `task_comments`. Capped at
+    /// three PRs and 20 comments each so one import cannot flood a task, and
+    /// deduped on (pr, summary) so re-running it does not double rows.
+    fn import_pr_comments(
+        &mut self,
+        task_id: i64,
+        branch: &str,
+        workspace: &str,
+        repo: &str,
+    ) -> Result<u32> {
+        let prs = crate::bitbucket::list_prs(workspace, repo, branch)?;
+        let existing = db::comments::list(&self.conn, task_id)?;
+        let mut imported = 0u32;
+        for pr in prs.iter().take(3) {
+            let comments = crate::bitbucket::get_pr_comments(workspace, repo, pr.id)?;
+            for c in comments {
+                let summary = c
+                    .content
+                    .as_ref()
+                    .and_then(|c| c.raw.as_deref())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if summary.is_empty() {
+                    continue;
+                }
+                let pr_id = pr.id.to_string();
+                let seen = existing.iter().any(|e| {
+                    e.pr.as_deref() == Some(pr_id.as_str())
+                        && e.summary.as_deref() == Some(summary.as_str())
+                });
+                if seen {
+                    continue;
+                }
+                let author = c
+                    .user
+                    .as_ref()
+                    .and_then(|u| u.display_name.as_deref())
+                    .unwrap_or("unknown");
+                let subject = format!("PR #{} {author}", pr.id);
+                db::comments::add(
+                    &self.conn,
+                    task_id,
+                    Some(&subject),
+                    Some(&summary),
+                    Some(branch),
+                    Some(&pr_id),
+                )?;
+                imported += 1;
+            }
+        }
+        Ok(imported)
+    }
+
+    /// Build the detail overlay: stored comments plus whatever Bitbucket and git
+    /// can say about the selected task's branch. Network failures degrade to an
+    /// empty section and a toast — the detail view still opens.
+    fn open_detail(&mut self) {
+        let Some(task) = self.focused_task().map(|t| (t.id, t.label.clone())) else {
+            return;
+        };
+        let (task_id, _) = task;
+        let comments = db::comments::list(&self.conn, task_id).unwrap_or_default();
+        let branch = self.git_task_branch().unwrap_or_default();
+        let mut prs = Vec::new();
+        let mut statuses = Vec::new();
+        if !branch.is_empty() {
+            if let (Some(ws), Some(repo_name)) =
+                (self.bitbucket_workspace.clone(), self.bitbucket_repo.clone())
+            {
+                match crate::bitbucket::list_prs(&ws, &repo_name, &branch) {
+                    Ok(list) => prs = list,
+                    Err(e) => self.set_status(format!("bitbucket: {e}")),
+                }
+                if let Some(repo) = self.git_repo_path.clone() {
+                    if let Ok(commits) = git::commits_for_branch(&repo, &branch, 1) {
+                        if let Some(head) = commits.first() {
+                            match crate::bitbucket::commit_statuses(&ws, &repo_name, &head.hash) {
+                                Ok(s) => statuses = s,
+                                Err(e) => self.set_status(format!("bitbucket: {e}")),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.overlay = Overlay::Detail {
+            comments,
+            prs,
+            statuses,
+        };
+    }
+
+    /// Open the comment list for the selected task.
+    fn open_comments(&mut self) {
+        let Some(task_id) = self.focused_task().map(|t| t.id) else {
+            return;
+        };
+        let comments = match db::comments::list(&self.conn, task_id) {
+            Ok(c) => c,
+            Err(e) => {
+                self.err_status(e);
+                return;
+            }
+        };
+        self.overlay = Overlay::Comments {
+            task_id,
+            comments,
+            selected: 0,
+            compose: None,
+        };
+    }
+
+    /// Keys for the comment list and its compose buffer.
+    fn handle_comments_key(&mut self, key: KeyEvent) -> Result<()> {
+        // Take the overlay out: the branches below call `&mut self` helpers, so
+        // it cannot stay borrowed across them.
+        let taken = std::mem::replace(&mut self.overlay, Overlay::None);
+        let Overlay::Comments {
+            task_id,
+            comments,
+            mut selected,
+            mut compose,
+        } = taken
+        else {
+            self.overlay = taken;
+            return Ok(());
+        };
+        let restore = |comments: Vec<db::comments::Comment>, selected, compose| Overlay::Comments {
+            task_id,
+            comments,
+            selected,
+            compose,
+        };
+        if let Some(buffer) = compose.as_mut() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.overlay = restore(comments, selected, None);
+                }
+                KeyCode::Backspace => {
+                    buffer.pop();
+                    self.overlay = restore(comments, selected, compose);
+                }
+                KeyCode::Char(c)
+                    if key.modifiers == KeyModifiers::NONE
+                        || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    buffer.push(c);
+                    self.overlay = restore(comments, selected, compose);
+                }
+                KeyCode::Enter => {
+                    let text = buffer.trim().to_string();
+                    if text.is_empty() {
+                        self.set_status("comment is empty");
+                        self.overlay = restore(comments, selected, compose);
+                        return Ok(());
+                    }
+                    match db::comments::add(
+                        &self.conn,
+                        task_id,
+                        Some("comment"),
+                        Some(&text),
+                        None,
+                        None,
+                    ) {
+                        Ok(_) => {
+                            self.set_status("comment added");
+                            let refreshed = db::comments::list(&self.conn, task_id)?;
+                            self.overlay = restore(refreshed, 0, None);
+                        }
+                        Err(e) => {
+                            self.err_status(e);
+                            self.overlay = restore(comments, selected, compose);
+                        }
+                    }
+                }
+                _ => {
+                    self.overlay = restore(comments, selected, compose);
+                }
+            }
+            return Ok(());
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('C') => {
+                // self.overlay already Overlay::None
+            }
+            KeyCode::Char('n') => {
+                self.overlay = restore(comments, selected, Some(String::new()));
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !comments.is_empty() {
+                    selected = (selected + 1).min(comments.len() - 1);
+                }
+                self.overlay = restore(comments, selected, None);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                selected = selected.saturating_sub(1);
+                self.overlay = restore(comments, selected, None);
+            }
+            _ => {
+                self.overlay = restore(comments, selected, None);
+            }
+        }
+        Ok(())
+    }
+
     fn open_git_menu(&mut self) {
         if self.git_repo_path.is_none() {
             self.set_status("git repo not found (set git_repo_path in config)");
@@ -1209,6 +1426,32 @@ impl App {
                             self.overlay = Overlay::None;
                         }
                     }
+                }
+                KeyCode::Char('4') => {
+                    // Import PR comments into task_comments.
+                    let Some(task_id) = self.selected_task().map(|t| t.id) else {
+                        self.set_status("no task selected");
+                        self.overlay = Overlay::None;
+                        return Ok(false);
+                    };
+                    let branch = self.git_task_branch().unwrap_or_default();
+                    if branch.is_empty() {
+                        self.set_status("no branch linked — use option 1 first");
+                        self.overlay = Overlay::None;
+                        return Ok(false);
+                    }
+                    let (Some(ws), Some(repo_name)) =
+                        (self.bitbucket_workspace.clone(), self.bitbucket_repo.clone())
+                    else {
+                        self.set_status("set bitbucket_workspace + bitbucket_repo in config");
+                        self.overlay = Overlay::None;
+                        return Ok(false);
+                    };
+                    match self.import_pr_comments(task_id, &branch, &ws, &repo_name) {
+                        Ok(n) => self.set_status(format!("imported {n} comments")),
+                        Err(e) => self.set_status(format!("bitbucket: {e}")),
+                    }
+                    self.overlay = Overlay::None;
                 }
                 _ => {}
             },
@@ -1475,10 +1718,19 @@ impl App {
                 }
                 return Ok(false);
             }
-            Overlay::Detail => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('q')) {
-                    self.overlay = Overlay::None;
+            Overlay::Detail { .. } => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('q') => {
+                        self.overlay = Overlay::None;
+                    }
+                    // The detail footer advertises it, so `C` works from here too.
+                    KeyCode::Char('C') => self.open_comments(),
+                    _ => {}
                 }
+                return Ok(false);
+            }
+            Overlay::Comments { .. } => {
+                self.handle_comments_key(key)?;
                 return Ok(false);
             }
             Overlay::Jira { .. } => return self.handle_jira_key(key),
@@ -1505,7 +1757,10 @@ impl App {
                 KeyCode::Char('t') => self.open_archive_filter(ArchiveInput::Tag),
                 KeyCode::Char('c') | KeyCode::Enter => self.continue_today()?,
                 KeyCode::Char('i') if self.archive_selected_task().is_some() => {
-                    self.overlay = Overlay::Detail;
+                    self.open_detail();
+                }
+                KeyCode::Char('C') if self.archive_selected_task().is_some() => {
+                    self.open_comments();
                 }
                 _ => {}
             }
@@ -1538,7 +1793,12 @@ impl App {
             KeyCode::Char('e') => self.open_edit(),
             KeyCode::Char('i') => {
                 if self.selected_task().is_some() {
-                    self.overlay = Overlay::Detail;
+                    self.open_detail();
+                }
+            }
+            KeyCode::Char('C') => {
+                if self.selected_task().is_some() {
+                    self.open_comments();
                 }
             }
             KeyCode::Char('d') => {
@@ -1907,5 +2167,47 @@ mod tests {
         assert_eq!(stored.status, "21");
         assert_eq!(stored.tags.as_deref(), Some("backend"));
         assert!(!stored.is_archived);
+    }
+
+    /// `C` opens the list and `n` writes a row through to `task_comments`.
+    #[test]
+    fn composing_a_comment_writes_it_to_the_task() {
+        let mut app = test_app();
+        let task = tasks::create_task(&app.conn, "u1", "2026-09-17", "US-9", None).unwrap();
+        app.reload().unwrap();
+        app.selected = 0;
+
+        app.open_comments();
+        app.handle_comments_key(key(KeyCode::Char('n'))).unwrap();
+        for c in "blocked on review".chars() {
+            app.handle_comments_key(key(KeyCode::Char(c))).unwrap();
+        }
+        app.handle_comments_key(key(KeyCode::Enter)).unwrap();
+
+        let rows = crate::db::comments::list(&app.conn, task.id).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].summary.as_deref(), Some("blocked on review"));
+        assert_eq!(rows[0].subject.as_deref(), Some("comment"));
+        // The list is showing again with the new row.
+        let Overlay::Comments { compose, .. } = &app.overlay else {
+            panic!("expected the comment list");
+        };
+        assert!(compose.is_none());
+    }
+
+    /// Esc backs out of compose without writing, then out of the list.
+    #[test]
+    fn escaping_compose_writes_nothing() {
+        let mut app = test_app();
+        let task = tasks::create_task(&app.conn, "u1", "2026-09-17", "US-9", None).unwrap();
+        app.reload().unwrap();
+        app.open_comments();
+        app.handle_comments_key(key(KeyCode::Char('n'))).unwrap();
+        app.handle_comments_key(key(KeyCode::Char('x'))).unwrap();
+        app.handle_comments_key(key(KeyCode::Esc)).unwrap();
+        assert!(crate::db::comments::list(&app.conn, task.id).unwrap().is_empty());
+        assert!(matches!(app.overlay, Overlay::Comments { .. }));
+        app.handle_comments_key(key(KeyCode::Esc)).unwrap();
+        assert!(matches!(app.overlay, Overlay::None));
     }
 }
