@@ -95,6 +95,12 @@ pub fn list_tasks(conn: &Connection, user_id: &str, work_date: &str) -> Result<V
 pub struct ArchiveFilter {
     pub q: Option<String>,
     pub tag: Option<String>,
+    /// A resolved status catalog id, not a label: the caller maps a typed name
+    /// through the catalog before it gets here.
+    pub status: Option<String>,
+    /// Case-insensitive substring matched against any integration group, field,
+    /// or value on the task.
+    pub integration: Option<String>,
 }
 
 /// Backlog of unfinished tasks across days: not done/archived/deleted/completed/cancelled.
@@ -122,6 +128,30 @@ pub fn list_archive(
     if let Some(tag) = filter.tag.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
         sql.push_str(&format!(" AND COALESCE(tags, '') LIKE ?{next_idx} COLLATE NOCASE"));
         params_vec.push(format!("%{tag}%"));
+        next_idx += 1;
+    }
+    if let Some(status) = filter.status.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
+        sql.push_str(&format!(" AND status = ?{next_idx} COLLATE NOCASE"));
+        params_vec.push(status.to_string());
+        next_idx += 1;
+    }
+    if let Some(int) = filter
+        .integration
+        .as_deref()
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+    {
+        // One bound value, three comparisons — a task matches when any of the
+        // integration's group/field/value carries the substring, and EXISTS
+        // keeps a multi-match task from being listed twice.
+        sql.push_str(&format!(
+            " AND EXISTS (SELECT 1 FROM task_integrations ti WHERE ti.task_id = tasks.id
+               AND (ti.\"group\" LIKE ?{next_idx} COLLATE NOCASE
+                 OR ti.field LIKE ?{next_idx} COLLATE NOCASE
+                 OR COALESCE(ti.value, '') LIKE ?{next_idx} COLLATE NOCASE))"
+        ));
+        params_vec.push(format!("%{int}%"));
+        next_idx += 1;
     }
     let _ = next_idx;
     sql.push_str(" ORDER BY work_date DESC, position ASC, id ASC");
@@ -586,7 +616,7 @@ mod tests {
             "u1",
             &ArchiveFilter {
                 q: Some("login".into()),
-                tag: None,
+                ..Default::default()
             },
         )
         .unwrap();
@@ -608,8 +638,71 @@ mod tests {
             &conn,
             "u1",
             &ArchiveFilter {
-                q: None,
                 tag: Some("backend".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, a.id);
+    }
+
+    #[test]
+    fn archive_filter_by_status_matches_the_catalog_id() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-08-28", "A", None).unwrap();
+        let _b = create_task(&conn, "u1", "2026-08-28", "B", None).unwrap();
+        conn.execute("UPDATE tasks SET status = '21' WHERE id = ?1", [a.id])
+            .unwrap();
+
+        let rows = list_archive(
+            &conn,
+            "u1",
+            &ArchiveFilter {
+                status: Some("21".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, a.id);
+    }
+
+    #[test]
+    fn archive_filter_by_integration_matches_any_column_without_duplicating() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-08-28", "A", None).unwrap();
+        let _b = create_task(&conn, "u1", "2026-08-28", "B", None).unwrap();
+        // Two matching rows for the same task: EXISTS must still list it once.
+        crate::db::integrations::upsert(&conn, a.id, "jira", "issue_key", Some("US-1")).unwrap();
+        crate::db::integrations::upsert(&conn, a.id, "jira", "sprint", Some("99")).unwrap();
+
+        let rows = list_archive(
+            &conn,
+            "u1",
+            &ArchiveFilter {
+                integration: Some("jira".into()),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].id, a.id);
+    }
+
+    #[test]
+    fn archive_filter_by_integration_matches_the_value_too() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-08-28", "A", None).unwrap();
+        let _b = create_task(&conn, "u1", "2026-08-28", "B", None).unwrap();
+        crate::db::integrations::upsert(&conn, a.id, "git", "branch", Some("US-1459-fix")).unwrap();
+
+        let rows = list_archive(
+            &conn,
+            "u1",
+            &ArchiveFilter {
+                integration: Some("1459".into()),
+                ..Default::default()
             },
         )
         .unwrap();

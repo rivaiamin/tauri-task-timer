@@ -42,11 +42,15 @@ pub enum AppMode {
 pub enum ArchiveInput {
     Label,
     Tag,
+    Status,
+    Integration,
 }
 
 pub struct ArchiveState {
     pub filter_q: Option<String>,
     pub filter_tag: Option<String>,
+    pub filter_status: Option<String>,
+    pub filter_integration: Option<String>,
     pub tasks: Vec<Task>,
     pub selected: usize,
 }
@@ -176,6 +180,8 @@ impl App {
             archive: ArchiveState {
                 filter_q: None,
                 filter_tag: None,
+                filter_status: None,
+                filter_integration: None,
                 tasks: Vec::new(),
                 selected: 0,
             },
@@ -246,9 +252,20 @@ impl App {
     }
 
     fn reload_archive(&mut self) -> Result<()> {
+        // The status filter holds a catalog id: typing "In Progress" resolves to
+        // "21" here so the query compares ids rather than labels.
+        let status = self
+            .archive
+            .filter_status
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| jira::resolve_status_id(s).unwrap_or(s).to_string());
         let filter = tasks::ArchiveFilter {
             q: self.archive.filter_q.clone(),
             tag: self.archive.filter_tag.clone(),
+            status,
+            integration: self.archive.filter_integration.clone(),
         };
         self.archive.tasks = tasks::list_archive(&self.conn, &self.user_id, &filter)?;
         if self.archive.selected >= self.archive.tasks.len() && !self.archive.tasks.is_empty() {
@@ -276,6 +293,10 @@ impl App {
         let current = match input {
             ArchiveInput::Label => self.archive.filter_q.clone().unwrap_or_default(),
             ArchiveInput::Tag => self.archive.filter_tag.clone().unwrap_or_default(),
+            ArchiveInput::Status => self.archive.filter_status.clone().unwrap_or_default(),
+            ArchiveInput::Integration => {
+                self.archive.filter_integration.clone().unwrap_or_default()
+            }
         };
         self.overlay = Overlay::Filter { input, buffer: current };
     }
@@ -782,6 +803,8 @@ impl App {
                 match input {
                     ArchiveInput::Label => self.archive.filter_q = opt,
                     ArchiveInput::Tag => self.archive.filter_tag = opt,
+                    ArchiveInput::Status => self.archive.filter_status = opt,
+                    ArchiveInput::Integration => self.archive.filter_integration = opt,
                 }
                 self.archive.selected = 0;
                 self.overlay = Overlay::None;
@@ -1755,6 +1778,8 @@ impl App {
                 }
                 KeyCode::Char('/') => self.open_archive_filter(ArchiveInput::Label),
                 KeyCode::Char('t') => self.open_archive_filter(ArchiveInput::Tag),
+                KeyCode::Char('s') => self.open_archive_filter(ArchiveInput::Status),
+                KeyCode::Char('g') => self.open_archive_filter(ArchiveInput::Integration),
                 KeyCode::Char('c') | KeyCode::Enter => self.continue_today()?,
                 KeyCode::Char('i') if self.archive_selected_task().is_some() => {
                     self.open_detail();
@@ -2209,5 +2234,45 @@ mod tests {
         assert!(matches!(app.overlay, Overlay::Comments { .. }));
         app.handle_comments_key(key(KeyCode::Esc)).unwrap();
         assert!(matches!(app.overlay, Overlay::None));
+    }
+
+    /// The archive status filter takes what the operator types and stores the
+    /// catalog id, so a typed name filters the same rows as the id.
+    #[test]
+    fn the_archive_status_filter_resolves_a_typed_name() {
+        let mut app = test_app();
+        let a = tasks::create_task(&app.conn, "u1", "2026-09-16", "US-1", None).unwrap();
+        tasks::create_task(&app.conn, "u1", "2026-09-16", "US-2", None).unwrap();
+        app.conn
+            .execute("UPDATE tasks SET status = '21' WHERE id = ?1", [a.id])
+            .unwrap();
+        app.mode = AppMode::Archive;
+        app.archive.filter_status = Some("In Progress".into());
+        app.reload_archive().unwrap();
+
+        assert_eq!(app.archive.tasks.len(), 1);
+        assert_eq!(app.archive.tasks[0].id, a.id);
+    }
+
+    /// The integration filter is passed straight through to `list_archive`, and
+    /// a task matched by two integration rows is still listed once.
+    #[test]
+    fn the_archive_integration_filter_reaches_the_query() {
+        let mut app = test_app();
+        let a = tasks::create_task(&app.conn, "u1", "2026-09-16", "US-1", None).unwrap();
+        tasks::create_task(&app.conn, "u1", "2026-09-16", "US-2", None).unwrap();
+        db::integrations::upsert(&app.conn, a.id, "jira", "issue_key", Some("US-1459")).unwrap();
+        db::integrations::upsert(&app.conn, a.id, "jira", "sprint", Some("99")).unwrap();
+        app.mode = AppMode::Archive;
+        app.archive.filter_integration = Some("jira".into());
+        app.reload_archive().unwrap();
+
+        assert_eq!(app.archive.tasks.len(), 1, "two matching rows must not duplicate the task");
+        assert_eq!(app.archive.tasks[0].id, a.id);
+
+        // A value-only match works too.
+        app.archive.filter_integration = Some("1459".into());
+        app.reload_archive().unwrap();
+        assert_eq!(app.archive.tasks.len(), 1);
     }
 }

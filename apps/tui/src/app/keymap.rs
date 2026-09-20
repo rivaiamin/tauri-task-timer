@@ -19,6 +19,8 @@ pub const HELP: &[(&str, &str)] = &[
     ("a", "toggle daily \u{2194} archive"),
     ("/", "filter archive by label"),
     ("t", "filter archive by tag"),
+    ("s", "filter archive by status (id or name)"),
+    ("g", "filter archive by integration substring"),
     ("c", "continue archive task today"),
     ("q", "quit"),
     ("Ctrl+J", "JIRA menu (comment, transition, sprint picker)"),

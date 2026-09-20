@@ -14,9 +14,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let running = app.running_label().unwrap_or("—");
     let title = format!(
-        " Archive ─ filters q={} tag={} ─ {} results ",
+        " Archive ─ filters q={} tag={} status={} int={} ─ {} results ",
         display_filter(&app.archive.filter_q),
         display_filter(&app.archive.filter_tag),
+        display_filter(&app.archive.filter_status),
+        display_filter(&app.archive.filter_integration),
         app.archive.tasks.len()
     );
     let head = Paragraph::new(vec![Line::from(vec![
@@ -29,9 +31,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(head, header);
 
     let filter_bar = format!(
-        " /:filter label  t:filter tag  c:continue today  a:back to daily  (active: q={} tag={})",
+        " /:filter label  t:filter tag  s:filter status  g:filter integration  c:continue today  a:back to daily  (active: q={} tag={} status={} int={})",
         display_filter(&app.archive.filter_q),
         display_filter(&app.archive.filter_tag),
+        display_filter(&app.archive.filter_status),
+        display_filter(&app.archive.filter_integration),
     );
 
     let chunks = Layout::default()
@@ -80,7 +84,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let list = List::new(items).block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
     frame.render_widget(list, chunks[1]);
 
-    let hints = " a:daily  c:continue today  /:filter  t:tag  j/k:move  i:detail  ?:help  q:quit ";
+    let hints = " a:daily  c:continue today  /:filter  t:tag  s:status  g:integration  j/k:move  i:detail  C:comments  ?:help  q:quit ";
     let (status_area, hints_area) = if app.status.is_empty() {
         (None, footer)
     } else {
@@ -177,6 +181,8 @@ fn draw_filter(frame: &mut Frame, input: &ArchiveInput, buffer: &str) {
     let title = match input {
         ArchiveInput::Label => " filter: label substring ",
         ArchiveInput::Tag => " filter: tag substring ",
+        ArchiveInput::Status => " filter: status (id or name) ",
+        ArchiveInput::Integration => " filter: integration substring ",
     };
     let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(area);
