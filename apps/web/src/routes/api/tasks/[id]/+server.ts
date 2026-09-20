@@ -1,7 +1,7 @@
 import { json, error, type RequestHandler } from '@sveltejs/kit';
 import { z } from 'zod';
 import { resolveActor, requireScope } from '$lib/server/actor';
-import { updateTask, deleteTask } from '$lib/server/taskService';
+import { updateTask, deleteTask, LabelConflictError } from '$lib/server/taskService';
 
 const patchSchema = z
   .object({
@@ -39,23 +39,36 @@ export const PATCH: RequestHandler = async (event) => {
   const parsed = patchSchema.safeParse(await event.request.json().catch(() => null));
   if (!parsed.success) throw error(400, parsed.error.issues.map((i) => i.message).join('; '));
 
-  const task = updateTask(actor.userId, id, {
-    label: parsed.data.label,
-    description: parsed.data.description,
-    elapsedSeconds: parsed.data.elapsed_seconds,
-    done: parsed.data.done,
-    code: parsed.data.code,
-    link: parsed.data.link,
-    status: parsed.data.status,
-    notes: parsed.data.notes,
-    tags: parsed.data.tags,
-    isCompleted: parsed.data.is_completed,
-    isCancelled: parsed.data.is_cancelled,
-    isDeleted: parsed.data.is_deleted,
-    isArchived: parsed.data.is_archived,
-    isPinned: parsed.data.is_pinned,
-    isImportant: parsed.data.is_important
-  }, parsed.data.workDate);
+  // A rename onto an existing label is a conflict, not a server fault: answer 409
+  // with the label so the caller can pick another name.
+  let task;
+  try {
+    task = updateTask(
+      actor.userId,
+      id,
+      {
+        label: parsed.data.label,
+        description: parsed.data.description,
+        elapsedSeconds: parsed.data.elapsed_seconds,
+        done: parsed.data.done,
+        code: parsed.data.code,
+        link: parsed.data.link,
+        status: parsed.data.status,
+        notes: parsed.data.notes,
+        tags: parsed.data.tags,
+        isCompleted: parsed.data.is_completed,
+        isCancelled: parsed.data.is_cancelled,
+        isDeleted: parsed.data.is_deleted,
+        isArchived: parsed.data.is_archived,
+        isPinned: parsed.data.is_pinned,
+        isImportant: parsed.data.is_important
+      },
+      parsed.data.workDate
+    );
+  } catch (err) {
+    if (err instanceof LabelConflictError) throw error(409, err.message);
+    throw err;
+  }
   if (!task) throw error(404, 'Task not found');
   return json(task);
 };

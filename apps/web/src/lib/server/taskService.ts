@@ -533,6 +533,18 @@ export interface TaskUpdate {
 }
 
 /**
+ * Renaming a task to a label the same user already has. The identity's unique
+ * index would reject it anyway; naming the case lets the REST layer answer with
+ * a conflict instead of surfacing a raw driver error as a 500.
+ */
+export class LabelConflictError extends Error {
+  constructor(readonly label: string) {
+    super(`a task labelled "${label}" already exists`);
+    this.name = 'LabelConflictError';
+  }
+}
+
+/**
  * Split an update by where the field lives: label/description/code/link/notes/
  * tags are the identity (shared by every day), everything else is the day row
  * for `workDate` (default today).
@@ -606,6 +618,15 @@ export function updateTask(
   }
 
   const now = new Date();
+  // Renaming a task to a label the user already has violates `idx_tasks_user_label`.
+  // Catch it here so the caller gets a nameable conflict instead of a raw 500 from
+  // the driver, and check before either write so a rejected rename changes nothing.
+  if (identity.label !== undefined && identity.label !== task.label) {
+    const clash = findIdentity(db, userId, identity.label);
+    if (clash && clash.id !== taskId) {
+      throw new LabelConflictError(identity.label);
+    }
+  }
   if (Object.keys(identity).length > 0) {
     db.update(tasks)
       .set({ ...identity, updatedAt: now })

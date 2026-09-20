@@ -200,3 +200,45 @@ describe('task-level records are not duplicated per day', () => {
 		expect(svc.listArchive(USER, {}).tasks.filter((t) => t.label === 'GONE-1')).toHaveLength(0);
 	});
 });
+
+describe('renaming onto a label the user already has', () => {
+	it('is refused with a nameable conflict rather than a driver error', async () => {
+		await work('CLASH-A', [[DAY1, 60]]);
+		const b = await work('CLASH-B', [[DAY1, 60]]);
+
+		// The identity's unique index would reject this; the service must say so
+		// itself, because the raw driver error would reach the client as a 500.
+		expect(() => svc.updateTask(USER, b, { label: 'CLASH-A' }, DAY1)).toThrow(
+			svc.LabelConflictError
+		);
+
+		// And the refused rename must not have written anything.
+		expect(
+			dbmod.db.select().from(schema.tasks).where(eq(schema.tasks.id, b)).get()!.label
+		).toBe('CLASH-B');
+	});
+
+	it('still allows renaming to a label nobody has, and to its own label', async () => {
+		const a = await work('RENAME-1', [[DAY1, 60]]);
+		expect(svc.updateTask(USER, a, { label: 'RENAME-2' }, DAY1)!.label).toBe('RENAME-2');
+		// Renaming to the same label it already holds is not a conflict with itself.
+		expect(svc.updateTask(USER, a, { label: 'RENAME-2' }, DAY1)!.label).toBe('RENAME-2');
+	});
+
+	it('lets a different user hold the same label', async () => {
+		dbmod.db
+			.insert(schema.users)
+			.values({ id: 'u-other', email: 'other@test.com', passwordHash: 'x', createdAt: new Date() })
+			.run();
+		await work('SHARED-1', [[DAY1, 60]]);
+		const theirs = await svc.createTask('u-other', {
+			label: 'SHARED-1',
+			description: null,
+			workDate: DAY1
+		});
+		// The unique index is per user, so the other user's task is its own.
+		expect(svc.updateTask('u-other', theirs.id, { label: 'SHARED-1' }, DAY1)!.label).toBe(
+			'SHARED-1'
+		);
+	});
+});
