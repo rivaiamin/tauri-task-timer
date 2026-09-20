@@ -156,17 +156,17 @@ pub fn commit_statuses(workspace: &str, repo: &str, commit: &str) -> Result<Vec<
         .unwrap_or_default();
     Ok(values
         .iter()
-        .filter_map(|v| {
+        .map(|v| {
             let name = v
                 .get("name")
                 .or_else(|| v.get("key"))
                 .and_then(|n| n.as_str())
                 .unwrap_or("status");
             let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("UNKNOWN");
-            Some(CommitStatus {
+            CommitStatus {
                 name: name.to_string(),
                 state: state.to_string(),
-            })
+            }
         })
         .collect())
 }
