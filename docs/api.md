@@ -46,7 +46,7 @@ key cannot mint or list other keys.
   "description": null,
   "position": 0,
   "isRunning": true,
-  "done": false,                // marked finished (moves the JIRA issue to Cek lokal)
+  "done": false,                // marked finished (moves the JIRA issue to Cek di Local)
   "startTime": 1784354591461,   // epoch ms of the current run, or null
   "elapsedSeconds": 120,        // accumulated (saved) seconds
   "currentElapsedSeconds": 135  // accumulated + live time while running
@@ -129,7 +129,7 @@ key field.
 | focus-mode **switch** (start B, auto-stops A) | A → **To Do** + worklog for A's run; A's `status` → **To Do** |
 | agent hook pause / session end | worklog + **To Do** for every stopped task; each `status` → **To Do** |
 | **reset** / **reset all** | stops the timer; each `status` → **To Do** |
-| mark **`done`** (PATCH `{done:true}`) | stops any live run + final worklog, issue → **Cek lokal**; the task's own `status` → **Done** |
+| mark **`done`** (PATCH `{done:true}`) | stops any live run + final worklog, issue → **Cek di Local**; the task's own `status` → **Done** |
 | un-mark **`done`** | issue untouched; the task's own `status` → **To Do** |
 
 A stopped task only goes back to **To Do** when it is *not* checked done. Checking
@@ -140,8 +140,11 @@ The task's own `status` column follows the same events, so the list shows what t
 timer is doing without an edit: **start** writes In Progress, **stop**/reset writes
 To Do, and **done** writes Done (un-done returns to To Do). Local state is written
 before the JIRA call, so the list stays correct while JIRA is slow or unreachable.
-Both the TUI and the CLI write it; the TUI also picks it from the JIRA catalog in
-the edit form (`e`, then the status field) rather than typing it.
+All three clients write it — the TUI and CLI via `auto_status`
+(`apps/tui/src/jira.rs`), the web dashboard via `autoStatus`
+(`apps/web/src/lib/server/taskStatus.ts`). An explicit `status` in a PATCH wins
+over the automatic write, matching the TUI's edit form, which picks a status from
+the JIRA catalog (`e`, then the status field) and is not auto-corrected.
 
 Details:
 

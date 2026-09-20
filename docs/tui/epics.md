@@ -170,10 +170,11 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 **Goal:** Web dashboard matches TUI daily workflow.
 
-**Known gap, deliberately excluded:** the web dashboard writes no task `status` on
+**Known gap, since closed:** the web dashboard writes no task `status` on
 start/done, so a task started in the browser keeps its old status while the TUI
-would move it to In Progress. Closing that is a cross-app behavior change tracked
-as its own work — see [tech-spec.md](./tech-spec.md) E7.
+would move it to In Progress. Closed by `apps/web/src/lib/server/taskStatus.ts`
+(`autoStatus`, a port of the TUI's `auto_status`) — see
+[tech-spec.md](./tech-spec.md) E7.
 
 ### Tasks
 

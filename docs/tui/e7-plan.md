@@ -32,14 +32,19 @@ as the record of how, with their status inline.
 
 `resetAll()` is scoped to the viewed `work_date`, matching TUI `reset_all`.
 
-## Known gap this epic does NOT close
+## Known gap this epic does NOT close — since closed
 
-`apps/web/src/lib/server/taskService.ts` writes no `status` on start/done, so a task
-started from the web dashboard keeps whatever status it had. The TUI and CLI do
-write it (`apps/tui/src/jira.rs` `auto_status`). This is a cross-app behavior
-change, deliberately left to its own PR rather than smuggled into a parity epic —
-so "web matches TUI" is true for the daily workflow, archive, fields, and live
-refresh, and *not* yet true for the status column.
+`apps/web/src/lib/server/taskService.ts` wrote no `status` on start/done, so a task
+started from the web dashboard kept whatever status it had. The TUI and CLI did
+write it (`apps/tui/src/jira.rs` `auto_status`). This was a cross-app behavior
+change, deliberately left out of the parity epic.
+
+**Closed in a follow-up.** `apps/web/src/lib/server/taskStatus.ts` ports
+`auto_status`, wired into start (including the focus-switch victim), stop, reset,
+reset-all, and the done toggle. `taskStatus.test.ts` mirrors the TUI oracle, and
+the lifecycle was verified end-to-end over the REST API. The status column now
+matches the TUI; an explicit `status` in a PATCH still wins over the automatic
+write.
 
 Out of scope: Svelte 5 runes rewrite, JIRA/Bitbucket panels, comments UI, MCP new tools.
 

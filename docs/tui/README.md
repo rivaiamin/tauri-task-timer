@@ -25,9 +25,8 @@ E6 AI agent hooks         ██████████  shipped
 E7 Web dashboard parity   ██████████  shipped — [e7-plan.md](./e7-plan.md)
 ```
 
-One deliberate gap remains outside every epic: the **web dashboard writes no
-`status` on start/done**, so a task started from the browser keeps its old status.
-The TUI and CLI do write it. See [tech-spec.md](./tech-spec.md) E7.
+All epics shipped. The web dashboard writes the task `status` on start/stop/reset/
+done via `autoStatus`, matching the TUI — see [tech-spec.md](./tech-spec.md) E7.
 
 ## Affected apps per epic
 

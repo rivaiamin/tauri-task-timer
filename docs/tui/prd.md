@@ -166,9 +166,10 @@ Catch-up epic so web is not left behind TUI. Implementation: [e7-plan.md](./e7-p
 | Archive / backlog | Shipped — `/dashboard/archive` with filters + continue today |
 | SSE | Shipped — server emits `change`; dashboard listens for `change` |
 
-**Known gap:** `apps/web/src/lib/server/taskService.ts` writes no `status` on
-start/done, so the web dashboard's task status is stale where the TUI's is not.
-Tracked as its own change, not part of this epic.
+**Status column:** closed. `apps/web/src/lib/server/taskStatus.ts` (`autoStatus`, a
+port of the TUI's `auto_status`) moves the task's own `status` on start, stop,
+reset, and the done toggle, so the web dashboard now shows In Progress for a
+running task exactly as the TUI does. An explicit `status` in a PATCH still wins.
 
 ---
 

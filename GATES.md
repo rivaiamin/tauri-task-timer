@@ -1,14 +1,16 @@
 # Gates: resolve the two open defects left after the status fix
 
-OWNS: GATES.md, apps/tui/src/bitbucket.rs, scripts/verify-jira-stop.mjs, scripts/verify-clippy-clean.mjs
+OWNS: GATES.md, apps/tui/src/bitbucket.rs, scripts/verify-jira-stop.mjs, scripts/verify-clippy-clean.mjs, apps/web/src/lib/server/taskStatus.ts, apps/web/src/lib/server/taskStatus.test.ts, apps/web/src/lib/server/taskService.status.test.ts, scripts/verify-web-status.mjs
 
 Scope: `cargo clippy -p task-timer-tui --all-targets --all-features -- -D warnings`
 exits zero with no warning, `node scripts/verify-jira-stop.mjs --paths` passes and
-additionally proves every stop path writes local status, and the status/JIRA
+additionally proves every stop path writes local status, the status/JIRA
 behavioral oracles that the previous commit touched still pass with their
-negative controls. One of the two defects was introduced earlier in this branch;
-the other is pre-existing on `main`. Both are described below rather than
-assumed, because the difference decides who broke what.
+negative controls, and the web dashboard now moves a task's own `status` on every
+timer layout change (G9/G10), closing the gap the parity epic left open. One of
+the two defects was introduced earlier in this branch; the other is pre-existing
+on `main`. Both are described below rather than assumed, because the difference
+decides who broke what.
 
 Context for the two defects, recorded so the ledger is not read as a plan to
 weaken an oracle:
@@ -49,17 +51,17 @@ weaken an oracle:
 - [x] G4: the TUI crate builds and every unit test passes
   CHECK: cargo test -p task-timer-tui
   EXPECT: test result: ok
-  EVIDENCE: automatic-evidence=v1; definition-sha256=2e6c8eaa72a84af3d130ed3274aa97333a8d57496a1f1e5e9ab9131028d00c8d; exit=0; EXPECT=matched; output-sha256=ecea98c3b3b2d5899b222a759ce50532ba96cae44b37dda0f0a46749c3934566; output-bytes=4894; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
+  EVIDENCE: automatic-evidence=v1; definition-sha256=2e6c8eaa72a84af3d130ed3274aa97333a8d57496a1f1e5e9ab9131028d00c8d; exit=0; EXPECT=matched; output-sha256=490b87a4536405112e3d805feb5707fa0619f414f5031debc628e963ad5b54ca; output-bytes=4894; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
 
 - [x] G5: the JIRA stop behavior and its negative control still hold
   CHECK: node scripts/verify-jira-stop.mjs
   EXPECT: stop verification passed
-  EVIDENCE: automatic-evidence=v1; definition-sha256=d6d9615d9e208ff3a21a658bcaa3d943ee8ce37eb3ea5cae4e0da00f2308c560; exit=0; EXPECT=matched; output-sha256=3a9f0d8a527a04bf169aa7aeb59c2c93f580ee460468a3d0254562efa080ccaa; output-bytes=196; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
+  EVIDENCE: automatic-evidence=v1; definition-sha256=d6d9615d9e208ff3a21a658bcaa3d943ee8ce37eb3ea5cae4e0da00f2308c560; exit=0; EXPECT=matched; output-sha256=b395331f95582a401c835711ca12b935afc5d2e27cb005fa4b71530adfa88b08; output-bytes=196; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
 
 - [x] G6: the JIRA stop oracle's control still fails on a worklog-only stop
   CHECK: node scripts/verify-jira-stop.mjs --self-test
   EXPECT: stop oracle control passed
-  EVIDENCE: automatic-evidence=v1; definition-sha256=6d012ec9901606222715a102394dcfb53f1301a56a554ee8a3778e47a262d321; exit=0; EXPECT=matched; output-sha256=947eda36a5f5f2f726cbddf2274ddf1ba0d5f5fd04115e4b79b33b0296896dfd; output-bytes=198; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
+  EVIDENCE: automatic-evidence=v1; definition-sha256=6d012ec9901606222715a102394dcfb53f1301a56a554ee8a3778e47a262d321; exit=0; EXPECT=matched; output-sha256=2b851792c18e5f0a9f1fa4079a0ebba037fb9ed074b173964c9e28d4a78e18d5; output-bytes=198; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
 
 - [x] G7: the status-sync oracle still holds, and its control still fails on pre-change behavior
   CHECK: node scripts/verify-status-sync.mjs --self-test
@@ -69,7 +71,17 @@ weaken an oracle:
 - [x] G8: the status-picker oracle still holds through a real pty session
   CHECK: node scripts/verify-status-picker.mjs
   EXPECT: status picker verification passed
-  EVIDENCE: automatic-evidence=v1; definition-sha256=b14d9caa2655dfc2efe3e1ec792b750330bfefa921891a775cb292e5ad5c58b7; exit=0; EXPECT=matched; output-sha256=e7efaf2040197426f137eb4e241d4b96f19d6a6652a70c5cfdfea68d22b6f41a; output-bytes=205; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
+  EVIDENCE: automatic-evidence=v1; definition-sha256=b14d9caa2655dfc2efe3e1ec792b750330bfefa921891a775cb292e5ad5c58b7; exit=0; EXPECT=matched; output-sha256=4d4b515d11000f2dea94270beb736957f8c9d4104d98010c8a8effff99a8ffc0; output-bytes=205; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
+
+- [x] G9: the web app moves a task's status on start/stop/reset/done, matching the TUI
+  CHECK: node scripts/verify-web-status.mjs
+  EXPECT: web status verification passed
+  EVIDENCE: automatic-evidence=v1; definition-sha256=bd78ca63ea2e08a84eb55e5c99ede8b34b0d07fe2a2619974956352efa001dff; exit=0; EXPECT=matched; output-sha256=426009d11dad5a4cc205e58e977aefe624cd3b1adbeca9196169bc0f053cea6b; output-bytes=31; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
+
+- [x] G10: the web status oracle rejects a stop that leaves In Progress
+  CHECK: node scripts/verify-web-status.mjs --self-test
+  EXPECT: web status control passed
+  EVIDENCE: automatic-evidence=v1; definition-sha256=311f67de4dbd024c8ab595ddcb9e3efceadb33b10ef685ad29f32bfeb98e1d40; exit=0; EXPECT=matched; output-sha256=a10561c9f6d0476b5916cc0772e3d5cfc07bd35ff375e0d88d23b90482940c5a; output-bytes=26; shell=/bin/sh; cwd=/home/amin/projects/tauri/tauri-task-timer; path=0087377b4ce4/29 entries
 
 <!--
 G2 is the negative control for G1: the same assertion logic is fed a captured
@@ -81,4 +93,10 @@ that commit's diff is what G3's new assertion describes.
 G3's `--paths` mode reads source text, so it cannot prove runtime behavior; it
 proves only that each stop path still contains the calls. G5 and G8 observe
 actual behavior against a stub API and a real pty respectively.
+
+G9 runs two vitest specs: `taskStatus.test.ts` (the pure rules, ported from the
+TUI) and `taskService.status.test.ts` (the wiring in start/stop/reset/done,
+against a throwaway migrated DB with the JIRA hooks stubbed). G10 is its
+negative control: it mutates the stop rule so a stopped task keeps In Progress
+and requires the oracle to fail, restoring the source before exiting.
 -->

@@ -216,9 +216,11 @@ Implementation plan: [e7-plan.md](./e7-plan.md).
 - [x] Archive: non-done tasks visible, "continue today" creates row with dedup
 - [x] Extended fields: edit/save code/link/status/notes/tags, persist across refresh
 
-### Known gap (not E7 — its own change)
+### Status column parity (follow-up to E7)
 
-- [ ] **Web writes no `status` on start/done.** `apps/web/src/lib/server/taskService.ts` never moves the task's own `status`, so a task started from the dashboard keeps its old value; the TUI and CLI write it via `auto_status` in `apps/tui/src/jira.rs`. Deliberately excluded from the parity epic — it is a cross-app behavior change, not a UI gap. Recorded in [tech-spec.md](./tech-spec.md) E7 and [e7-plan.md](./e7-plan.md).
+- [x] **Web writes `status` on start/stop/reset/done.** `apps/web/src/lib/server/taskStatus.ts` ports the TUI's `auto_status` (`apps/tui/src/jira.rs`) and is wired into `startTimer` (including the focus-switch victim), `stopTimer`, `resetTask`, `resetAll`, and the done toggle in `updateTask`. Start → `21`, stop/reset → `11`, done → `31`, un-done → `11`; an explicit `status` in a PATCH wins.
+- [x] `taskStatus.test.ts` mirrors the TUI's `auto_status_follows_the_rows_own_state` oracle (negative-controlled: each of the three rules fails the suite when broken).
+- [x] Verified end-to-end over the REST API against a copy of `local.db`: full lifecycle, done-task stop keeps `31`, focus-switch victim demoted to `11`, explicit status wins.
 
 ---
 

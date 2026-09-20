@@ -26,7 +26,7 @@ graph TD
 - **Web** owns migrations (Drizzle in `apps/web/drizzle/`).
 - **MCP** is a thin HTTP client to web REST API — never touches DB directly.
 - **Timer rules** must match in three places: `packages/shared/src/timer.ts`, `apps/web/src/lib/server/taskService.ts`, `apps/tui/src/timer.rs` + `db/tasks.rs`.
-- **Task `status` is the one rule that does not match yet.** The TUI and CLI own it (`auto_status`); the web dashboard writes nothing on start/done. Tracked as its own cross-app change — see E7 below. Do not assume the three-way parity above extends to this column.
+- **Task `status` follows the timer in all three clients.** The TUI and CLI write it via `auto_status` (`apps/tui/src/jira.rs`); the web dashboard via `autoStatus` (`apps/web/src/lib/server/taskStatus.ts`), a direct port. Start → `21`, stop/reset → `11`, done → `31`, un-done → `11`. An explicit `status` in a web PATCH wins over the automatic write, matching the TUI edit form. `taskStatus.test.ts` mirrors the TUI's `auto_status_follows_the_rows_own_state` oracle, so a drift in either app fails a test.
 
 ## TUI crate layout
 
@@ -302,20 +302,19 @@ Branch linked via `task_integrations` (`group=git, field=branch`).
 Plan: [e7-plan.md](./e7-plan.md). TUI remains the reference; web has caught up on
 the daily workflow, fields, archive, and live refresh.
 
-| Shipped | Known gap |
-|---------|-----------|
-| `?date=` load + date bar | **web writes no `status` on start/done** |
+| Shipped | Notes |
+|---------|-------|
+| `?date=` load + date bar | |
 | `createTask` TUI dedup + optional `workDate` | |
 | `POST /api/tasks { workDate }`; per-day position | |
 | Edit modal + card badges for code/status/tags | |
 | `/dashboard/archive` UI + continue today | |
 | SSE client listens for `{ type: 'change' }` | |
+| web writes `status` on start/stop/reset/done | via `autoStatus`, same rules as the TUI |
 
-The one row in the right column is deliberate, not an oversight: `taskService.ts`
-never moves the task's own `status`, so a task started from the web dashboard
-keeps whatever status it had. The TUI and CLI do write it (`auto_status` in
-`apps/tui/src/jira.rs`). Closing it is a cross-app behavior change, tracked
-separately rather than folded into the parity epic.
+`taskService.ts` now moves the task's own `status` on every layout change, so a
+task started from the web dashboard reads In Progress exactly as it would in the
+TUI. An explicit `status` in a PATCH wins over the automatic write.
 
 Timer math stays in `packages/shared` + `taskService`. Do not re-filter `work_date` client-side.
 
