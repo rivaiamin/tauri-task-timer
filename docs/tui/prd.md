@@ -41,20 +41,20 @@ Shipped on `feat/tui-mvp`.
 
 | ID | Requirement | Priority |
 |----|-------------|----------|
-| FR-1 | Tasks filtered by `work_date`; default today | P0 |
+| FR-1 | Daily view lists the tasks with a day row on the viewed `work_date`; defaults to today | P0 |
 | FR-2 | Day navigation (`h/l`, arrows) | P0 |
 | FR-3 | Start/stop/reset/reset-all | P0 |
 | FR-4 | Focus stops others on same day; parallel allows multiple | P0 |
 | FR-5 | CRUD + reorder | P0 |
-| FR-6 | Same label new day → new row, copy description | P0 |
+| FR-6 | Same label is the same task; a new day adds a day entry to that task, with its own timer | P0 |
 | FR-7 | 1s live tick while running | P0 |
 | FR-8 | `?` help; modal create/edit | P0 |
 | FR-9 | Config: `database_path`, `user_email` | P0 |
 | FR-10 | CLI: `--config`, `--date`, `--db` | P1 |
 | FR-11 | Export markdown daily report to clipboard (`x`) | P1 |
 
-**Web note (closed in E7):** the dashboard now filters by `work_date` and defaults
-to today.
+**Web note (closed in E7):** the dashboard now shows the viewed day's tasks and
+defaults to today.
 
 **MCP note:** `list_tasks` accepts a `date` filter.
 
@@ -70,13 +70,18 @@ From [IDEA.md](../../apps/tui/IDEA.md).
 
 Rename alignment: `label` = title in IDEA; keep `label` in DB for compatibility.
 
+**Where they live now:** the day-scoped fields — `status`, `end_time`,
+`total_time`, and all six flags — moved to `task_days` in the day-identity split
+(migration `0004_superb_tag.sql`). `code`, `link`, `notes`, `tags` stay on the
+`tasks` identity, alongside `label` and `description`.
+
 ### New tables
 
 **`task_comments`**
 
 | Column | Purpose |
 |--------|---------|
-| task_id | FK → tasks |
+| task_id | FK → `tasks` (the task identity, not a day row) |
 | subject | Comment / commit title |
 | summary | Body / commit message |
 | branch | Optional git branch |
@@ -86,7 +91,7 @@ Rename alignment: `label` = title in IDEA; keep `label` in DB for compatibility.
 
 | Column | Purpose |
 |--------|---------|
-| task_id | FK → tasks |
+| task_id | FK → `tasks` (the task identity, not a day row) |
 | group | `jira`, `gcp`, `bitbucket` |
 | field | Arbitrary key |
 | value | Arbitrary value |
@@ -104,9 +109,9 @@ Rename alignment: `label` = title in IDEA; keep `label` in DB for compatibility.
 
 ## E3 — Archive view (TUI)
 
-- Screen for non-finished tasks across days
+- Screen listing every task with its days and per-day time
 - Filter by status, tag, integration
-- "Continue today" uses continue-by-title rules
+- "Continue today" resolves the task by label and adds today's day entry
 
 **Web:** optional `/dashboard/archive` or filter on main page (E7).
 
@@ -166,9 +171,9 @@ Catch-up epic so web is not left behind TUI. Implementation: [e7-plan.md](./e7-p
 | Requirement | Status |
 |-------------|--------|
 | Daily view | Shipped — `?date=` + date bar; create writes the viewed day |
-| Continue-by-title | Shipped — `resolveCreate` ports TUI `create_task` dedup |
+| Identity + day rows | Shipped — `taskCreate.ts` (`findIdentity`/`insertIdentity`), then `ensureDayRow` for the date |
 | Extended fields UI | Shipped — edit modal + code/status/tag badges |
-| Archive / backlog | Shipped — `/dashboard/archive` with filters + continue today |
+| Archive | Shipped — `/dashboard/archive`, one entry per task with its days; filters + continue today |
 | SSE | Shipped — server emits `change`; dashboard listens for `change` |
 
 **Status column:** closed. `apps/web/src/lib/server/taskStatus.ts` (`autoStatus`, a
@@ -194,8 +199,10 @@ running task exactly as the TUI does. An explicit `status` in a PATCH still wins
    JIRA REST API directly via `reqwest` (`apps/tui/src/jira.rs`); no sidecar and
    no web server dependency.
 2. **Archive definition: `done = false` only, or full status flags from E2?** Full
-   flags. `list_archive` excludes `done`, `is_archived`, `is_deleted`, and
-   `is_cancelled`, and filters by `q` / `tag` / `status` / `integration`.
+   flags. The archive is now **one entry per task with every day listed** — it no
+   longer drops a task because a day is done. `q` / `tag` filter the task
+   identity; `status` / `done` filter which days are included, and a task with no
+   surviving day is dropped.
 3. **`tags` storage: JSON column vs join table?** JSON text column on `tasks`, as
    E2 shipped.
 

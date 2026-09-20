@@ -90,12 +90,14 @@ Ported from `taskService.ts`:
 | Function | Behavior |
 |----------|----------|
 | `current_elapsed_seconds` | `elapsed + floor((now - start_time)/1000)` if running |
-| `list_tasks` | `WHERE user_id AND work_date ORDER BY position` |
-| `create_task` | Dedup same day; else insert, copy description from latest same label |
-| `start_timer` | Focus: stop others same day; set `is_running`, `start_time` |
-| `stop_timer` | Accumulate elapsed, clear `start_time`, `is_running = false` |
-| `reset_task` / `reset_all` | Zero elapsed for day |
-| `update_task` / `delete_task` / `reorder_tasks` | Standard SQL |
+| `list_tasks` | `tasks JOIN task_days` on `task_id`; `WHERE t.user_id AND td.work_date`, `ORDER BY td.position, td.id` |
+| `create_task` | Upsert the identity by `(user_id, label)`, then `ensure_day_row` for the date; an existing day row is returned unchanged |
+| `start_timer` | Focus: stop other running **day rows**; set `is_running`, `start_time` on the day row |
+| `stop_timer` | Accumulate elapsed on the day row, clear `start_time`, `is_running = false` |
+| `reset_task` / `reset_all` | Zero elapsed for the day row(s) on that date |
+| `update_task` | Splits identity columns (`label`, `description`, `code`, `link`, `notes`, `tags`) from day columns |
+| `delete_task` | Deletes the identity; `task_days` cascades |
+| `reorder_tasks` | Sets `position` on that date's day rows |
 
 Timestamps: epoch **milliseconds** (match Drizzle `timestamp_ms`).
 
@@ -110,16 +112,16 @@ apart:
 | `status_when_run_ends(task_is_done)` | the JIRA status **name** a run's end transitions the issue to (To Do / Cek di Local) |
 | `status_for_run_state(is_running, is_done)` | the local catalog **id** the same write stores (`21` running, `31` done, `11` stopped) |
 
-`auto_status(conn, user_id, task_id)` applies the second, reading the state back
-from the row rather than taking it from the caller — a caller holding a snapshot
-from before its own write cannot apply a stale flag. Start, stop, reset, and the
-done toggle all route through it, and each writes local state *before* its JIRA
-hook, so the list is correct even while JIRA is slow or unreachable. The write is
-unconditional rather than "only when empty", because start is a layout change
-that owns the field — otherwise a task left at Done would still read Done while
-its timer runs. A hand-set status (Local OK, BLOCKED) is therefore owned by the
-timer too: it survives only until the next start (`21`), stop/reset (`11`), done
-(`31`), or un-done (`11`).
+`auto_status(conn, user_id, task_id, work_date)` applies the second, reading the
+state back from the **day row** rather than taking it from the caller — a caller
+holding a snapshot from before its own write cannot apply a stale flag. Start,
+stop, reset, and the done toggle all route through it, and each writes local
+state *before* its JIRA hook, so the list is correct even while JIRA is slow or
+unreachable. The write is unconditional rather than "only when empty", because
+start is a layout change that owns the field — otherwise a task left at Done
+would still read Done while its timer runs. A hand-set status (Local OK, BLOCKED)
+is therefore owned by the timer too: it survives only until the next start (`21`),
+stop/reset (`11`), done (`31`), or un-done (`11`).
 
 The one asymmetry: a task already checked done keeps `31` through a stop, because
 the state after that stop is still "done". Un-checking it returns the row to `11`.
@@ -129,10 +131,12 @@ caller omits or blanks it; writing NULL is a constraint failure.
 
 ### Extended fields (E2)
 
-`TaskPatch` covers the whole `tasks` row the form can edit: `link` (blank clears
-the column) and the six flags `is_pinned`, `is_important`, `is_archived`,
-`is_cancelled`, `is_deleted`, `is_completed`. `None` leaves a field alone, so a
-flag only moves when the form actually set it.
+`TaskPatch` covers everything the form can edit, across both tables: identity
+columns (`label`, `description`, `code`, `link`, `notes`, `tags`) on `tasks`,
+and the day columns (`status`, `elapsed_time`, `done`, and the six flags
+`is_pinned`, `is_important`, `is_archived`, `is_cancelled`, `is_deleted`,
+`is_completed`) on that date's `task_days` row. `link` blank clears the column.
+`None` leaves a field alone, so a flag only moves when the form actually set it.
 
 The form's tab order is `Label → Description → Status → Code → Elapsed → Notes →
 Tags → Link → Flags`. The status field is a dropdown, not a text input: Enter (or
@@ -175,7 +179,7 @@ New routes should mirror TUI capabilities:
 |----------|---------|
 | `GET/POST /api/tasks/[id]/comments` | E2 |
 | `GET/PATCH /api/tasks/[id]/integrations` | E2 |
-| `GET /api/tasks/archive` | E3 |
+| `GET /api/tasks` (no `date`) | E3 — archive: every task with its `days[]` |
 | `POST /api/jira/sync` | E4 |
 | `POST /api/session/hook` | E6 |
 
@@ -317,10 +321,10 @@ the daily workflow, fields, archive, and live refresh.
 | Shipped | Notes |
 |---------|-------|
 | `?date=` load + date bar | |
-| `createTask` TUI dedup + optional `workDate` | |
-| `POST /api/tasks { workDate }`; per-day position | |
+| `createTask` identity upsert + `ensureDayRow` | identity by `(user_id, label)`, then that day's row |
+| `POST /api/tasks { workDate }`; per-day position | `position` orders the day's list |
 | Edit modal + card badges for code/status/tags | |
-| `/dashboard/archive` UI + continue today | |
+| `/dashboard/archive` UI + continue today | one entry per task, every day listed |
 | SSE client listens for `{ type: 'change' }` | |
 | web writes `status` on start/stop/reset/done | via `autoStatus`, same rules as the TUI |
 
@@ -328,7 +332,9 @@ the daily workflow, fields, archive, and live refresh.
 task started from the web dashboard reads In Progress exactly as it would in the
 TUI. An explicit `status` in a PATCH wins over the automatic write.
 
-Timer math stays in `packages/shared` + `taskService`. Do not re-filter `work_date` client-side.
+Timer math stays in `packages/shared` + `taskService`. Day scoping is the
+server's job: `listTasks` joins `tasks` to `task_days` on the viewed `work_date`,
+so the client never re-filters by date.
 
 ## Testing
 
@@ -345,7 +351,7 @@ Timer math stays in `packages/shared` + `taskService`. Do not re-filter `work_da
 1. `pnpm --filter sv-task-timer db:migrate`
 2. Register user; create tasks via web
 3. `pnpm dev:tui` — start/stop; compare elapsed to web
-4. Change day; create same label; verify description copy
+4. Change day; create the same label; verify it lands on the same task as a new day row
 5. Focus mode: start B while A running → A stops
 
 ## References

@@ -14,7 +14,9 @@ user_email = "you@example.com"
 
 Register the user in the web app first if the email is not already in `users`.
 
-Apply the web migrations once so `work_date` exists:
+Apply the web migrations once. The current schema splits a task into an identity
+row (`tasks`) plus one row per day worked (`task_days`); the older flat
+`tasks.work_date` column no longer exists, so a stale DB fails outright:
 
 ```bash
 pnpm --filter sv-task-timer db:migrate

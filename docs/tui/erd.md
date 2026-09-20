@@ -2,9 +2,9 @@
 
 **Last updated:** 2026-09-21
 
-## Current schema (E2 implemented)
+## Current schema (E2 implemented, identity/day split landed)
 
-Source: `apps/web/src/lib/server/db/schema.ts`, migrations `0000`–`0003`.
+Source: `apps/web/src/lib/server/db/schema.ts`, migrations `0000`–`0004`.
 
 ```mermaid
 erDiagram
@@ -12,6 +12,7 @@ erDiagram
     users ||--o{ tasks : owns
     users ||--o| user_settings : has
     users ||--o{ api_keys : has
+    tasks ||--o{ task_days : has
     tasks ||--o{ task_comments : has
     tasks ||--o{ task_integrations : has
 
@@ -32,13 +33,20 @@ erDiagram
         int id PK
         text user_id FK
         text label
-        text work_date
-        text description
         text code
+        text description
         text link
-        text status
         text notes
         text tags
+        int created_at
+        int updated_at
+    }
+
+    task_days {
+        int id PK
+        int task_id FK
+        text work_date
+        text status
         int elapsed_time
         int total_time
         int position
@@ -95,20 +103,25 @@ erDiagram
     }
 ```
 
-### Indexes (tasks)
+### Indexes
 
-| Index | Columns |
-|-------|---------|
-| `idx_tasks_user` | `user_id` |
-| `idx_tasks_position` | `user_id`, `position` |
-| `idx_tasks_user_date` | `user_id`, `work_date` |
-| `idx_tasks_user_date_label` | `user_id`, `work_date`, `label` (unique) |
+| Index | Table | Columns |
+|-------|-------|---------|
+| `idx_tasks_user` | `tasks` | `user_id` |
+| `idx_tasks_user_label` | `tasks` | `user_id`, `label` (unique) |
+| `idx_task_days_task` | `task_days` | `task_id` |
+| `idx_task_days_date_position` | `task_days` | `work_date`, `position` |
+| `idx_task_days_date` | `task_days` | `work_date` |
+| `idx_task_days_task_date` | `task_days` | `task_id`, `work_date` (unique) |
 
 ### Notes
 
-- `work_date`: ISO date string `YYYY-MM-DD`, default `date('now')`
-- `elapsed_time`: seconds (integer)
+- `work_date`: ISO date string `YYYY-MM-DD`, default `date('now')` — on `task_days`
+- `elapsed_time`: seconds (integer) — on `task_days`
+- `position`: per **day across tasks** (it orders that day's list), not per task
 - `start_time`: epoch ms when timer started; null when stopped
+- `status`, `done`, and the flags are all **per day**, on `task_days`
+- `task_comments` / `task_integrations` FK to the task identity, so they are no longer duplicated per day
 - `timer_mode`: `'focus'` \| `'parallel'`
 
 ---
@@ -146,12 +159,19 @@ stateDiagram-v2
     Archived --> Active: continue today
 ```
 
-The `status` column tracks this independently of the `done` flag: the TUI and CLI
-write `21` on start, `11` on stop/reset, `31` on done, and `11` on un-done. A task
-already checked done keeps `Done` through a stop. The web dashboard does not yet
-write this column — see [tech-spec.md](./tech-spec.md) E7.
+The day row's `status` column tracks this independently of the `done` flag: the
+TUI and CLI write `21` on start, `11` on stop/reset, `31` on done, and `11` on
+un-done. The web dashboard writes the same values via `autoStatus` — see
+[tech-spec.md](./tech-spec.md) E7. A day already checked done keeps `Done`
+through a stop.
 
-Daily scope: each `(user_id, work_date, label)` is one row. "Continue" on a new day creates a **new** row with copied description.
+Lifecycle states are **per day**: the diagram describes one `task_days` row.
+`Archived --> Active: continue today` means starting the task on a new day, which
+creates **that day's row on the SAME task** — the identity is never re-created.
+
+Daily scope: one task identity per `(user_id, label)`, and one `task_days` row per
+day that task was worked. Continuing on a new day creates that day's row on the
+same task; the identity's label/description are shared across all its days.
 
 ---
 
@@ -163,6 +183,7 @@ Daily scope: each `(user_id, work_date, label)` is one row. "Continue" on a new 
 | `done` column | `0001_shocking_madrox.sql` | pre-TUI |
 | `work_date` + indexes | `0002_chubby_roulette.sql` | E1 |
 | Extended columns + new tables | `0003_flat_layla_miller.sql` | E2 |
+| Identity/day split (`tasks` + `task_days`) | `0004_superb_tag.sql` | day-identity split |
 
 **Rule:** all migrations live in `apps/web/drizzle/`. TUI never owns migrations.
 
@@ -176,8 +197,10 @@ places in one PR.
 
 | Table/column | Web schema | taskService | REST | MCP | TUI db |
 |--------------|------------|-------------|------|-----|--------|
-| tasks.* | ✓ | ✓ | ✓ | ✓ | ✓ |
+| tasks.* (identity) | ✓ | ✓ | ✓ | ✓ | ✓ |
+| task_days.* (per day) | ✓ | ✓ | ✓ | ✓ | ✓ |
 | task_comments | ✓ | ✓ | ✓ | ✓ | ✓ (list/add) |
 | task_integrations | ✓ | ✓ | ✓ | optional | ✓ (read/write) |
 
-See [tasks.md](./tasks.md) E2 checklist.
+`task_comments` and `task_integrations` FK to the task identity, so neither is
+duplicated per day. See [tasks.md](./tasks.md) E2 checklist.
