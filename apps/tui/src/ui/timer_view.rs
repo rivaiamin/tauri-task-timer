@@ -119,6 +119,13 @@ pub fn draw(frame: &mut Frame, app: &App) {
             code,
             notes,
             tags,
+            link,
+            is_pinned,
+            is_important,
+            is_archived,
+            is_cancelled,
+            is_deleted,
+            is_completed,
         } => draw_form(
             frame,
             edit_id.is_some(),
@@ -131,6 +138,16 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 code,
                 notes,
                 tags,
+                link,
+                flags: format!(
+                    "p:{} i:{} a:{} c:{} x:{} d:{}",
+                    on_off(*is_pinned),
+                    on_off(*is_important),
+                    on_off(*is_archived),
+                    on_off(*is_cancelled),
+                    on_off(*is_deleted),
+                    on_off(*is_completed),
+                ),
             },
         ),
         Overlay::Detail => {
@@ -190,6 +207,17 @@ pub struct FormFields<'a> {
     pub code: &'a str,
     pub notes: &'a str,
     pub tags: &'a str,
+    pub link: &'a str,
+    /// Pre-rendered on/off row for the six boolean flags, in key order.
+    pub flags: String,
+}
+
+fn on_off(v: bool) -> &'static str {
+    if v {
+        "on"
+    } else {
+        "off"
+    }
 }
 
 fn draw_form(frame: &mut Frame, editing: bool, field: Field, f: FormFields) {
@@ -201,8 +229,10 @@ fn draw_form(frame: &mut Frame, editing: bool, field: Field, f: FormFields) {
         code,
         notes,
         tags,
+        link,
+        flags,
     } = f;
-    let area = centered(frame.area(), 56, 18);
+    let area = centered(frame.area(), 56, 22);
     frame.render_widget(Clear, area);
     let title = if editing { " edit task " } else { " new task " };
     let block = Block::default().borders(Borders::ALL).title(title);
@@ -226,6 +256,10 @@ fn draw_form(frame: &mut Frame, editing: bool, field: Field, f: FormFields) {
             Constraint::Length(1), // notes value
             Constraint::Length(1), // tags header
             Constraint::Length(1), // tags value
+            Constraint::Length(1), // link header
+            Constraint::Length(1), // link value
+            Constraint::Length(1), // flags header
+            Constraint::Length(1), // flags value
             Constraint::Length(1), // spacer
             Constraint::Length(1), // footer
         ])
@@ -296,9 +330,22 @@ fn draw_form(frame: &mut Frame, editing: bool, field: Field, f: FormFields) {
     );
     frame.render_widget(Paragraph::new(tags).style(active(Field::Tags)), rows[13]);
     frame.render_widget(
-        Paragraph::new("Tab: field  Enter: save  Esc: cancel  (status field opens the picker)")
+        Paragraph::new("link").style(Style::default().fg(Color::DarkGray)),
+        rows[14],
+    );
+    frame.render_widget(Paragraph::new(link).style(active(Field::Link)), rows[15]);
+    frame.render_widget(
+        Paragraph::new("flags (p/i/a/c/x/d)").style(Style::default().fg(Color::DarkGray)),
+        rows[16],
+    );
+    frame.render_widget(
+        Paragraph::new(flags).style(active(Field::Flags)),
+        rows[17],
+    );
+    frame.render_widget(
+        Paragraph::new("Tab: next  p/i/a/c/x/d on flags  Enter: save")
             .style(Style::default().fg(Color::DarkGray)),
-        rows[15],
+        rows[19],
     );
 }
 

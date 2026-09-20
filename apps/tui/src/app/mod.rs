@@ -28,6 +28,8 @@ pub enum Field {
     Code,
     Notes,
     Tags,
+    Link,
+    Flags,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -82,6 +84,13 @@ pub enum Overlay {
         code: String,
         notes: String,
         tags: String,
+        link: String,
+        is_pinned: bool,
+        is_important: bool,
+        is_archived: bool,
+        is_cancelled: bool,
+        is_deleted: bool,
+        is_completed: bool,
     },
     Jira { mode: JiraMode },
     Git { mode: GitMode },
@@ -207,6 +216,17 @@ impl App {
 
     pub fn archive_selected_task(&self) -> Option<&Task> {
         self.archive.tasks.get(self.archive.selected)
+    }
+
+    /// The task the current mode's cursor is on. Daily and archive each keep
+    /// their own list, so anything opened from a key press must resolve through
+    /// the mode rather than assuming the daily list.
+    pub fn focused_task(&self) -> Option<&Task> {
+        if self.mode == AppMode::Archive {
+            self.archive_selected_task()
+        } else {
+            self.selected_task()
+        }
     }
 
     fn reload_archive(&mut self) -> Result<()> {
@@ -431,6 +451,13 @@ impl App {
             code: String::new(),
             notes: String::new(),
             tags: String::new(),
+            link: String::new(),
+            is_pinned: false,
+            is_important: false,
+            is_archived: false,
+            is_cancelled: false,
+            is_deleted: false,
+            is_completed: false,
         };
     }
 
@@ -448,6 +475,13 @@ impl App {
             code: t.code.clone().unwrap_or_default(),
             notes: t.notes.clone().unwrap_or_default(),
             tags: t.tags.clone().unwrap_or_default(),
+            link: t.link.clone().unwrap_or_default(),
+            is_pinned: t.is_pinned,
+            is_important: t.is_important,
+            is_archived: t.is_archived,
+            is_cancelled: t.is_cancelled,
+            is_deleted: t.is_deleted,
+            is_completed: t.is_completed,
         };
     }
 
@@ -465,6 +499,13 @@ impl App {
             code,
             notes,
             tags,
+            link,
+            is_pinned,
+            is_important,
+            is_archived,
+            is_cancelled,
+            is_deleted,
+            is_completed,
         } = self.form_under_state.take().unwrap_or(Overlay::None)
         else {
             return Overlay::None;
@@ -479,6 +520,13 @@ impl App {
             code,
             notes,
             tags,
+            link,
+            is_pinned,
+            is_important,
+            is_archived,
+            is_cancelled,
+            is_deleted,
+            is_completed,
         }
     }
 
@@ -495,6 +543,13 @@ impl App {
             code,
             notes,
             tags,
+            link,
+            is_pinned,
+            is_important,
+            is_archived,
+            is_cancelled,
+            is_deleted,
+            is_completed,
         } = &self.overlay
         else {
             return;
@@ -513,34 +568,74 @@ impl App {
             code: code.clone(),
             notes: notes.clone(),
             tags: tags.clone(),
+            link: link.clone(),
+            is_pinned: *is_pinned,
+            is_important: *is_important,
+            is_archived: *is_archived,
+            is_cancelled: *is_cancelled,
+            is_deleted: *is_deleted,
+            is_completed: *is_completed,
         });
         self.overlay = Overlay::StatusPick { selected };
     }
 
     fn submit_form(&mut self) -> Result<()> {
-        let (edit_id, label, description, elapsed, status, code, notes, tags) = match &self.overlay {
-            Overlay::Form {
-                edit_id,
-                label,
-                description,
-                elapsed,
-                status,
-                code,
-                notes,
-                tags,
-                ..
-            } => (
-                *edit_id,
-                label.clone(),
-                description.clone(),
-                elapsed.clone(),
-                status.clone(),
-                code.clone(),
-                notes.clone(),
-                tags.clone(),
-            ),
-            _ => return Ok(()),
+        // Copy the form out: the save path calls `&mut self` helpers, so the
+        // overlay cannot stay borrowed while it runs.
+        let Overlay::Form {
+            edit_id,
+            label,
+            description,
+            elapsed,
+            status,
+            code,
+            notes,
+            tags,
+            link,
+            is_pinned,
+            is_important,
+            is_archived,
+            is_cancelled,
+            is_deleted,
+            is_completed,
+            ..
+        } = &self.overlay
+        else {
+            return Ok(());
         };
+        let (
+            edit_id,
+            label,
+            description,
+            elapsed,
+            status,
+            code,
+            notes,
+            tags,
+            link,
+            is_pinned,
+            is_important,
+            is_archived,
+            is_cancelled,
+            is_deleted,
+            is_completed,
+        ) = (
+            *edit_id,
+            label.clone(),
+            description.clone(),
+            elapsed.clone(),
+            status.clone(),
+            code.clone(),
+            notes.clone(),
+            tags.clone(),
+            link.clone(),
+            *is_pinned,
+            *is_important,
+            *is_archived,
+            *is_cancelled,
+            *is_deleted,
+            *is_completed,
+        );
         if label.trim().is_empty() {
             self.set_status("label is required");
             return Ok(());
@@ -563,6 +658,20 @@ impl App {
         let code_opt = if code.is_empty() { None } else { Some(code.as_str()) };
         let notes_opt = if notes.is_empty() { None } else { Some(notes.as_str()) };
         let tags_opt = if tags.is_empty() { None } else { Some(tags.as_str()) };
+        let link_opt = if link.trim().is_empty() {
+            None
+        } else {
+            Some(link.as_str())
+        };
+        let flags = tasks::TaskPatch {
+            is_pinned: Some(is_pinned),
+            is_important: Some(is_important),
+            is_archived: Some(is_archived),
+            is_cancelled: Some(is_cancelled),
+            is_deleted: Some(is_deleted),
+            is_completed: Some(is_completed),
+            ..Default::default()
+        };
         if let Some(id) = edit_id {
             tasks::update_task(
                 &self.conn,
@@ -576,6 +685,8 @@ impl App {
                     status: status_opt,
                     notes: notes_opt,
                     tags: tags_opt,
+                    link: link_opt,
+                    ..flags
                 },
             )?;
         } else {
@@ -593,17 +704,22 @@ impl App {
             };
             let date = self.date_str();
             let created = tasks::create_task(&self.conn, &self.user_id, &date, &label, desc)?;
-            if elapsed_secs > 0 {
-                tasks::update_task(
-                    &self.conn,
-                    &self.user_id,
-                    created.id,
-                    tasks::TaskPatch {
-                        elapsed_seconds: Some(elapsed_secs),
-                        ..Default::default()
-                    },
-                )?;
-            }
+            // `create_task` only knows label and description, so everything else
+            // the form collected — including the link and the flags — lands here.
+            tasks::update_task(
+                &self.conn,
+                &self.user_id,
+                created.id,
+                tasks::TaskPatch {
+                    elapsed_seconds: Some(elapsed_secs),
+                    code: code_opt,
+                    status: status_opt,
+                    notes: notes_opt,
+                    tags: tags_opt,
+                    link: link_opt,
+                    ..flags
+                },
+            )?;
             self.reload()?;
             if let Some(i) = self.tasks.iter().position(|t| t.id == created.id) {
                 self.selected = i;
@@ -919,7 +1035,7 @@ impl App {
     }
 
     fn git_task_branch(&self) -> Option<String> {
-        let task = self.selected_task()?;
+        let task = self.focused_task()?;
         let integrations = db::integrations::list(&self.conn, task.id).ok()?;
         integrations
             .iter()
@@ -1144,6 +1260,13 @@ impl App {
             code,
             notes,
             tags,
+            link,
+            is_pinned,
+            is_important,
+            is_archived,
+            is_cancelled,
+            is_deleted,
+            is_completed,
             edit_id: _,
         } = &mut self.overlay
         else {
@@ -1158,8 +1281,31 @@ impl App {
                     Field::Code => Field::Elapsed,
                     Field::Elapsed => Field::Notes,
                     Field::Notes => Field::Tags,
-                    Field::Tags => Field::Label,
+                    Field::Tags => Field::Link,
+                    Field::Link => Field::Flags,
+                    Field::Flags => Field::Label,
                 };
+            }
+            // The flags field is a row of toggles, not text: these keys flip
+            // one each. Daily `d`/`D` bindings are unaffected — this only fires
+            // while the form is open on the flags field.
+            KeyCode::Char(c)
+                if *field == Field::Flags
+                    && (key.modifiers == KeyModifiers::NONE
+                        || key.modifiers == KeyModifiers::SHIFT) =>
+            {
+                let target = match c.to_ascii_lowercase() {
+                    'p' => Some(is_pinned),
+                    'i' => Some(is_important),
+                    'a' => Some(is_archived),
+                    'c' => Some(is_cancelled),
+                    'x' => Some(is_deleted),
+                    'd' => Some(is_completed),
+                    _ => None,
+                };
+                if let Some(flag) = target {
+                    *flag = !*flag;
+                }
             }
             KeyCode::Backspace => {
                 let buf = match field {
@@ -1171,6 +1317,8 @@ impl App {
                     Field::Code => code,
                     Field::Notes => notes,
                     Field::Tags => tags,
+                    Field::Link => link,
+                    Field::Flags => return Ok(false),
                 };
                 buf.pop();
             }
@@ -1185,6 +1333,8 @@ impl App {
                     Field::Code => code,
                     Field::Notes => notes,
                     Field::Tags => tags,
+                    Field::Link => link,
+                    Field::Flags => return Ok(false),
                 };
                 buf.push(c);
             }
@@ -1448,6 +1598,13 @@ mod tests {
             code: String::new(),
             notes: String::new(),
             tags: String::new(),
+            link: String::new(),
+            is_pinned: false,
+            is_important: false,
+            is_archived: false,
+            is_cancelled: false,
+            is_deleted: false,
+            is_completed: false,
         }
     }
 
@@ -1472,6 +1629,8 @@ mod tests {
             "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL);
              CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, label TEXT NOT NULL, description TEXT, code TEXT, link TEXT, status TEXT NOT NULL DEFAULT 'todo', notes TEXT, tags TEXT, elapsed_time INTEGER NOT NULL DEFAULT 0, total_time INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0, is_running INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, is_completed INTEGER NOT NULL DEFAULT 0, is_cancelled INTEGER NOT NULL DEFAULT 0, is_deleted INTEGER NOT NULL DEFAULT 0, is_archived INTEGER NOT NULL DEFAULT 0, is_pinned INTEGER NOT NULL DEFAULT 0, is_important INTEGER NOT NULL DEFAULT 0, start_time INTEGER, end_time INTEGER, work_date TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE user_settings (user_id TEXT PRIMARY KEY, timer_mode TEXT NOT NULL DEFAULT 'focus', updated_at INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, subject TEXT, summary TEXT, branch TEXT, pr TEXT, created_at INTEGER NOT NULL);
+             CREATE TABLE task_integrations (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, \"group\" TEXT NOT NULL, field TEXT NOT NULL, value TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
              INSERT INTO users VALUES ('u1','a@b.c','x',0);",
         )
         .unwrap();
@@ -1583,6 +1742,13 @@ mod tests {
             code: String::new(),
             notes: String::new(),
             tags: String::new(),
+            link: String::new(),
+            is_pinned: false,
+            is_important: false,
+            is_archived: false,
+            is_cancelled: false,
+            is_deleted: false,
+            is_completed: false,
         };
         app.handle_form_key(key(KeyCode::Char('x'))).unwrap();
         let Overlay::Form { label, status, .. } = &app.overlay else {
@@ -1590,5 +1756,78 @@ mod tests {
         };
         assert_eq!(label, "x");
         assert_eq!(status, "21");
+    }
+
+    /// Every flag key flips exactly its own bool — this is the whole flags
+    /// field, and a wrong mapping would silently write the wrong column.
+    #[test]
+    fn the_flags_field_toggles_one_flag_per_key() {
+        let mut app = test_app();
+        app.overlay = form("21");
+        let Overlay::Form { field, .. } = &mut app.overlay else {
+            unreachable!()
+        };
+        *field = Field::Flags;
+
+        for c in ['p', 'i', 'a', 'c', 'x', 'd'] {
+            app.handle_form_key(key(KeyCode::Char(c))).unwrap();
+        }
+        let Overlay::Form {
+            is_pinned,
+            is_important,
+            is_archived,
+            is_cancelled,
+            is_deleted,
+            is_completed,
+            label,
+            ..
+        } = &app.overlay
+        else {
+            panic!("expected the form");
+        };
+        assert!(*is_pinned && *is_important && *is_archived);
+        assert!(*is_cancelled && *is_deleted && *is_completed);
+        assert_eq!(label, "US-1", "a flag key must not type into another field");
+
+        // Pressing again turns it back off.
+        app.handle_form_key(key(KeyCode::Char('p'))).unwrap();
+        let Overlay::Form { is_pinned, .. } = &app.overlay else {
+            panic!("expected the form");
+        };
+        assert!(!is_pinned);
+    }
+
+    /// The create path used to drop everything the form collected beyond label
+    /// and description.
+    #[test]
+    fn saving_a_new_task_persists_link_and_flags() {
+        let mut app = test_app();
+        app.overlay = Overlay::Form {
+            edit_id: None,
+            field: Field::Label,
+            label: "US-77 new thing".into(),
+            description: String::new(),
+            elapsed: "00:00:00".into(),
+            status: "21".into(),
+            code: "ABC".into(),
+            notes: "note".into(),
+            tags: "backend".into(),
+            link: "https://example.com/77".into(),
+            is_pinned: true,
+            is_important: false,
+            is_archived: false,
+            is_cancelled: false,
+            is_deleted: false,
+            is_completed: false,
+        };
+        app.submit_form().unwrap();
+
+        let stored = &app.tasks[0];
+        assert_eq!(stored.link.as_deref(), Some("https://example.com/77"));
+        assert!(stored.is_pinned);
+        assert_eq!(stored.code.as_deref(), Some("ABC"));
+        assert_eq!(stored.status, "21");
+        assert_eq!(stored.tags.as_deref(), Some("backend"));
+        assert!(!stored.is_archived);
     }
 }

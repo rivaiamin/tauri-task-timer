@@ -13,40 +13,26 @@ pub struct Task {
     pub tags: Option<String>,
     pub elapsed_time: i64,
     pub is_running: bool,
-    /// The live done flag: the web dashboard's checkbox PATCHes `<id>` with
-    /// `{done:…}`, which writes this column, and the shift-D toggle and the
-    /// archive filter read it back. `is_completed` — the column the web archive
-    /// page filters on — is never written by the web app at all (every row in
-    /// the shared database has it at 0 while `done` is set), so this is the one
-    /// to use.
+    /// The live done flag: the dashboard checkbox writes `done`; REST still
+    /// accepts `is_completed`.
     pub done: bool,
     pub start_time: Option<i64>,
     pub work_date: String,
 
     /// Columns this crate stores but does not read. The schema is shared with
-    /// the web app, which reads and writes all of them; the TUI reads a subset.
-    /// They stay until both apps agree on one set of flags — see the `done`
-    /// field below, which the TUI has to read because the web app is the one
-    /// writing it.
+    /// the web app, which reads and writes all of them.
     #[allow(dead_code)]
     pub end_time: Option<i64>,
-    #[allow(dead_code)]
     pub link: Option<String>,
     #[allow(dead_code)]
     pub total_time: i64,
     #[allow(dead_code)]
     pub position: i64,
-    #[allow(dead_code)]
     pub is_completed: bool,
-    #[allow(dead_code)]
     pub is_cancelled: bool,
-    #[allow(dead_code)]
     pub is_deleted: bool,
-    #[allow(dead_code)]
     pub is_archived: bool,
-    #[allow(dead_code)]
     pub is_pinned: bool,
-    #[allow(dead_code)]
     pub is_important: bool,
 }
 
@@ -314,6 +300,13 @@ pub struct TaskPatch<'a> {
     pub status: Option<&'a str>,
     pub notes: Option<&'a str>,
     pub tags: Option<&'a str>,
+    pub link: Option<&'a str>,
+    pub is_pinned: Option<bool>,
+    pub is_important: Option<bool>,
+    pub is_archived: Option<bool>,
+    pub is_cancelled: Option<bool>,
+    pub is_deleted: Option<bool>,
+    pub is_completed: Option<bool>,
 }
 
 pub fn update_task(
@@ -330,6 +323,13 @@ pub fn update_task(
         status,
         notes,
         tags,
+        link,
+        is_pinned,
+        is_important,
+        is_archived,
+        is_cancelled,
+        is_deleted,
+        is_completed,
     } = patch;
     let Some(row) = get_task(conn, user_id, task_id)? else {
         return Ok(None);
@@ -362,10 +362,20 @@ pub fn update_task(
         .unwrap_or_else(|| row.status.clone());
     let new_notes = notes.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     let new_tags = tags.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
+    // An empty link clears the column rather than storing whitespace.
+    let new_link = link.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+    let flag = |set: Option<bool>, stored: bool| i64::from(set.unwrap_or(stored));
+    let new_pinned = flag(is_pinned, row.is_pinned);
+    let new_important = flag(is_important, row.is_important);
+    let new_archived = flag(is_archived, row.is_archived);
+    let new_cancelled = flag(is_cancelled, row.is_cancelled);
+    let new_deleted = flag(is_deleted, row.is_deleted);
+    let new_completed = flag(is_completed, row.is_completed);
     match conn.execute(
         "UPDATE tasks SET label = ?1, description = ?2, elapsed_time = ?3, start_time = ?4, updated_at = ?5,
-         code = ?6, status = ?7, notes = ?8, tags = ?9
-         WHERE id = ?10 AND user_id = ?11",
+         code = ?6, status = ?7, notes = ?8, tags = ?9, link = ?10, is_pinned = ?11, is_important = ?12,
+         is_archived = ?13, is_cancelled = ?14, is_deleted = ?15, is_completed = ?16
+         WHERE id = ?17 AND user_id = ?18",
         params![
             new_label,
             new_desc,
@@ -376,6 +386,13 @@ pub fn update_task(
             new_status,
             new_notes,
             new_tags,
+            new_link,
+            new_pinned,
+            new_important,
+            new_archived,
+            new_cancelled,
+            new_deleted,
+            new_completed,
             task_id,
             user_id
         ],
@@ -494,6 +511,15 @@ mod tests {
                updated_at INTEGER NOT NULL
              );
              CREATE UNIQUE INDEX idx_tasks_user_date_label ON tasks (user_id, work_date, label);
+             CREATE TABLE task_integrations (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               task_id INTEGER NOT NULL,
+               \"group\" TEXT NOT NULL,
+               field TEXT NOT NULL,
+               value TEXT,
+               created_at INTEGER NOT NULL,
+               updated_at INTEGER NOT NULL
+             );
              INSERT INTO users VALUES ('u1', 'a@b.c', 'x', 0);",
         )
         .unwrap();
@@ -682,6 +708,63 @@ mod tests {
         .unwrap()
         .unwrap();
         assert_eq!(updated.status, "31");
+    }
+
+    #[test]
+    fn update_sets_link_and_flags_leaving_the_rest_alone() {
+        let conn = setup();
+        let t = create_task(&conn, "u1", "2026-09-17", "Link me", Some("keep")).unwrap();
+        conn.execute("UPDATE tasks SET status = '21' WHERE id = ?1", [t.id]).unwrap();
+
+        let updated = update_task(
+            &conn,
+            "u1",
+            t.id,
+            TaskPatch {
+                link: Some("https://example.com"),
+                is_pinned: Some(true),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert_eq!(updated.link.as_deref(), Some("https://example.com"));
+        assert!(updated.is_pinned);
+        assert_eq!(updated.label, "Link me");
+        assert_eq!(updated.description.as_deref(), Some("keep"));
+        assert_eq!(updated.status, "21");
+        // Flags the patch did not name keep their stored value.
+        assert!(!updated.is_important);
+        assert!(!updated.is_archived);
+    }
+
+    /// A flag can be turned back off, and a blank link clears the column.
+    #[test]
+    fn update_can_clear_a_flag_and_a_link() {
+        let conn = setup();
+        let t = create_task(&conn, "u1", "2026-09-17", "Clear me", None).unwrap();
+        conn.execute(
+            "UPDATE tasks SET is_pinned = 1, link = 'https://old' WHERE id = ?1",
+            [t.id],
+        )
+        .unwrap();
+
+        let updated = update_task(
+            &conn,
+            "u1",
+            t.id,
+            TaskPatch {
+                link: Some("   "),
+                is_pinned: Some(false),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        assert!(updated.link.is_none());
+        assert!(!updated.is_pinned);
     }
 
     #[test]

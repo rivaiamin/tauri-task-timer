@@ -41,7 +41,8 @@ apps/tui/
       mod.rs                       # Connection, WAL pragmas
       user.rs                      # user_id from email
       tasks.rs                     # CRUD + timer ops
-      integrations.rs              # E2 — read/write
+      comments.rs                  # E2 — task_comments list/add
+      integrations.rs              # E2
     app/
       mod.rs                       # Event loop, App state, modals
       keymap.rs                    # Bindings + HELP text
@@ -116,6 +117,35 @@ otherwise a task left at Done would still read Done while its timer runs.
 
 `status` is `NOT NULL`, so `update_task` falls back to the stored value when the
 caller omits or blanks it; writing NULL is a constraint failure.
+
+### Extended fields (E2)
+
+`TaskPatch` covers the whole `tasks` row the form can edit: `link` (blank clears
+the column) and the six flags `is_pinned`, `is_important`, `is_archived`,
+`is_cancelled`, `is_deleted`, `is_completed`. `None` leaves a field alone, so a
+flag only moves when the form actually set it.
+
+The form's tab order is `Label → Description → Status → Code → Elapsed → Notes →
+Tags → Link → Flags`. The status field opens the picker on any printable key;
+the flags field treats `p/i/a/c/x/d` as toggles in that column order and ignores
+other text. `create_task` only knows label and description, so the create path
+follows it with one `update_task` carrying everything else the form collected.
+
+`db/comments.rs` is the TUI's only `task_comments` writer: `list` (newest first)
+and `add`, with `branch`/`pr` set for imported PR comments and NULL for ones
+typed in the TUI (`C` → `n`).
+
+`db/integrations.rs` quotes the `group` column everywhere — it is a SQLite
+keyword, and an unquoted `group` in a statement is a syntax error, not a column
+reference.
+
+### Detail overlay
+
+`i` builds `Overlay::Detail` once (`open_detail`): stored comments, the PRs for
+the linked branch (merge state is `PullRequest::state`), and the Bitbucket
+commit statuses for the branch head. Both network sections degrade to empty on
+error and surface the failure in the status line, so the detail view still opens
+offline.
 
 ## Concurrency
 
