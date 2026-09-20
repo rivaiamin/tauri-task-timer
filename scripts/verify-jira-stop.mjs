@@ -37,16 +37,24 @@ const SCHEMA = `
 CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL, timer_mode TEXT DEFAULT 'focus');
 CREATE TABLE tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id TEXT NOT NULL, label TEXT NOT NULL, description TEXT, code TEXT, link TEXT,
-  status TEXT NOT NULL DEFAULT 'todo', notes TEXT, tags TEXT,
+  user_id TEXT NOT NULL, label TEXT NOT NULL, code TEXT, description TEXT, link TEXT,
+  notes TEXT, tags TEXT,
+  created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX idx_tasks_user_label ON tasks (user_id, label);
+CREATE TABLE task_days (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL, work_date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'todo',
   elapsed_time INTEGER NOT NULL DEFAULT 0, total_time INTEGER NOT NULL DEFAULT 0,
   position INTEGER NOT NULL DEFAULT 0, is_running INTEGER NOT NULL DEFAULT 0,
   done INTEGER NOT NULL DEFAULT 0, is_completed INTEGER NOT NULL DEFAULT 0,
   is_cancelled INTEGER NOT NULL DEFAULT 0, is_deleted INTEGER NOT NULL DEFAULT 0,
   is_archived INTEGER NOT NULL DEFAULT 0, is_pinned INTEGER NOT NULL DEFAULT 0,
   is_important INTEGER NOT NULL DEFAULT 0, start_time INTEGER, end_time INTEGER,
-  work_date TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
+  created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE UNIQUE INDEX idx_task_days_task_date ON task_days (task_id, work_date);
 CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id INTEGER, subject TEXT, summary TEXT, branch TEXT, pr TEXT);
 CREATE TABLE task_integrations (id INTEGER PRIMARY KEY, task_id INTEGER, "group" TEXT, field TEXT, value TEXT);
 CREATE TABLE user_settings (user_id TEXT PRIMARY KEY, timer_mode TEXT NOT NULL DEFAULT 'focus', updated_at INTEGER NOT NULL DEFAULT 0);
@@ -68,12 +76,10 @@ function makeFixture() {
   const db = new DatabaseSync(dbPath);
   db.exec(SCHEMA);
   db.prepare('INSERT INTO users (id, email) VALUES (?, ?)').run(email, email);
-  db.prepare('INSERT INTO tasks (user_id, label, description, work_date) VALUES (?, ?, ?, ?)').run(
-    email,
-    key,
-    'fixture ticket',
-    today
-  );
+  const { lastInsertRowid } = db
+    .prepare('INSERT INTO tasks (user_id, label, description) VALUES (?, ?, ?)')
+    .run(email, key, 'fixture ticket');
+  db.prepare('INSERT INTO task_days (task_id, work_date) VALUES (?, ?)').run(lastInsertRowid, today);
   db.close();
 
   writeFileSync(
@@ -242,7 +248,7 @@ async function runStopVerification() {
 
     const all = captured(stub.capturePath);
     check(
-      fixtureScalar(fixture.dbPath, `SELECT done FROM tasks WHERE label='${key}'`) === 0,
+      fixtureScalar(fixture.dbPath, `SELECT td.done FROM tasks t JOIN task_days td ON td.task_id = t.id WHERE t.label='${key}'`) === 0,
       `${key}: fixture should not be done, so the stop path must return it to '${TODO}'`
     );
 

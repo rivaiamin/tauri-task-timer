@@ -47,17 +47,24 @@ const SCHEMA = `
 CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL);
 CREATE TABLE tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id TEXT NOT NULL, label TEXT NOT NULL, description TEXT, code TEXT, link TEXT,
-  status TEXT NOT NULL DEFAULT 'todo', notes TEXT, tags TEXT,
+  user_id TEXT NOT NULL, label TEXT NOT NULL, code TEXT, description TEXT, link TEXT,
+  notes TEXT, tags TEXT,
+  created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX idx_tasks_user_label ON tasks (user_id, label);
+CREATE TABLE task_days (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL, work_date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'todo',
   elapsed_time INTEGER NOT NULL DEFAULT 0, total_time INTEGER NOT NULL DEFAULT 0,
   position INTEGER NOT NULL DEFAULT 0, is_running INTEGER NOT NULL DEFAULT 0,
   done INTEGER NOT NULL DEFAULT 0, is_completed INTEGER NOT NULL DEFAULT 0,
   is_cancelled INTEGER NOT NULL DEFAULT 0, is_deleted INTEGER NOT NULL DEFAULT 0,
   is_archived INTEGER NOT NULL DEFAULT 0, is_pinned INTEGER NOT NULL DEFAULT 0,
   is_important INTEGER NOT NULL DEFAULT 0, start_time INTEGER, end_time INTEGER,
-  work_date TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
+  created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
 );
-CREATE UNIQUE INDEX idx_tasks_user_date_label ON tasks (user_id, work_date, label);
+CREATE UNIQUE INDEX idx_task_days_task_date ON task_days (task_id, work_date);
 CREATE TABLE user_settings (user_id TEXT PRIMARY KEY, timer_mode TEXT NOT NULL DEFAULT 'focus', updated_at INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, subject TEXT, summary TEXT, branch TEXT, pr TEXT, created_at INTEGER NOT NULL);
 CREATE TABLE task_integrations (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, "group" TEXT NOT NULL, field TEXT NOT NULL, value TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
@@ -105,11 +112,15 @@ function makeFixture(dir) {
     email,
     'x'
   );
-  const insert = db.prepare(
-    'INSERT INTO tasks (user_id, label, description, work_date, position) VALUES (?, ?, ?, ?, ?)'
-  );
-  insert.run(email, KEYED_LABEL, 'see the ticket', DATE, 0);
-  insert.run(email, PLAIN_LABEL, 'no ticket here', DATE, 1);
+  const insertTask = db.prepare('INSERT INTO tasks (user_id, label, description) VALUES (?, ?, ?)');
+  const insertDay = db.prepare('INSERT INTO task_days (task_id, work_date, position) VALUES (?, ?, ?)');
+  for (const [label, desc, pos] of [
+    [KEYED_LABEL, 'see the ticket', 0],
+    [PLAIN_LABEL, 'no ticket here', 1],
+  ]) {
+    const { lastInsertRowid } = insertTask.run(email, label, desc);
+    insertDay.run(lastInsertRowid, DATE, pos);
+  }
   db.close();
 
   writeFileSync(

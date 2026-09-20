@@ -31,17 +31,24 @@ const SCHEMA = `
 CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL);
 CREATE TABLE tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id TEXT NOT NULL, label TEXT NOT NULL, description TEXT, code TEXT, link TEXT,
-  status TEXT NOT NULL DEFAULT 'todo', notes TEXT, tags TEXT,
+  user_id TEXT NOT NULL, label TEXT NOT NULL, code TEXT, description TEXT, link TEXT,
+  notes TEXT, tags TEXT,
+  created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX idx_tasks_user_label ON tasks (user_id, label);
+CREATE TABLE task_days (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL, work_date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'todo',
   elapsed_time INTEGER NOT NULL DEFAULT 0, total_time INTEGER NOT NULL DEFAULT 0,
   position INTEGER NOT NULL DEFAULT 0, is_running INTEGER NOT NULL DEFAULT 0,
   done INTEGER NOT NULL DEFAULT 0, is_completed INTEGER NOT NULL DEFAULT 0,
   is_cancelled INTEGER NOT NULL DEFAULT 0, is_deleted INTEGER NOT NULL DEFAULT 0,
   is_archived INTEGER NOT NULL DEFAULT 0, is_pinned INTEGER NOT NULL DEFAULT 0,
   is_important INTEGER NOT NULL DEFAULT 0, start_time INTEGER, end_time INTEGER,
-  work_date TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
+  created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
 );
-CREATE UNIQUE INDEX idx_tasks_user_date_label ON tasks (user_id, work_date, label);
+CREATE UNIQUE INDEX idx_task_days_task_date ON task_days (task_id, work_date);
 CREATE TABLE user_settings (user_id TEXT PRIMARY KEY, timer_mode TEXT NOT NULL DEFAULT 'focus', updated_at INTEGER NOT NULL DEFAULT 0);
 CREATE TABLE task_comments (id INTEGER PRIMARY KEY, task_id INTEGER, subject TEXT, summary TEXT, branch TEXT, pr TEXT);
 CREATE TABLE task_integrations (id INTEGER PRIMARY KEY, task_id INTEGER, "group" TEXT, field TEXT, value TEXT);
@@ -72,12 +79,10 @@ function makeFixture() {
     email,
     'x'
   );
-  db.prepare('INSERT INTO tasks (user_id, label, description, work_date) VALUES (?, ?, ?, ?)').run(
-    email,
-    LABEL,
-    'fixture ticket',
-    DATE
-  );
+  const { lastInsertRowid } = db
+    .prepare('INSERT INTO tasks (user_id, label, description) VALUES (?, ?, ?)')
+    .run(email, LABEL, 'fixture ticket');
+  db.prepare('INSERT INTO task_days (task_id, work_date) VALUES (?, ?)').run(lastInsertRowid, DATE);
   db.close();
 
   writeFileSync(
@@ -90,7 +95,7 @@ function makeFixture() {
 function statusOf(dbPath) {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
-    const row = db.prepare('SELECT status, is_running, done FROM tasks WHERE label = ?').get(LABEL);
+    const row = db.prepare('SELECT td.status, td.is_running, td.done FROM tasks t JOIN task_days td ON td.task_id = t.id WHERE t.label = ?').get(LABEL);
     return row;
   } finally {
     db.close();
@@ -100,7 +105,7 @@ function statusOf(dbPath) {
 function reset(dbPath) {
   const db = new DatabaseSync(dbPath);
   db.prepare(
-    "UPDATE tasks SET status='todo', is_running=0, done=0, start_time=NULL, elapsed_time=0 WHERE label=?"
+    "UPDATE task_days SET status='todo', is_running=0, done=0, start_time=NULL, elapsed_time=0 WHERE task_id = (SELECT id FROM tasks WHERE label=?)"
   ).run(LABEL);
   db.close();
 }
@@ -221,7 +226,7 @@ async function pickerControl(fixture) {
     return false;
   }
   const db = new DatabaseSync(fixture.dbPath);
-  db.prepare("UPDATE tasks SET status='todo' WHERE label=?").run(LABEL);
+  db.prepare("UPDATE task_days SET status='todo' WHERE task_id = (SELECT id FROM tasks WHERE label=?)").run(LABEL);
   db.close();
 
   const after = statusOf(fixture.dbPath);
