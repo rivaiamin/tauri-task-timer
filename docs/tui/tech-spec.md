@@ -70,8 +70,8 @@ database_path = "/path/to/apps/web/local.db"
 user_email = "you@example.com"
 # timer_mode = "focus"   # optional; else user_settings.timer_mode
 # JIRA (E4) — env vars: JIRA_SITE, JIRA_EMAIL, JIRA_TOKEN
-# jira_board = "AIMSIS"
-# jira_sprint_id = "123"
+# jira_sprint_id = "123"   # required by the sprint picker (Ctrl+J 3)
+# jira_board = "AIMSIS"    # loaded but unused: the four modes are JQL on sprint id
 # Bitbucket (E5) — env vars: BITBUCKET_EMAIL, BITBUCKET_TOKEN
 # bitbucket_workspace = "your-workspace"
 # bitbucket_repo = "your-repo"
@@ -253,11 +253,14 @@ Chose option A: standalone `reqwest` calls from TUI. No web server dependency.
 | `get_transitions` | GET available workflow transitions |
 | `transition_issue` | POST transition to move issue status |
 | `pick_transition_id` | Match status name to transition |
-| `fetch_sprint_issues` | GET all issues in a sprint (board + sprint ID) |
+| `jql_for` | Build the JQL for one sprint mode (unassigned / reporter / assignee undone) |
+| `search_issues` | POST JQL search, retrying `/search/jql` when the old path is gone |
+| `fetch_issue` | GET one issue by key (validated as a JIRA key first) |
 
 **TUI controls:** Ctrl+J opens JIRA menu → comment (1), transition (2), sprint sync (3).
 Credentials via env vars (`JIRA_SITE`, `JIRA_EMAIL`, `JIRA_TOKEN`).
-Board/sprint config in `config.toml` (`jira_board`, `jira_sprint_id`).
+Sprint config in `config.toml` (`jira_sprint_id`) — the four modes are JQL scoped by
+sprint id, so `jira_board` is loaded but unused.
 
 ## E5 — Git / Bitbucket Integration (implemented)
 

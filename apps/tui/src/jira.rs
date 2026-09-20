@@ -32,28 +32,6 @@ struct TransitionsResponse {
     transitions: Vec<Transition>,
 }
 
-#[derive(Debug, Deserialize)]
-struct SprintIssue {
-    key: String,
-    fields: Option<SprintIssueFields>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SprintIssueFields {
-    summary: Option<String>,
-    status: Option<IssueStatus>,
-}
-
-#[derive(Debug, Deserialize)]
-struct IssueStatus {
-    name: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SprintIssuesResponse {
-    issues: Vec<SprintIssue>,
-}
-
 fn load_credentials() -> Option<Credentials> {
     let mut email = env::var("JIRA_EMAIL").ok();
     let mut token = env::var("JIRA_TOKEN").ok();
@@ -525,45 +503,101 @@ pub fn fire_on_done(label: &str, description: &str, seconds: i64, started_ms: Op
     fire_run_end(label, description, seconds, started_ms, true)
 }
 
-/// Fetch issues from a JIRA sprint (Agile REST API).
-/// Returns (issue_key, summary, status_name) tuples.
-pub fn fetch_sprint_issues(board: &str, sprint_id: &str) -> Result<Vec<(String, String, String)>> {
-    let creds = load_credentials().context("JIRA not configured")?;
-    let client = jira_client()?;
-    let url = format!(
-        "{}/rest/agile/1.0/board/{board}/sprint/{sprint_id}/issue?fields=summary,status",
-        jira_site()
-    );
-    let resp = client
-        .get(&url)
-        .basic_auth(&creds.email, Some(&creds.token))
-        .header(reqwest::header::ACCEPT, "application/json")
-        .send()
-        .context("JIRA sprint request failed")?;
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().unwrap_or_default();
-        bail!("JIRA sprint fetch -> {status}: {text}");
-    }
-    let data: SprintIssuesResponse = resp.json().context("parse sprint issues response")?;
-    Ok(data
-        .issues
-        .into_iter()
-        .map(|i| {
-            let summary = i
-                .fields
-                .as_ref()
-                .and_then(|f| f.summary.clone())
-                .unwrap_or_default();
-            let status_name = i
-                .fields
-                .as_ref()
-                .and_then(|f| f.status.as_ref())
-                .and_then(|s| s.name.clone())
-                .unwrap_or_default();
-            (i.key, summary, status_name)
+/// Which unfinished slice of a sprint to pull. Each mode maps to one JQL
+/// string; the sprint is the scope, the predicate is the mode.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SprintQuery {
+    Unassigned,
+    ReporterUndone,
+    AssigneeUndone,
+}
+
+/// The JQL for a query mode. A numeric sprint id is interpolated bare; anything
+/// else is quoted, because a JQL identifier that is not a number must be.
+pub fn jql_for(query: SprintQuery, sprint_id: &str) -> String {
+    let sprint = if !sprint_id.is_empty() && sprint_id.chars().all(|c| c.is_ascii_digit()) {
+        sprint_id.to_string()
+    } else {
+        format!("\"{}\"", sprint_id.replace('"', "\\\""))
+    };
+    let predicate = match query {
+        SprintQuery::Unassigned => "assignee is EMPTY AND statusCategory != Done",
+        SprintQuery::ReporterUndone => "reporter = currentUser() AND statusCategory != Done",
+        SprintQuery::AssigneeUndone => "assignee = currentUser() AND statusCategory != Done",
+    };
+    format!("sprint = {sprint} AND {predicate}")
+}
+
+/// Search issues by JQL. Returns (issue_key, summary, status_name) tuples.
+///
+/// The v3 search endpoint moved to `/search/jql`; when the old path answers 410
+/// (or names the new one), the same body is retried once against it.
+pub fn search_issues(jql: &str) -> Result<Vec<(String, String, String)>> {
+    let body = serde_json::json!({
+        "jql": jql,
+        "fields": ["summary", "status"],
+        "maxResults": 50,
+    });
+    let data = match jira_fetch("/search", "POST", Some(body.clone())) {
+        Ok(data) => data,
+        Err(e) => {
+            let msg = format!("{e:#}");
+            if msg.contains("410") || msg.contains("/search/jql") {
+                jira_fetch("/search/jql", "POST", Some(body))?
+            } else {
+                return Err(e);
+            }
+        }
+    };
+    Ok(parse_issues(&data))
+}
+
+/// Fetch one issue by key. The key is validated as a JIRA key before any
+/// network call, so a typo cannot become a request.
+pub fn fetch_issue(key: &str) -> Result<(String, String, String)> {
+    let Some(key) = issue_key(key, "") else {
+        bail!("not a JIRA key");
+    };
+    let data = jira_fetch(&format!("/issue/{key}?fields=summary,status"), "GET", None)?;
+    Ok((
+        key,
+        data.get("fields")
+            .and_then(|f| f.get("summary"))
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        data.get("fields")
+            .and_then(|f| f.get("status"))
+            .and_then(|s| s.get("name"))
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_string(),
+    ))
+}
+
+fn parse_issues(data: &serde_json::Value) -> Vec<(String, String, String)> {
+    data.get("issues")
+        .and_then(|i| i.as_array())
+        .map(|issues| {
+            issues
+                .iter()
+                .filter_map(|i| {
+                    let key = i.get("key").and_then(|k| k.as_str())?;
+                    let fields = i.get("fields");
+                    let summary = fields
+                        .and_then(|f| f.get("summary"))
+                        .and_then(|s| s.as_str())
+                        .unwrap_or_default();
+                    let status_name = fields
+                        .and_then(|f| f.get("status"))
+                        .and_then(|s| s.get("name"))
+                        .and_then(|s| s.as_str())
+                        .unwrap_or_default();
+                    Some((key.to_string(), summary.to_string(), status_name.to_string()))
+                })
+                .collect()
         })
-        .collect())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -719,6 +753,37 @@ mod tests {
         assert_eq!(resolve_status_id("51"), Some("51"));
         assert_eq!(resolve_status_id("cek di local"), Some("51"));
         assert_eq!(resolve_status_id("nope"), None);
+    }
+
+    #[test]
+    fn jql_scopes_the_sprint_and_the_mode_predicate() {
+        assert_eq!(
+            jql_for(SprintQuery::Unassigned, "123"),
+            "sprint = 123 AND assignee is EMPTY AND statusCategory != Done"
+        );
+        assert_eq!(
+            jql_for(SprintQuery::ReporterUndone, "123"),
+            "sprint = 123 AND reporter = currentUser() AND statusCategory != Done"
+        );
+        assert_eq!(
+            jql_for(SprintQuery::AssigneeUndone, "123"),
+            "sprint = 123 AND assignee = currentUser() AND statusCategory != Done"
+        );
+    }
+
+    #[test]
+    fn jql_quotes_a_non_numeric_sprint_id() {
+        assert_eq!(
+            jql_for(SprintQuery::Unassigned, "Sprint 42"),
+            "sprint = \"Sprint 42\" AND assignee is EMPTY AND statusCategory != Done"
+        );
+    }
+
+    /// The key is checked before any request, so a typo cannot become one.
+    #[test]
+    fn fetch_issue_rejects_a_non_key_without_network() {
+        let err = fetch_issue("not-a-key").unwrap_err();
+        assert!(format!("{err:#}").contains("not a JIRA key"), "{err:#}");
     }
 
     #[test]

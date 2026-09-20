@@ -82,7 +82,7 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 ### TUI
 
 - [x] `AppMode::Daily | Archive` (`a` toggle)
-- [x] `list_archive()` in `db/tasks.rs` (+ 3 tests, q/tag filters, unfinished exclusion)
+- [x] `list_archive()` in `db/tasks.rs` (q/tag/status/integration filters, unfinished exclusion)
 - [x] `ui/archive_view.rs` (filter bar, `c` continue today via E1 dedup rules)
 - [x] Keybinding + help (`a`, `/`, `t`, `c`, daily `a:archive` hint)
 
@@ -105,7 +105,7 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 
 ### TUI
 
-- [x] Sync menu + fetch sprint / by key
+- [x] Sprint picker: unassigned / reporter undone / assignee undone / fetch by key (JQL, no board)
 - [x] Detail, comment, transition UI
 - [x] Store in `task_integrations`
 

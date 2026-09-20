@@ -56,6 +56,8 @@ pub enum JiraMode {
     Menu,
     Comment { buffer: String },
     Transition { transitions: Vec<Transition>, selected: usize },
+    SyncPick,
+    FetchKey { buffer: String },
     Syncing,
 }
 
@@ -112,6 +114,9 @@ pub struct App {
     pub status: String,
     status_until: Option<Instant>,
     clipboard: Option<arboard::Clipboard>,
+    /// Still read from `config.toml`, but the four JQL sprint modes scope by
+    /// sprint id alone — the Agile board URL was the only consumer.
+    #[allow(dead_code)]
     pub jira_board: Option<String>,
     pub jira_sprint_id: Option<String>,
     pub git_repo_path: Option<std::path::PathBuf>,
@@ -823,6 +828,16 @@ impl App {
                 }
                 _ => {}
             },
+            JiraMode::FetchKey { buffer } => match key.code {
+                KeyCode::Backspace => { buffer.pop(); }
+                KeyCode::Char(c)
+                    if key.modifiers == KeyModifiers::NONE
+                        || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    buffer.push(c);
+                }
+                _ => {}
+            },
             JiraMode::Transition { ref transitions, ref mut selected } => match key.code {
                 KeyCode::Char('j') | KeyCode::Down => {
                     *selected = (*selected + 1).min(transitions.len() - 1);
@@ -874,27 +889,9 @@ impl App {
                     }
                 }
                 KeyCode::Char('3') => {
-                    let board = self.jira_board.clone();
-                    let sprint_id = self.jira_sprint_id.clone();
-                    match (board, sprint_id) {
-                        (Some(board), Some(sprint_id)) => {
-                            self.overlay = Overlay::Jira { mode: JiraMode::Syncing };
-                            match self.sync_sprint(&board, &sprint_id) {
-                                Ok(msg) => {
-                                    self.set_status(msg);
-                                    self.overlay = Overlay::None;
-                                    if let Err(e) = self.reload() { self.err_status(e); }
-                                }
-                                Err(e) => {
-                                    self.set_status(format!("sprint sync: {e}"));
-                                    self.overlay = Overlay::None;
-                                }
-                            }
-                        }
-                        _ => {
-                            self.set_status("set jira_board + jira_sprint_id in config.toml");
-                        }
-                    }
+                    self.overlay = Overlay::Jira {
+                        mode: JiraMode::SyncPick,
+                    };
                 }
                 _ => {
                     self.overlay = Overlay::Jira { mode: JiraMode::Menu };
@@ -993,6 +990,58 @@ impl App {
                     };
                 }
             },
+            JiraMode::SyncPick => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.overlay = Overlay::Jira { mode: JiraMode::Menu };
+                }
+                KeyCode::Char('1') => self.run_sprint_query(jira::SprintQuery::Unassigned),
+                KeyCode::Char('2') => self.run_sprint_query(jira::SprintQuery::ReporterUndone),
+                KeyCode::Char('3') => self.run_sprint_query(jira::SprintQuery::AssigneeUndone),
+                KeyCode::Char('4') => {
+                    self.overlay = Overlay::Jira {
+                        mode: JiraMode::FetchKey { buffer: String::new() },
+                    };
+                }
+                _ => {
+                    self.overlay = Overlay::Jira { mode: JiraMode::SyncPick };
+                }
+            },
+            JiraMode::FetchKey { buffer } => match key.code {
+                KeyCode::Esc => {
+                    self.overlay = Overlay::Jira { mode: JiraMode::SyncPick };
+                }
+                KeyCode::Enter => {
+                    let key = buffer.trim().to_string();
+                    if key.is_empty() {
+                        self.set_status("issue key is empty");
+                        self.overlay = Overlay::Jira {
+                            mode: JiraMode::FetchKey { buffer },
+                        };
+                        return Ok(false);
+                    }
+                    self.overlay = Overlay::Jira { mode: JiraMode::Syncing };
+                    match jira::fetch_issue(&key) {
+                        Ok(issue) => {
+                            let issues = vec![issue];
+                            match self.ingest_jira_issues(&issues) {
+                                Ok(msg) => {
+                                    self.set_status(msg);
+                                    if let Err(e) = self.reload() { self.err_status(e); }
+                                }
+                                Err(e) => self.set_status(format!("fetch by key: {e}")),
+                            }
+                        }
+                        Err(e) => self.set_status(format!("fetch by key: {e}")),
+                    }
+                    self.overlay = Overlay::None;
+                }
+                _ => {
+                    // preserve typed buffer
+                    self.overlay = Overlay::Jira {
+                        mode: JiraMode::FetchKey { buffer },
+                    };
+                }
+            },
             JiraMode::Syncing => match key.code {
                 KeyCode::Esc | KeyCode::Enter => {
                     // self.overlay already Overlay::None
@@ -1006,13 +1055,14 @@ impl App {
     }
 
 
-    fn sync_sprint(&mut self, board: &str, sprint_id: &str) -> Result<String> {
-        let issues = jira::fetch_sprint_issues(board, sprint_id)?;
+    /// Create-or-update today's tasks for a batch of JIRA issues and link each
+    /// to its issue key. Reports the split so the caller can toast it.
+    fn ingest_jira_issues(&mut self, issues: &[(String, String, String)]) -> Result<String> {
         let today = self.date_str();
         let mut created = 0u32;
         let mut updated = 0u32;
         let user_id = self.user_id.clone();
-        for (key, summary, _status) in &issues {
+        for (key, summary, _status) in issues {
             let label = format!("{key} {summary}");
             let task = tasks::create_task(&self.conn, &user_id, &today, label.trim(), Some(summary))?;
             db::integrations::upsert(&self.conn, task.id, "jira", "issue_key", Some(key))?;
@@ -1023,7 +1073,35 @@ impl App {
                 updated += 1;
             }
         }
-        Ok(format!("sprint sync: {created} created, {updated} updated, {} total", issues.len()))
+        let mut msg = format!("{created} created, {updated} updated, {} total", issues.len());
+        if issues.len() >= 50 {
+            msg.push_str(" (first 50)");
+        }
+        Ok(msg)
+    }
+
+    /// Run one of the four sprint modes: fetch, then ingest. Needs only the
+    /// sprint id — the board is not part of JQL.
+    fn run_sprint_query(&mut self, query: jira::SprintQuery) {
+        let Some(sprint_id) = self.jira_sprint_id.clone() else {
+            self.set_status("set jira_sprint_id in config.toml");
+            return;
+        };
+        self.overlay = Overlay::Jira { mode: JiraMode::Syncing };
+        let jql = jira::jql_for(query, &sprint_id);
+        match jira::search_issues(&jql) {
+            Ok(issues) => match self.ingest_jira_issues(&issues) {
+                Ok(msg) => {
+                    self.set_status(format!("jira: {msg}"));
+                    if let Err(e) = self.reload() {
+                        self.err_status(e);
+                    }
+                }
+                Err(e) => self.set_status(format!("jira sync: {e}")),
+            },
+            Err(e) => self.set_status(format!("jira sync: {e}")),
+        }
+        self.overlay = Overlay::None;
     }
 
     fn open_git_menu(&mut self) {
