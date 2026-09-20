@@ -63,7 +63,8 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
     'list_tasks',
     {
       title: 'List tasks',
-      description: 'List tasks with elapsed time and total. Filter with date (YYYY-MM-DD), q (label substring), tag, status, done, archived.',
+      description:
+        'List tasks with elapsed time and total. With date (YYYY-MM-DD) the result is that day: the tasks worked that day, with that day\'s time. Without date it is the archive: every task, each carrying a days[] array of its per-day entries. Also filter with q (label substring), tag, status, done, archived.',
       inputSchema: {
         date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional().describe('Work date YYYY-MM-DD'),
         q: z.string().optional().describe('Label substring (case-insensitive)'),
@@ -143,10 +144,16 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
     'create_task',
     {
       title: 'Create task',
-      description: 'Create a new task.',
+      description:
+        'Create a task, or return the existing task with the same label. A task is identified by its label, so creating the same label again is the same task; a new day adds that day to it.',
       inputSchema: {
         label: z.string().min(1).describe('Task name'),
         description: z.string().optional(),
+        workDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional()
+          .describe('Day to create the task on, YYYY-MM-DD (default: today)'),
         code: z.string().nullable().optional(),
         link: z.string().url().nullable().optional(),
         status: z.string().optional(),
@@ -154,8 +161,8 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
         tags: z.array(z.string()).nullable().optional()
       }
     },
-    ({ label, description, code, link, status, notes, tags }) =>
-      api('/tasks', 'POST', { label, description, code, link, status, notes, tags })
+    ({ label, description, workDate, code, link, status, notes, tags }) =>
+      api('/tasks', 'POST', { label, description, workDate, code, link, status, notes, tags })
   );
 
   tool(
@@ -163,42 +170,76 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
     {
       title: 'Start timer',
       description:
-        "Start a task's timer. Omit `exclusive` to use the user's timer mode (focus stops others; parallel does not).",
+        "Start a task's timer for a day (default today), adding that day to the task if it does not have one yet. Omit `exclusive` to use the user's timer mode (focus stops others; parallel does not).",
       inputSchema: {
         task_id: z.number().int(),
-        exclusive: z.boolean().optional().describe('If true, stop all other running timers first')
+        exclusive: z.boolean().optional().describe('If true, stop all other running timers first'),
+        workDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional()
+          .describe('Day to time, YYYY-MM-DD (default: today)')
       }
     },
-    ({ task_id, exclusive }) => api(`/tasks/${task_id}/start`, 'POST', { exclusive })
+    ({ task_id, exclusive, workDate }) => api(`/tasks/${task_id}/start`, 'POST', { exclusive, workDate })
   );
 
   tool(
     'stop_timer',
-    { title: 'Stop timer', description: "Stop a task's timer, accumulating elapsed time.", inputSchema: { task_id: z.number().int() } },
-    ({ task_id }) => api(`/tasks/${task_id}/stop`, 'POST')
+    {
+      title: 'Stop timer',
+      description: "Stop a task's timer, accumulating elapsed time for that day.",
+      inputSchema: {
+        task_id: z.number().int(),
+        workDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+      }
+    },
+    ({ task_id, workDate }) => api(`/tasks/${task_id}/stop`, 'POST', { workDate })
   );
 
   tool(
     'reset_task',
-    { title: 'Reset task', description: "Reset a single task's elapsed time to zero.", inputSchema: { task_id: z.number().int() } },
-    ({ task_id }) => api(`/tasks/${task_id}/reset`, 'POST')
+    {
+      title: 'Reset task',
+      description: "Reset one task's elapsed time to zero for a day (default today).",
+      inputSchema: {
+        task_id: z.number().int(),
+        workDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+      }
+    },
+    ({ task_id, workDate }) => api(`/tasks/${task_id}/reset`, 'POST', { workDate })
   );
 
-  tool('reset_all', { title: 'Reset all', description: 'Reset every task to zero.' }, () => api('/tasks/reset-all', 'POST'));
+  tool(
+    'reset_all',
+    {
+      title: 'Reset all',
+      description: 'Reset every task to zero for a day (default today).',
+      inputSchema: {
+        workDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+      }
+    },
+    ({ workDate }) => api('/tasks/reset-all', 'POST', { workDate })
+  );
 
   tool(
     'update_task',
     {
       title: 'Update task',
       description:
-        'Update a task label, description, elapsed time (seconds), and/or done flag. Marking done moves the linked JIRA issue to Cek di Local.',
+        "Update a task's label, description, elapsed time (seconds), and/or done flag. Label, description, code, link, notes and tags belong to the task itself; elapsed, status, done and the flags belong to the day named by workDate (default today). Marking done moves the linked JIRA issue to Cek di Local.",
       inputSchema: {
         task_id: z.number().int(),
         label: z.string().min(1).optional(),
         description: z.string().nullable().optional(),
         elapsed_seconds: z.number().int().min(0).optional(),
-        done: z.boolean().optional()
-        ,code: z.string().nullable().optional()
+        done: z.boolean().optional(),
+        workDate: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional()
+          .describe('Day the day-scoped fields apply to, YYYY-MM-DD (default: today)'),
+        code: z.string().nullable().optional()
         ,link: z.string().url().nullable().optional()
         ,status: z.string().optional()
         ,notes: z.string().nullable().optional()
@@ -211,12 +252,13 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
         ,is_important: z.boolean().optional()
       }
     },
-    ({ task_id, label, description, elapsed_seconds, done, code, link, status, notes, tags, is_completed, is_cancelled, is_deleted, is_archived, is_pinned, is_important }) => {
+    ({ task_id, label, description, elapsed_seconds, done, workDate, code, link, status, notes, tags, is_completed, is_cancelled, is_deleted, is_archived, is_pinned, is_important }) => {
       const body: Record<string, unknown> = {};
       if (label !== undefined) body.label = label;
       if (description !== undefined) body.description = description;
       if (elapsed_seconds !== undefined) body.elapsed_seconds = elapsed_seconds;
       if (done !== undefined) body.done = done;
+      if (workDate !== undefined) body.workDate = workDate;
       if (code !== undefined) body.code = code;
       if (link !== undefined) body.link = link;
       if (status !== undefined) body.status = status;

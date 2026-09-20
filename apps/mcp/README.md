@@ -76,20 +76,20 @@ before exposing it publicly (the default bind is loopback only).
 
 | Tool | Description |
 |------|-------------|
-| `list_tasks` | List all tasks with elapsed time and the total |
-| `create_task` | Create a new task (see extended fields below) |
-| `update_task` | Update label, description, elapsed, status, code, notes, tags, and/or flags |
-| `delete_task` | Delete a task |
+| `list_tasks` | List tasks with elapsed time and the total. With `date` it is that day; without `date` it is the archive — every task, each with a `days[]` array of its per-day entries |
+| `create_task` | Create a task, or return the existing task with the same label |
+| `update_task` | Update the task's label/description/code/link/notes/tags, and/or the day's elapsed, status and flags |
+| `delete_task` | Delete a task (its days, comments and integrations go with it) |
 | `reorder_tasks` | Set task order by giving all task ids in the desired order |
 
 ### Timer
 
 | Tool | Description |
 |------|-------------|
-| `start_timer` | Start a task's timer. Omit `exclusive` to use the user's timer mode |
-| `stop_timer` | Stop a task's timer, accumulating elapsed time |
-| `reset_task` | Reset a single task's elapsed time to zero |
-| `reset_all` | Reset every task to zero |
+| `start_timer` | Start a task's timer for a day (default today), adding that day if it does not exist yet. Omit `exclusive` to use the user's timer mode |
+| `stop_timer` | Stop a task's timer, accumulating elapsed time for that day |
+| `reset_task` | Reset one task's elapsed time to zero for a day (default today) |
+| `reset_all` | Reset every task to zero for a day (default today) |
 
 ### Comments
 
@@ -115,17 +115,24 @@ before exposing it publicly (the default bind is loopback only).
 
 ## Extended task fields
 
-`create_task` and `update_task` accept these optional fields:
+A task is identified by its **label**: creating the same label again is the same
+task, and each day it is worked gets its own row carrying that day's time.
+
+`create_task` accepts `workDate` (YYYY-MM-DD, default today) plus these optional
+fields, which belong to the **task itself**:
 
 | Field | Type | Description |
 |-------|------|-------------|
 | `code` | string \| null | Short code or identifier |
 | `link` | string \| null | URL link (e.g. JIRA, PR) |
-| `status` | string | Task status (default: `todo`) |
 | `notes` | string \| null | Free-form notes |
 | `tags` | string[] \| null | Tags for categorization |
 
-`update_task` also supports flag fields: `is_completed`, `is_cancelled`, `is_deleted`, `is_archived`, `is_pinned`, `is_important`.
+`update_task` accepts the same task fields, and additionally `workDate` plus the
+fields that belong to **that day**: `elapsed_seconds`, `status`, and the flag
+fields `is_completed`, `is_cancelled`, `is_deleted`, `is_archived`, `is_pinned`,
+`is_important`. The timer tools (`start_timer`, `stop_timer`, `reset_task`,
+`reset_all`) also take an optional `workDate`.
 
 ## SSE live updates
 
