@@ -126,8 +126,12 @@ the column) and the six flags `is_pinned`, `is_important`, `is_archived`,
 flag only moves when the form actually set it.
 
 The form's tab order is `Label → Description → Status → Code → Elapsed → Notes →
-Tags → Link → Flags`. The status field opens the picker on any printable key;
-the flags field treats `p/i/a/c/x/d` as toggles in that column order and ignores
+Tags → Link → Flags`. The status field is a dropdown, not a text input: Enter (or
+any printable key) opens the catalog inline under the field, `j/k` (or a digit)
+moves the cursor, Enter applies the row and advances focus to `Code` so the next
+Enter saves, and Esc closes without applying. It lives on `Overlay::Form` as
+`status_pick: Option<usize>`, so opening it never disturbs the other fields. The
+flags field treats `p/i/a/c/x/d` as toggles in that column order and ignores
 other text. `create_task` only knows label and description, so the create path
 follows it with one `update_task` carrying everything else the form collected.
 

@@ -5,7 +5,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("Space", "start or stop timer (JIRA → In Progress / To Do)"),
     ("n", "new task"),
     ("e", "edit task (label, description, time, status, code, notes, tags, link, flags)"),
-    ("s / Enter", "on the status field: pick from the status list"),
+    ("s / Enter", "on the status field: open the status list (j/k then Enter)"),
     ("p/i/a/c/x/d", "on the flags field: toggle pinned/important/archived/cancelled/deleted/completed"),
     ("i", "task detail view (comments, PRs, commit status)"),
     ("C", "task comments (n to write one)"),

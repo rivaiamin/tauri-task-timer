@@ -126,10 +126,12 @@ pub fn draw(frame: &mut Frame, app: &App) {
             is_cancelled,
             is_deleted,
             is_completed,
+            status_pick,
         } => draw_form(
             frame,
             edit_id.is_some(),
             *field,
+            *status_pick,
             FormFields {
                 label,
                 description,
@@ -166,7 +168,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
             ..
         } => draw_comments(frame, comments, *selected, compose.as_deref()),
         Overlay::Filter { .. } => {}
-        Overlay::StatusPick { selected } => super::widgets::draw_status_pick(frame, *selected),
         Overlay::Jira { mode } => super::widgets::draw_jira(frame, mode),
         Overlay::Git { mode } => draw_git(frame, mode),
     }
@@ -230,7 +231,13 @@ fn on_off(v: bool) -> &'static str {
     }
 }
 
-fn draw_form(frame: &mut Frame, editing: bool, field: Field, f: FormFields) {
+fn draw_form(
+    frame: &mut Frame,
+    editing: bool,
+    field: Field,
+    status_pick: Option<usize>,
+    f: FormFields,
+) {
     let FormFields {
         label,
         description,
@@ -357,6 +364,12 @@ fn draw_form(frame: &mut Frame, editing: bool, field: Field, f: FormFields) {
             .style(Style::default().fg(Color::DarkGray)),
         rows[19],
     );
+
+    // Drawn last, and starting at the row under the status value, so the list
+    // paints over the fields below it rather than being clipped by them.
+    if let Some(cursor) = status_pick {
+        super::widgets::draw_status_dropdown(frame, inner, rows[6].y, cursor);
+    }
 }
 
 fn draw_git(frame: &mut Frame, mode: &GitMode) {

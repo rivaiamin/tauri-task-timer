@@ -108,12 +108,15 @@ pub enum Overlay {
         is_cancelled: bool,
         is_deleted: bool,
         is_completed: bool,
+        /// The status field's dropdown: `Some(cursor)` while it is open, where
+        /// the cursor indexes `jira::JIRA_STATUSES` and its length is the
+        /// "No status" row. `None` means the list is closed. It lives on the
+        /// form rather than in an overlay of its own, so opening it never
+        /// disturbs the other fields.
+        status_pick: Option<usize>,
     },
     Jira { mode: JiraMode },
     Git { mode: GitMode },
-    /// Status picker for the form's status field: the catalog, not free text.
-    /// `selected` indexes `jira::JIRA_STATUSES`; its length is "No status".
-    StatusPick { selected: usize },
 }
 
 pub struct App {
@@ -137,8 +140,6 @@ pub struct App {
     pub git_repo_path: Option<std::path::PathBuf>,
     pub bitbucket_workspace: Option<String>,
     pub bitbucket_repo: Option<String>,
-    /// The form the status picker was opened from, parked while the picker is up.
-    form_under_state: Option<Overlay>,
     hook_listener: crate::hooks::HookListener,
 }
 
@@ -194,7 +195,6 @@ impl App {
             git_repo_path,
             bitbucket_workspace,
             bitbucket_repo,
-            form_under_state: None,
             hook_listener: crate::hooks::HookListener::new(),
         };
         app.reload()?;
@@ -495,6 +495,7 @@ impl App {
             is_cancelled: false,
             is_deleted: false,
             is_completed: false,
+            status_pick: None,
         };
     }
 
@@ -508,7 +509,9 @@ impl App {
             label: t.label.clone(),
             description: t.description.clone().unwrap_or_default(),
             elapsed: format_time(t.current_elapsed(now_ms())),
-            status: jira::status_label(&t.status).to_string(),
+            // The field holds a catalog id; the label is for display only, so
+            // storing it here would leave the dropdown unable to find its row.
+            status: jira::resolve_status_id(&t.status).unwrap_or(&t.status).to_string(),
             code: t.code.clone().unwrap_or_default(),
             notes: t.notes.clone().unwrap_or_default(),
             tags: t.tags.clone().unwrap_or_default(),
@@ -519,101 +522,34 @@ impl App {
             is_cancelled: t.is_cancelled,
             is_deleted: t.is_deleted,
             is_completed: t.is_completed,
+            status_pick: None,
         };
     }
-
-    /// Rebuild the form the picker was opened from, optionally replacing the
-    /// status field. The picker is a field editor, not a separate form, so this
-    /// is the only way back — and the only place the field changes.
-    fn form_under(&mut self, status: Option<String>) -> Overlay {
-        let Overlay::Form {
-            edit_id,
-            field,
-            label,
-            description,
-            elapsed,
-            status: current,
-            code,
-            notes,
-            tags,
-            link,
-            is_pinned,
-            is_important,
-            is_archived,
-            is_cancelled,
-            is_deleted,
-            is_completed,
-        } = self.form_under_state.take().unwrap_or(Overlay::None)
-        else {
-            return Overlay::None;
-        };
-        Overlay::Form {
-            edit_id,
-            field,
-            label,
-            description,
-            elapsed,
-            status: status.unwrap_or(current),
-            code,
-            notes,
-            tags,
-            link,
-            is_pinned,
-            is_important,
-            is_archived,
-            is_cancelled,
-            is_deleted,
-            is_completed,
-        }
-    }
-
-    /// Move the form's status field from free text to the catalog: the picker
-    /// opens on whatever that field currently holds.
-    fn open_status_pick(&mut self) {
+    /// Open the form's status dropdown on the row the field already holds, or
+    /// close it if it is already open. The dropdown is part of the form, so
+    /// this is a field toggle rather than a separate overlay.
+    fn toggle_status_pick(&mut self) {
         let Overlay::Form {
             status,
-            edit_id,
-            field,
-            label,
-            description,
-            elapsed,
-            code,
-            notes,
-            tags,
-            link,
-            is_pinned,
-            is_important,
-            is_archived,
-            is_cancelled,
-            is_deleted,
-            is_completed,
-        } = &self.overlay
+            status_pick,
+            ..
+        } = &mut self.overlay
         else {
             return;
         };
-        let selected = jira::JIRA_STATUSES
-            .iter()
-            .position(|s| s.id == status.trim())
-            .unwrap_or(jira::JIRA_STATUSES.len());
-        self.form_under_state = Some(Overlay::Form {
-            edit_id: *edit_id,
-            field: *field,
-            label: label.clone(),
-            description: description.clone(),
-            elapsed: elapsed.clone(),
-            status: status.clone(),
-            code: code.clone(),
-            notes: notes.clone(),
-            tags: tags.clone(),
-            link: link.clone(),
-            is_pinned: *is_pinned,
-            is_important: *is_important,
-            is_archived: *is_archived,
-            is_cancelled: *is_cancelled,
-            is_deleted: *is_deleted,
-            is_completed: *is_completed,
-        });
-        self.overlay = Overlay::StatusPick { selected };
+        if status_pick.is_some() {
+            *status_pick = None;
+            return;
+        }
+        // A task stored before the field held catalog ids can still carry a
+        // label, so resolve both; anything unrecognised parks on "No status".
+        let id = jira::resolve_status_id(status.trim()).unwrap_or(status.trim());
+        *status_pick = Some(
+            jira::JIRA_STATUSES
+                .iter()
+                .position(|s| s.id == id)
+                .unwrap_or(jira::JIRA_STATUSES.len()),
+        );
     }
 
     fn submit_form(&mut self) -> Result<()> {
@@ -1528,71 +1464,85 @@ impl App {
         Ok(false)
     }
 
-    /// Keys for the status picker. Never quits, so it reports nothing — it only
-    /// ever closes back into the form it came from.
-    fn handle_status_pick_key(&mut self, key: KeyEvent) -> Result<()> {
-        // Copy the index out: `Overlay` is not `Copy`, so the shorthand bind
-        // would move the field it needs to write back.
-        let Overlay::StatusPick { selected } = &self.overlay else {
-            return Ok(());
-        };
-        let selected = *selected;
+    /// Keys while the form's status dropdown is open. Consumes everything it
+    /// recognises and reports whether it handled the key, so the caller never
+    /// falls through to the text fields underneath.
+    fn handle_status_pick_key(&mut self, key: KeyEvent) -> bool {
         // The row past the last status is "No status".
         let last = jira::JIRA_STATUSES.len();
+        let Overlay::Form {
+            field,
+            status,
+            status_pick,
+            ..
+        } = &mut self.overlay
+        else {
+            return false;
+        };
+        let Some(cursor) = *status_pick else {
+            return false;
+        };
         match key.code {
-            // Esc keeps the field as it was; only Enter applies a choice.
-            KeyCode::Esc => {
-                let restored = self.form_under(None);
-                self.overlay = restored;
+            // Esc leaves the field as it was; only Enter applies a choice.
+            KeyCode::Esc => *status_pick = None,
+            // Tab closes the list and lets focus move on as usual.
+            KeyCode::Tab | KeyCode::BackTab => {
+                *status_pick = None;
+                return false;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.overlay = Overlay::StatusPick {
-                    selected: (selected + 1).min(last),
-                };
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.overlay = Overlay::StatusPick {
-                    selected: selected.saturating_sub(1),
-                };
-            }
+            KeyCode::Char('j') | KeyCode::Down => *status_pick = Some((cursor + 1).min(last)),
+            KeyCode::Char('k') | KeyCode::Up => *status_pick = Some(cursor.saturating_sub(1)),
             KeyCode::Char(digit @ '0'..='8') => {
-                self.overlay = Overlay::StatusPick {
-                    selected: (digit as usize - '0' as usize).min(last),
-                };
+                *status_pick = Some((digit as usize - '0' as usize).min(last));
             }
             KeyCode::Enter => {
-                let status = jira::JIRA_STATUSES
-                    .get(selected)
+                *status = jira::JIRA_STATUSES
+                    .get(cursor)
                     .map(|s| s.id.to_string())
                     .unwrap_or_default();
-                let chosen = self.form_under(Some(status));
-                self.overlay = chosen;
+                *status_pick = None;
+                // Move on like Tab would. Staying put would make the next Enter
+                // reopen the list instead of saving the form the footer
+                // promises Enter saves.
+                *field = Field::Code;
             }
-            _ => {}
+            _ => return false,
         }
-        Ok(())
+        true
     }
 
     fn handle_form_key(&mut self, key: KeyEvent) -> Result<bool> {
+        // The dropdown owns the keyboard while it is open, so a `j` there moves
+        // the cursor instead of typing into the field behind it.
+        if self.handle_status_pick_key(key) {
+            return Ok(false);
+        }
         match key.code {
             KeyCode::Esc => {
                 self.overlay = Overlay::None;
                 return Ok(false);
             }
             KeyCode::Enter => {
+                // On the status field Enter opens the catalog rather than
+                // saving — the field is a dropdown, and the form's own hint
+                // says so.
+                if matches!(&self.overlay, Overlay::Form { field: Field::Status, .. }) {
+                    self.toggle_status_pick();
+                    return Ok(false);
+                }
                 self.submit_form()?;
                 return Ok(false);
             }
             _ => {}
         }
-        // The status field is a picker, not a text input: any printable key on it
-        // opens the catalog. Checked before the form borrow so opening can mutate.
+        // Any other printable key on the status field opens the catalog too, so
+        // the dropdown is reachable without knowing the Enter binding.
         let status_focused = matches!(&self.overlay, Overlay::Form { field: Field::Status, .. });
         if status_focused
             && matches!(key.code, KeyCode::Char(_))
             && (key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT)
         {
-            self.open_status_pick();
+            self.toggle_status_pick();
             return Ok(false);
         }
         let Overlay::Form {
@@ -1611,6 +1561,7 @@ impl App {
             is_cancelled,
             is_deleted,
             is_completed,
+            status_pick: _,
             edit_id: _,
         } = &mut self.overlay
         else {
@@ -1697,10 +1648,6 @@ impl App {
         match &self.overlay {
             Overlay::Filter { .. } => return self.handle_filter_key(key),
             Overlay::Form { .. } => return self.handle_form_key(key),
-            Overlay::StatusPick { .. } => {
-                self.handle_status_pick_key(key)?;
-                return Ok(false);
-            }
             Overlay::Help => {
                 if matches!(
                     key.code,
@@ -1968,15 +1915,23 @@ mod tests {
             is_cancelled: false,
             is_deleted: false,
             is_completed: false,
+            status_pick: None,
         }
     }
 
-    /// The picker is a field editor: whatever it applies must survive into the
-    /// form, which is what `submit_form` later writes to the database.
+    /// The dropdown edits the form's own field, so this reads the status the
+    /// next save would write.
     fn form_status(app: &App) -> &str {
         match &app.overlay {
             Overlay::Form { status, .. } => status,
             _ => panic!("expected the form back after the picker closed"),
+        }
+    }
+
+    fn pick_cursor(app: &App) -> Option<usize> {
+        match &app.overlay {
+            Overlay::Form { status_pick, .. } => *status_pick,
+            _ => panic!("expected the form"),
         }
     }
 
@@ -2014,84 +1969,122 @@ mod tests {
     #[test]
     fn picking_a_status_writes_its_catalog_id_into_the_form() {
         let mut app = app_with_form("");
-        app.open_status_pick();
+        app.toggle_status_pick();
         // No stored status → the cursor sits on the "No status" row, past the
         // catalog, and `k` walks up into it (Done is the third row from the top).
-        let Overlay::StatusPick { selected } = app.overlay else {
-            panic!("expected the picker");
-        };
-        assert_eq!(selected, jira::JIRA_STATUSES.len());
+        assert_eq!(pick_cursor(&app), Some(jira::JIRA_STATUSES.len()));
 
         for _ in 0..(jira::JIRA_STATUSES.len() - 2) {
-            app.handle_status_pick_key(key(KeyCode::Char('k'))).unwrap();
+            app.handle_form_key(key(KeyCode::Char('k'))).unwrap();
         }
-        app.handle_status_pick_key(key(KeyCode::Enter)).unwrap();
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(form_status(&app), "31", "the picked status must land in the form");
+        assert_eq!(pick_cursor(&app), None, "Enter closes the dropdown");
     }
 
     #[test]
     fn a_picker_cursor_opens_on_the_status_the_form_already_holds() {
         let mut app = app_with_form("51");
-        app.open_status_pick();
-        let Overlay::StatusPick { selected } = app.overlay else {
-            panic!("expected the picker");
-        };
+        app.toggle_status_pick();
         // Catalog order: 11, 21, 31, 41, 51 → index 4.
-        assert_eq!(selected, 4);
-        app.handle_status_pick_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(pick_cursor(&app), Some(4));
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(form_status(&app), "51");
+    }
+
+    /// The field holds an id, but a task stored before the catalog existed can
+    /// hold a label — the dropdown must still find its row.
+    #[test]
+    fn a_picker_cursor_resolves_a_legacy_label() {
+        let mut app = app_with_form("Cek di Local");
+        app.toggle_status_pick();
+        assert_eq!(pick_cursor(&app), Some(4));
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(form_status(&app), "51", "choosing must normalise to the id");
     }
 
     #[test]
     fn escaping_the_picker_leaves_the_form_status_untouched() {
         let mut app = app_with_form("41");
-        app.open_status_pick();
-        app.handle_status_pick_key(key(KeyCode::Char('j'))).unwrap();
-        app.handle_status_pick_key(key(KeyCode::Esc)).unwrap();
+        app.toggle_status_pick();
+        app.handle_form_key(key(KeyCode::Char('j'))).unwrap();
+        app.handle_form_key(key(KeyCode::Esc)).unwrap();
         assert_eq!(form_status(&app), "41", "Esc must not apply a selection");
+        assert_eq!(pick_cursor(&app), None);
     }
 
     #[test]
     fn the_no_status_row_clears_the_field() {
         let mut app = app_with_form("81");
-        app.open_status_pick();
+        app.toggle_status_pick();
         // Past the last catalog row is "No status".
         for _ in 0..jira::JIRA_STATUSES.len() {
-            app.handle_status_pick_key(key(KeyCode::Char('j'))).unwrap();
+            app.handle_form_key(key(KeyCode::Char('j'))).unwrap();
         }
-        app.handle_status_pick_key(key(KeyCode::Enter)).unwrap();
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(form_status(&app), "");
     }
 
     #[test]
     fn movement_is_clamped_to_the_no_status_row() {
         let mut app = app_with_form("");
-        app.open_status_pick();
+        app.toggle_status_pick();
         for _ in 0..(jira::JIRA_STATUSES.len() + 5) {
-            app.handle_status_pick_key(key(KeyCode::Char('j'))).unwrap();
+            app.handle_form_key(key(KeyCode::Char('j'))).unwrap();
         }
-        let Overlay::StatusPick { selected } = app.overlay else {
-            panic!("expected the picker");
-        };
-        assert_eq!(selected, jira::JIRA_STATUSES.len());
-        app.handle_status_pick_key(key(KeyCode::Char('k'))).unwrap();
-        app.handle_status_pick_key(key(KeyCode::Char('k'))).unwrap();
-        let Overlay::StatusPick { selected } = app.overlay else {
-            panic!("expected the picker");
-        };
-        assert_eq!(selected, jira::JIRA_STATUSES.len() - 2);
+        assert_eq!(pick_cursor(&app), Some(jira::JIRA_STATUSES.len()));
+        app.handle_form_key(key(KeyCode::Char('k'))).unwrap();
+        app.handle_form_key(key(KeyCode::Char('k'))).unwrap();
+        assert_eq!(pick_cursor(&app), Some(jira::JIRA_STATUSES.len() - 2));
     }
 
     /// The form's status field is not a text input: `s` must open the catalog
-    /// rather than append a character, or the picker would be unreachable.
+    /// rather than append a character, or the dropdown would be unreachable.
     #[test]
     fn the_status_field_opens_the_picker_instead_of_typing() {
         let mut app = app_with_form("21");
         app.handle_form_key(key(KeyCode::Char('s'))).unwrap();
-        assert!(matches!(app.overlay, Overlay::StatusPick { .. }));
+        assert!(pick_cursor(&app).is_some());
     }
 
-    /// Every other field still types, so the picker did not swallow the form.
+    /// The form's own hint says Enter picks the status, so Enter on that field
+    /// must open the dropdown rather than save the form.
+    #[test]
+    fn enter_on_the_status_field_opens_the_picker_without_saving() {
+        let mut app = app_with_form("21");
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
+        assert!(pick_cursor(&app).is_some(), "Enter must open the catalog");
+        assert!(
+            app.tasks.is_empty(),
+            "Enter on the status field must not save the form"
+        );
+    }
+
+    /// Committing a choice must move focus off the status field. Staying there
+    /// would make the next Enter reopen the list rather than save the form,
+    /// while the footer still promises Enter saves.
+    #[test]
+    fn committing_a_status_moves_focus_so_the_next_enter_saves() {
+        let mut app = app_with_form("21");
+        // The create path, so the save that follows is observable as a row.
+        if let Overlay::Form { edit_id, label, .. } = &mut app.overlay {
+            *edit_id = None;
+            *label = "US-88".into();
+        }
+        app.toggle_status_pick();
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(pick_cursor(&app), None);
+        assert!(
+            matches!(&app.overlay, Overlay::Form { field: Field::Code, .. }),
+            "focus must leave the status field once a choice is applied"
+        );
+        // The next Enter is now a save, not a reopen of the list.
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(app.tasks.len(), 1, "Enter must have saved the form");
+        assert_eq!(app.tasks[0].status, "21");
+    }
+
+    /// Every other field still types, so the dropdown did not swallow the form.
     #[test]
     fn other_fields_still_accept_text() {
         let mut app = test_app();
@@ -2112,6 +2105,7 @@ mod tests {
             is_cancelled: false,
             is_deleted: false,
             is_completed: false,
+            status_pick: None,
         };
         app.handle_form_key(key(KeyCode::Char('x'))).unwrap();
         let Overlay::Form { label, status, .. } = &app.overlay else {
@@ -2119,6 +2113,24 @@ mod tests {
         };
         assert_eq!(label, "x");
         assert_eq!(status, "21");
+    }
+
+    /// Editing a task must open the dropdown on the task's own status, which
+    /// means the form has to carry the catalog id and not the display label.
+    #[test]
+    fn editing_a_task_opens_the_dropdown_on_its_own_status() {
+        let mut app = test_app();
+        tasks::create_task(&app.conn, "u1", "2026-09-17", "US-42", None).unwrap();
+        app.conn
+            .execute("UPDATE tasks SET status = '51' WHERE label = 'US-42'", [])
+            .unwrap();
+        app.reload().unwrap();
+        app.selected = 0;
+        app.open_edit();
+        app.toggle_status_pick();
+        assert_eq!(pick_cursor(&app), Some(4), "Cek di Local is the fifth row");
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(form_status(&app), "51");
     }
 
     /// Every flag key flips exactly its own bool — this is the whole flags
@@ -2182,6 +2194,7 @@ mod tests {
             is_cancelled: false,
             is_deleted: false,
             is_completed: false,
+            status_pick: None,
         };
         app.submit_form().unwrap();
 
@@ -2274,5 +2287,4 @@ mod tests {
         app.archive.filter_integration = Some("1459".into());
         app.reload_archive().unwrap();
         assert_eq!(app.archive.tasks.len(), 1);
-    }
-}
+    }}

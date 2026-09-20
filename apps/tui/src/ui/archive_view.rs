@@ -126,7 +126,6 @@ pub fn draw(frame: &mut Frame, app: &App) {
             ..
         } => super::timer_view::draw_comments(frame, comments, *selected, compose.as_deref()),
         Overlay::Form { .. } => {}
-        Overlay::StatusPick { selected } => super::widgets::draw_status_pick(frame, *selected),
         Overlay::Filter { input, buffer } => draw_filter(frame, input, buffer),
         Overlay::Jira { mode } => super::widgets::draw_jira(frame, mode),
         Overlay::Git { .. } => {}
