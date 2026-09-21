@@ -96,7 +96,7 @@ pub enum Overlay {
     },
     Filter { input: ArchiveInput, buffer: String },
     Form {
-        edit_id: Option<i64>,
+        edit_day_id: Option<i64>,
         field: Field,
         label: String,
         description: String,
@@ -495,7 +495,7 @@ impl App {
 
     fn open_create(&mut self) {
         self.overlay = Overlay::Form {
-            edit_id: None,
+            edit_day_id: None,
             field: Field::Label,
             label: String::new(),
             description: String::new(),
@@ -520,7 +520,10 @@ impl App {
             return;
         };
         self.overlay = Overlay::Form {
-            edit_id: Some(t.id),
+            // `update_task` addresses the day row, and `tasks.id` and
+            // `task_days.id` are separate sequences — passing `t.id` here edited
+            // whichever task happened to own that day number instead.
+            edit_day_id: Some(t.day_id),
             field: Field::Label,
             label: t.label.clone(),
             description: t.description.clone().unwrap_or_default(),
@@ -572,7 +575,7 @@ impl App {
         // Copy the form out: the save path calls `&mut self` helpers, so the
         // overlay cannot stay borrowed while it runs.
         let Overlay::Form {
-            edit_id,
+            edit_day_id,
             label,
             description,
             elapsed,
@@ -593,7 +596,7 @@ impl App {
             return Ok(());
         };
         let (
-            edit_id,
+            edit_day_id,
             label,
             description,
             elapsed,
@@ -609,7 +612,7 @@ impl App {
             is_deleted,
             is_completed,
         ) = (
-            *edit_id,
+            *edit_day_id,
             label.clone(),
             description.clone(),
             elapsed.clone(),
@@ -661,11 +664,11 @@ impl App {
             is_completed: Some(is_completed),
             ..Default::default()
         };
-        if let Some(id) = edit_id {
+        if let Some(day_id) = edit_day_id {
             tasks::update_task(
                 &self.conn,
                 &self.user_id,
-                id,
+                day_id,
                 tasks::TaskPatch {
                     label: Some(&label),
                     description: Some(&description),
@@ -1608,7 +1611,7 @@ impl App {
             is_deleted,
             is_completed,
             status_pick: _,
-            edit_id: _,
+            edit_day_id: _,
         } = &mut self.overlay
         else {
             return Ok(false);
@@ -1974,7 +1977,7 @@ mod tests {
 
     fn form(status: &str) -> Overlay {
         Overlay::Form {
-            edit_id: Some(7),
+            edit_day_id: Some(7),
             field: Field::Status,
             label: "US-1".into(),
             description: "desc".into(),
@@ -2145,8 +2148,8 @@ mod tests {
     fn committing_a_status_moves_focus_so_the_next_enter_saves() {
         let mut app = app_with_form("21");
         // The create path, so the save that follows is observable as a row.
-        if let Overlay::Form { edit_id, label, .. } = &mut app.overlay {
-            *edit_id = None;
+        if let Overlay::Form { edit_day_id, label, .. } = &mut app.overlay {
+            *edit_day_id = None;
             *label = "US-88".into();
         }
         app.toggle_status_pick();
@@ -2167,7 +2170,7 @@ mod tests {
     fn other_fields_still_accept_text() {
         let mut app = test_app();
         app.overlay = Overlay::Form {
-            edit_id: Some(7),
+            edit_day_id: Some(7),
             field: Field::Label,
             label: String::new(),
             description: String::new(),
@@ -2209,6 +2212,50 @@ mod tests {
         assert_eq!(pick_cursor(&app), Some(4), "Cek di Local is the fifth row");
         app.handle_form_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(form_status(&app), "51");
+    }
+
+    /// Editing must address the row the user selected. `tasks.id` and
+    /// `task_days.id` are separate sequences, so passing the task id as a day id
+    /// edited whichever task owned that day number — and a rename then collided
+    /// with the selected task's own label.
+    #[test]
+    fn editing_a_task_updates_the_selected_task_not_the_row_with_its_id() {
+        let mut app = test_app();
+        // Two days for the first task, so the second task's id (2) lands on the
+        // first task's *second* day row — the sequences diverge exactly here.
+        tasks::create_task(&app.conn, "u1", "2026-09-17", "First", None).unwrap();
+        tasks::create_task(&app.conn, "u1", "2026-09-16", "First", None).unwrap();
+        let second = tasks::create_task(&app.conn, "u1", "2026-09-17", "Second", None).unwrap();
+        assert_ne!(second.id, second.day_id, "the two ids must differ for this test");
+
+        app.reload().unwrap();
+        app.selected = app
+            .tasks
+            .iter()
+            .position(|t| t.id == second.id)
+            .expect("Second is on the viewed day");
+        app.open_edit();
+        if let Overlay::Form { label, .. } = &mut app.overlay {
+            *label = "Second renamed".into();
+        }
+        app.submit_form().unwrap();
+
+        app.reload().unwrap();
+        let on_viewed_day = app
+            .tasks
+            .iter()
+            .find(|t| t.id == second.id)
+            .expect("the edited task is still on the day");
+        assert_eq!(on_viewed_day.label, "Second renamed");
+        // The other task's day rows are untouched.
+        for date in ["2026-09-16", "2026-09-17"] {
+            let first = tasks::list_tasks(&app.conn, "u1", date)
+                .unwrap()
+                .into_iter()
+                .find(|t| t.id != second.id)
+                .expect("First is still there");
+            assert_eq!(first.label, "First", "First must keep its own label");
+        }
     }
 
     /// Every flag key flips exactly its own bool — this is the whole flags
@@ -2256,7 +2303,7 @@ mod tests {
     fn saving_a_new_task_persists_link_and_flags() {
         let mut app = test_app();
         app.overlay = Overlay::Form {
-            edit_id: None,
+            edit_day_id: None,
             field: Field::Label,
             label: "US-77 new thing".into(),
             description: String::new(),

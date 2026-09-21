@@ -110,7 +110,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Overlay::ConfirmDelete => draw_confirm(frame, "Delete this task?  y / n"),
         Overlay::ConfirmResetAll => draw_confirm(frame, "Reset all timers today?  y / n"),
         Overlay::Form {
-            edit_id,
+            edit_day_id,
             field,
             label,
             description,
@@ -129,7 +129,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             status_pick,
         } => draw_form(
             frame,
-            edit_id.is_some(),
+            edit_day_id.is_some(),
             *field,
             *status_pick,
             FormFields {
