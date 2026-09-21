@@ -730,6 +730,10 @@ pub fn list_archive(
 /// True only for a label-uniqueness or same-day-uniqueness violation, so an
 /// unrelated constraint failure (a NOT NULL miss, a foreign key) is reported as
 /// itself rather than as a duplicate title.
+///
+/// SQLite names the offending *columns*, never the index, so the message is
+/// `UNIQUE constraint failed: tasks.user_id, tasks.label` — matching on the
+/// index name (as this once did) never fires.
 fn is_unique(e: &rusqlite::Error) -> bool {
     matches!(
         e.sqlite_error_code(),
@@ -739,7 +743,8 @@ fn is_unique(e: &rusqlite::Error) -> bool {
         rusqlite::Error::SqliteFailure(
             _,
             Some(msg),
-        ) if msg.contains("idx_tasks_user_label") || msg.contains("idx_task_days_task_date")
+        ) if msg.contains("tasks.user_id, tasks.label")
+            || msg.contains("task_days.task_id, task_days.work_date")
     )
 }
 
@@ -1244,6 +1249,34 @@ mod tests {
             let rows = list_tasks(&conn, "u1", date).unwrap();
             assert_eq!(rows[0].label, "After");
         }
+    }
+
+    /// A rename onto a label the user already owns is a duplicate title, not a
+    /// raw driver error. `is_unique` must recognise SQLite's message, which
+    /// names the columns (`tasks.user_id, tasks.label`) and never the index.
+    #[test]
+    fn renaming_onto_an_existing_label_is_reported_as_a_duplicate() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-09-17", "Taken", None).unwrap();
+        create_task(&conn, "u1", "2026-09-17", "Other", None).unwrap();
+
+        let err = update_task(
+            &conn,
+            "u1",
+            a.day_id,
+            TaskPatch {
+                label: Some("Other"),
+                ..Default::default()
+            },
+        )
+        .unwrap_err();
+
+        assert!(
+            err.to_string().contains("already exists"),
+            "a duplicate title must be named as such, got: {err}"
+        );
+        // The rejected rename changed nothing.
+        assert_eq!(list_tasks(&conn, "u1", "2026-09-17").unwrap()[0].label, "Taken");
     }
 
     #[test]
