@@ -119,10 +119,19 @@ pub fn draw(frame: &mut Frame, app: &App) {
             code,
             notes,
             tags,
+            link,
+            is_pinned,
+            is_important,
+            is_archived,
+            is_cancelled,
+            is_deleted,
+            is_completed,
+            status_pick,
         } => draw_form(
             frame,
             edit_id.is_some(),
             *field,
+            *status_pick,
             FormFields {
                 label,
                 description,
@@ -131,15 +140,34 @@ pub fn draw(frame: &mut Frame, app: &App) {
                 code,
                 notes,
                 tags,
+                link,
+                flags: format!(
+                    "p:{} i:{} a:{} c:{} x:{} d:{}",
+                    on_off(*is_pinned),
+                    on_off(*is_important),
+                    on_off(*is_archived),
+                    on_off(*is_cancelled),
+                    on_off(*is_deleted),
+                    on_off(*is_completed),
+                ),
             },
         ),
-        Overlay::Detail => {
+        Overlay::Detail {
+            comments,
+            prs,
+            statuses,
+        } => {
             if let Some(t) = app.selected_task() {
-                draw_detail(frame, t);
+                draw_detail(frame, t, comments, prs, statuses);
             }
         }
+        Overlay::Comments {
+            comments,
+            selected,
+            compose,
+            ..
+        } => draw_comments(frame, comments, *selected, compose.as_deref()),
         Overlay::Filter { .. } => {}
-        Overlay::StatusPick { selected } => super::widgets::draw_status_pick(frame, *selected),
         Overlay::Jira { mode } => super::widgets::draw_jira(frame, mode),
         Overlay::Git { mode } => draw_git(frame, mode),
     }
@@ -190,9 +218,26 @@ pub struct FormFields<'a> {
     pub code: &'a str,
     pub notes: &'a str,
     pub tags: &'a str,
+    pub link: &'a str,
+    /// Pre-rendered on/off row for the six boolean flags, in key order.
+    pub flags: String,
 }
 
-fn draw_form(frame: &mut Frame, editing: bool, field: Field, f: FormFields) {
+fn on_off(v: bool) -> &'static str {
+    if v {
+        "on"
+    } else {
+        "off"
+    }
+}
+
+fn draw_form(
+    frame: &mut Frame,
+    editing: bool,
+    field: Field,
+    status_pick: Option<usize>,
+    f: FormFields,
+) {
     let FormFields {
         label,
         description,
@@ -201,8 +246,10 @@ fn draw_form(frame: &mut Frame, editing: bool, field: Field, f: FormFields) {
         code,
         notes,
         tags,
+        link,
+        flags,
     } = f;
-    let area = centered(frame.area(), 56, 18);
+    let area = centered(frame.area(), 56, 22);
     frame.render_widget(Clear, area);
     let title = if editing { " edit task " } else { " new task " };
     let block = Block::default().borders(Borders::ALL).title(title);
@@ -226,6 +273,10 @@ fn draw_form(frame: &mut Frame, editing: bool, field: Field, f: FormFields) {
             Constraint::Length(1), // notes value
             Constraint::Length(1), // tags header
             Constraint::Length(1), // tags value
+            Constraint::Length(1), // link header
+            Constraint::Length(1), // link value
+            Constraint::Length(1), // flags header
+            Constraint::Length(1), // flags value
             Constraint::Length(1), // spacer
             Constraint::Length(1), // footer
         ])
@@ -296,16 +347,35 @@ fn draw_form(frame: &mut Frame, editing: bool, field: Field, f: FormFields) {
     );
     frame.render_widget(Paragraph::new(tags).style(active(Field::Tags)), rows[13]);
     frame.render_widget(
-        Paragraph::new("Tab: field  Enter: save  Esc: cancel  (status field opens the picker)")
-            .style(Style::default().fg(Color::DarkGray)),
-        rows[15],
+        Paragraph::new("link").style(Style::default().fg(Color::DarkGray)),
+        rows[14],
     );
+    frame.render_widget(Paragraph::new(link).style(active(Field::Link)), rows[15]);
+    frame.render_widget(
+        Paragraph::new("flags (p/i/a/c/x/d)").style(Style::default().fg(Color::DarkGray)),
+        rows[16],
+    );
+    frame.render_widget(
+        Paragraph::new(flags).style(active(Field::Flags)),
+        rows[17],
+    );
+    frame.render_widget(
+        Paragraph::new("Tab: next  p/i/a/c/x/d on flags  Enter: save")
+            .style(Style::default().fg(Color::DarkGray)),
+        rows[19],
+    );
+
+    // Drawn last, and starting at the row under the status value, so the list
+    // paints over the fields below it rather than being clipped by them.
+    if let Some(cursor) = status_pick {
+        super::widgets::draw_status_dropdown(frame, inner, rows[6].y, cursor);
+    }
 }
 
 fn draw_git(frame: &mut Frame, mode: &GitMode) {
     match mode {
         GitMode::Menu => {
-            let area = centered(frame.area(), 48, 9);
+            let area = centered(frame.area(), 48, 11);
             frame.render_widget(Clear, area);
             let lines = vec![
                 Line::from(Span::styled("  1", Style::default().fg(Color::Cyan))),
@@ -314,6 +384,8 @@ fn draw_git(frame: &mut Frame, mode: &GitMode) {
                 Line::from("     show commits on linked branch"),
                 Line::from(Span::styled("  3", Style::default().fg(Color::Cyan))),
                 Line::from("     PR status (Bitbucket)"),
+                Line::from(Span::styled("  4", Style::default().fg(Color::Cyan))),
+                Line::from("     import PR comments"),
                 Line::from(""),
                 Line::from(Span::styled(
                     "  Esc: close",
@@ -421,8 +493,14 @@ fn draw_git(frame: &mut Frame, mode: &GitMode) {
     }
 }
 
-fn draw_detail(frame: &mut Frame, task: &Task) {
-    let area = centered(frame.area(), 70, 20);
+pub fn draw_detail(
+    frame: &mut Frame,
+    task: &Task,
+    comments: &[crate::db::comments::Comment],
+    prs: &[crate::bitbucket::PullRequest],
+    statuses: &[crate::bitbucket::CommitStatus],
+) {
+    let area = centered(frame.area(), 70, 22);
     frame.render_widget(Clear, area);
     let block = Block::default().borders(Borders::ALL).title(" task detail ");
     let inner = block.inner(area);
@@ -433,7 +511,7 @@ fn draw_detail(frame: &mut Frame, task: &Task) {
         Span::styled(" label:  ", Style::default().fg(Color::DarkGray)),
         Span::raw(&task.label),
     ]));
-    if let Some(ref desc) = task.description {
+    if let Some(desc) = &task.description {
         if !desc.is_empty() {
             for line in desc.lines() {
                 lines.push(Line::from(Span::styled(
@@ -447,19 +525,34 @@ fn draw_detail(frame: &mut Frame, task: &Task) {
         Span::styled(" status: ", Style::default().fg(Color::DarkGray)),
         Span::raw(jira::status_label(&task.status)),
     ]));
-    if let Some(ref code) = task.code {
+    if let Some(code) = &task.code {
         lines.push(Line::from(vec![
             Span::styled(" code:   ", Style::default().fg(Color::DarkGray)),
             Span::raw(code.as_str()),
         ]));
     }
-    if let Some(ref tags) = task.tags {
+    if let Some(tags) = &task.tags {
         lines.push(Line::from(vec![
             Span::styled(" tags:   ", Style::default().fg(Color::DarkGray)),
             Span::raw(tags.as_str()),
         ]));
     }
-    if let Some(ref notes) = task.notes {
+    if let Some(link) = &task.link {
+        if !link.is_empty() {
+            lines.push(Line::from(vec![
+                Span::styled(" link:   ", Style::default().fg(Color::DarkGray)),
+                Span::raw(link.as_str()),
+            ]));
+        }
+    }
+    let flags = active_flags(task);
+    if !flags.is_empty() {
+        lines.push(Line::from(vec![
+            Span::styled(" flags:  ", Style::default().fg(Color::DarkGray)),
+            Span::raw(flags),
+        ]));
+    }
+    if let Some(notes) = &task.notes {
         if !notes.is_empty() {
             lines.push(Line::from(vec![]));
             lines.push(Line::from(Span::styled(" notes:", Style::default().fg(Color::DarkGray))));
@@ -468,12 +561,141 @@ fn draw_detail(frame: &mut Frame, task: &Task) {
             }
         }
     }
+    if !comments.is_empty() {
+        lines.push(Line::from(vec![]));
+        lines.push(Line::from(Span::styled(
+            " comments:",
+            Style::default().fg(Color::DarkGray),
+        )));
+        for c in comments.iter().take(5) {
+            let subject = c.subject.as_deref().unwrap_or("");
+            let summary = c.summary.as_deref().unwrap_or("");
+            lines.push(Line::from(Span::raw(format!(
+                "   {}",
+                truncate(&format!("{subject} — {summary}"), 80)
+            ))));
+        }
+    }
+    if !prs.is_empty() {
+        lines.push(Line::from(vec![]));
+        lines.push(Line::from(Span::styled(
+            " pull requests:",
+            Style::default().fg(Color::DarkGray),
+        )));
+        for pr in prs {
+            lines.push(Line::from(Span::raw(format!(
+                "   PR #{} {} {}",
+                pr.id,
+                pr.state,
+                truncate(&pr.title, 50)
+            ))));
+        }
+    }
+    if !statuses.is_empty() {
+        lines.push(Line::from(vec![]));
+        lines.push(Line::from(Span::styled(
+            " commit status:",
+            Style::default().fg(Color::DarkGray),
+        )));
+        for s in statuses {
+            lines.push(Line::from(Span::raw(format!("   {} {}", s.name, s.state))));
+        }
+    }
     lines.push(Line::from(vec![]));
     lines.push(Line::from(Span::styled(
-        " Esc / i / q: close",
+        " C: comments  Esc/i/q: close",
         Style::default().fg(Color::DarkGray),
     )));
 
     let p = Paragraph::new(lines).wrap(Wrap { trim: false });
     frame.render_widget(p, inner);
+}
+
+/// The true flags of a task as one line, in the form's key order.
+pub fn active_flags(task: &Task) -> String {
+    let mut names = Vec::new();
+    for (on, name) in [
+        (task.is_pinned, "pinned"),
+        (task.is_important, "important"),
+        (task.is_archived, "archived"),
+        (task.is_cancelled, "cancelled"),
+        (task.is_deleted, "deleted"),
+        (task.is_completed, "completed"),
+    ] {
+        if on {
+            names.push(name);
+        }
+    }
+    names.join(" ")
+}
+
+fn truncate(s: &str, max: usize) -> String {
+    let flat = s.replace('\n', " ");
+    if flat.chars().count() <= max {
+        return flat;
+    }
+    let cut: String = flat.chars().take(max.saturating_sub(1)).collect();
+    format!("{cut}…")
+}
+
+pub fn draw_comments(
+    frame: &mut Frame,
+    comments: &[crate::db::comments::Comment],
+    selected: usize,
+    compose: Option<&str>,
+) {
+    let height = (comments.len() as u16).saturating_add(7).min(frame.area().height - 2);
+    let area = centered(frame.area(), 72, height.max(7));
+    frame.render_widget(Clear, area);
+    let block = Block::default()
+        .borders(Borders::ALL)
+        .title(" comments ")
+        .title_alignment(Alignment::Center);
+    let inner = block.inner(area);
+    frame.render_widget(block, area);
+
+    let mut lines: Vec<Line> = Vec::new();
+    if comments.is_empty() {
+        lines.push(Line::from(Span::styled(
+            "  no comments yet — press n",
+            Style::default().fg(Color::DarkGray),
+        )));
+    } else {
+        for (i, c) in comments.iter().enumerate() {
+            let subject = c.subject.as_deref().unwrap_or("");
+            let summary = c.summary.as_deref().unwrap_or("");
+            let mut style = Style::default();
+            if i == selected {
+                style = style
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED | Modifier::BOLD);
+            }
+            lines.push(
+                Line::from(vec![
+                    Span::styled(format!(" {subject} "), Style::default().fg(Color::Yellow)),
+                    Span::raw(truncate(summary, 56)),
+                ])
+                .style(style),
+            );
+        }
+    }
+    lines.push(Line::from(vec![]));
+    match compose {
+        Some(buffer) => {
+            lines.push(Line::from(Span::styled(
+                " new comment:",
+                Style::default().fg(Color::DarkGray),
+            )));
+            lines.push(Line::from(format!("  {buffer}")));
+            lines.push(Line::from(Span::styled(
+                " Enter: save  Esc: cancel",
+                Style::default().fg(Color::DarkGray),
+            )));
+        }
+        None => lines.push(Line::from(Span::styled(
+            " n: new comment  j/k: move  Esc/q: close",
+            Style::default().fg(Color::DarkGray),
+        ))),
+    }
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }

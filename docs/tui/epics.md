@@ -52,7 +52,7 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 - [x] Single migration; `pnpm db:migrate` succeeds on existing DB
 - [x] Web API CRUD for comments and integrations
 - [x] TUI create/edit shows code, notes, tags, status
-- [x] TUI status is chosen from `JIRA_STATUSES` and follows the timer (start → In Progress, done → Done; stop leaves it alone)
+- [x] TUI status is chosen from `JIRA_STATUSES` and follows the timer (start → In Progress, stop → To Do, done → Done)
 - [x] MCP can set extended fields and add comments
 - [x] [erd.md](./erd.md) matches deployed schema
 
@@ -76,7 +76,7 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 - [x] TUI toggles daily ↔ archive
 - [x] Archive lists non-finished tasks per agreed rules
-- [x] Filter by label substring and tag
+- [x] Filter by label substring, tag, status, and integration substring
 - [x] Continue today creates row via E1 dedup rules
 
 ---
@@ -131,6 +131,8 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 - [x] Task linked to branch name via `task_integrations` (`group=git, field=branch`)
 - [x] Commits listed for branch (git CLI, Ctrl+B → 2)
 - [x] PR status visible (Bitbucket API, Ctrl+B → 3)
+- [x] PR comments imported into `task_comments`, deduped on `(pr, summary)` (Ctrl+B → 4)
+- [x] Commit build/report statuses shown in the detail view (404 → empty, not an error)
 - [x] `cargo test -p task-timer-tui` passes
 - [x] Tech spec updated
 
@@ -167,6 +169,12 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 **Status:** Done (`main`) · **Depends on:** E1, E2, E3 · **Plan:** [e7-plan.md](./e7-plan.md)
 
 **Goal:** Web dashboard matches TUI daily workflow.
+
+**Known gap, since closed:** the web dashboard writes no task `status` on
+start/done, so a task started in the browser keeps its old status while the TUI
+would move it to In Progress. Closed by `apps/web/src/lib/server/taskStatus.ts`
+(`autoStatus`, a port of the TUI's `auto_status`) — see
+[tech-spec.md](./tech-spec.md) E7.
 
 ### Tasks
 

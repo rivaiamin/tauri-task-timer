@@ -4,6 +4,7 @@ import { and, asc, desc, eq, like, ne, or, sql } from 'drizzle-orm';
 import { currentElapsedSeconds, buildMarkdownReport, buildCsvReport } from 'shared';
 import { todayISO } from '$lib/dates';
 import { resolveCreate, insertTask } from './taskCreate';
+import { autoStatus } from './taskStatus';
 import { db, schema } from './db';
 import { publish } from './events';
 import * as jira from './jira';
@@ -197,6 +198,9 @@ export function startTimer(userId: string, taskId: number, exclusive?: boolean):
       .all();
     for (const r of running) {
       const delta = stopRow(userId, r);
+      // Focus switch: the interrupted run is over, so its row must stop reading
+      // In Progress. Local status lands before the JIRA hook, as in the TUI.
+      autoStatus(db, userId, r.id);
       // Focus switch: log the interrupted run and send the issue back to To Do.
       void jira.onSwitchStop(r, delta, r.startTime ? r.startTime.getTime() : null);
     }
@@ -208,9 +212,12 @@ export function startTimer(userId: string, taskId: number, exclusive?: boolean):
     .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
     .returning()
     .get();
+  // A running task reads In Progress. Local state before the JIRA call, so the
+  // list is correct even while a slow or unreachable JIRA is being asked.
+  autoStatus(db, userId, taskId);
   publish(userId, { entity: 'task', taskId, action: 'start' });
   void jira.onStart(updated);
-  return toDTO(updated);
+  return toDTO(getOwnedRow(userId, taskId)!);
 }
 
 export function stopTimer(userId: string, taskId: number): TaskDTO | null {
@@ -218,6 +225,10 @@ export function stopTimer(userId: string, taskId: number): TaskDTO | null {
   if (!row) return null;
   const startMs = row.startTime ? row.startTime.getTime() : null;
   const delta = stopRow(userId, row);
+  // A run ending on an unfinished task reads To Do again — the row must not keep
+  // showing In Progress with no timer behind it. A task already checked done
+  // keeps Done, because the state after this stop is still done.
+  autoStatus(db, userId, taskId);
   const updated = getOwnedRow(userId, taskId)!;
   publish(userId, { entity: 'task', taskId, action: 'stop' });
   void jira.onStop(row, delta, startMs); // worklog only; keep the issue's status
@@ -227,12 +238,13 @@ export function stopTimer(userId: string, taskId: number): TaskDTO | null {
 export function resetTask(userId: string, taskId: number): TaskDTO | null {
   const row = getOwnedRow(userId, taskId);
   if (!row) return null;
-  const updated = db
-    .update(tasks)
+  db.update(tasks)
     .set({ isRunning: false, elapsedTime: 0, startTime: null, updatedAt: new Date() })
     .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
-    .returning()
-    .get();
+    .run();
+  // A reset stops the timer, so the row is no longer In Progress.
+  autoStatus(db, userId, taskId);
+  const updated = getOwnedRow(userId, taskId)!;
   publish(userId, { entity: 'task', taskId, action: 'reset' });
   return toDTO(updated);
 }
@@ -241,10 +253,14 @@ export function resetAll(userId: string, workDate?: string): { tasks: TaskDTO[];
   const conds = workDate
     ? and(eq(tasks.userId, userId), eq(tasks.workDate, workDate))
     : eq(tasks.userId, userId);
+  // Collect the ids first: a reset stops every timer, so each row must stop
+  // reading In Progress. Capture before the update, as the TUI does.
+  const ids = db.select({ id: tasks.id }).from(tasks).where(conds).all();
   db.update(tasks)
     .set({ isRunning: false, elapsedTime: 0, startTime: null, updatedAt: new Date() })
     .where(conds)
     .run();
+  for (const { id } of ids) autoStatus(db, userId, id);
   publish(userId, { entity: 'task', taskId: 0, action: 'reset_all' });
   return listTasks(userId, workDate);
 }
@@ -347,15 +363,17 @@ export function updateTask(userId: string, taskId: number, changes: TaskUpdate):
     set.startTime = null;
   }
 
-  const updated = db
-    .update(tasks)
+  db.update(tasks)
     .set(set)
     .where(and(eq(tasks.id, taskId), eq(tasks.userId, userId)))
-    .returning()
-    .get();
+    .run();
+  // Toggling done is a layout change, so it owns the stored status: done → Done,
+  // un-done → To Do. An explicit `status` in the same request wins, matching the
+  // TUI edit form, which writes a chosen status and does not auto-correct it.
+  if (becameDone && changes.status === undefined) autoStatus(db, userId, taskId);
   publish(userId, { entity: 'task', taskId, action: 'update' });
   if (becameDone && changes.done) void jira.onDone(row, doneDelta, doneStartMs);
-  return toDTO(updated);
+  return toDTO(getOwnedRow(userId, taskId)!);
 }
 
 export type ReportFormat = 'markdown' | 'csv';

@@ -1,6 +1,7 @@
 pub mod tasks;
 pub mod user;
 pub mod integrations;
+pub mod comments;
 
 use anyhow::{Context, Result};
 use rusqlite::Connection;

@@ -1,6 +1,6 @@
 # ERD — Task Timer
 
-**Last updated:** 2026-08-31
+**Last updated:** 2026-09-21
 
 ## Current schema (E2 implemented)
 
@@ -12,6 +12,8 @@ erDiagram
     users ||--o{ tasks : owns
     users ||--o| user_settings : has
     users ||--o{ api_keys : has
+    tasks ||--o{ task_comments : has
+    tasks ||--o{ task_integrations : has
 
     users {
         text id PK
@@ -32,11 +34,44 @@ erDiagram
         text label
         text work_date
         text description
+        text code
+        text link
+        text status
+        text notes
+        text tags
         int elapsed_time
+        int total_time
         int position
         bool is_running
         bool done
+        bool is_completed
+        bool is_cancelled
+        bool is_deleted
+        bool is_archived
+        bool is_pinned
+        bool is_important
         int start_time
+        int end_time
+        int created_at
+        int updated_at
+    }
+
+    task_comments {
+        int id PK
+        int task_id FK
+        text subject
+        text summary
+        text branch
+        text pr
+        int created_at
+    }
+
+    task_integrations {
+        int id PK
+        int task_id FK
+        text group
+        text field
+        text value
         int created_at
         int updated_at
     }
@@ -78,67 +113,7 @@ erDiagram
 
 ---
 
-## Target schema (E2+)
-
-Planned from [prd.md](./prd.md) / [IDEA.md](../../apps/tui/IDEA.md).
-
-```mermaid
-erDiagram
-    users ||--o{ tasks : owns
-    tasks ||--o{ task_comments : has
-    tasks ||--o{ task_integrations : has
-    users ||--o| user_settings : has
-
-    tasks {
-        int id PK
-        text user_id FK
-        text label
-        text work_date
-        text code
-        text description
-        text link
-        text status
-        text notes
-        text tags
-        int elapsed_time
-        int total_time
-        int position
-        bool is_running
-        bool done
-        bool is_completed
-        bool is_cancelled
-        bool is_deleted
-        bool is_archived
-        bool is_pinned
-        bool is_important
-        int start_time
-        int end_time
-        int created_at
-        int updated_at
-    }
-
-    task_comments {
-        int id PK
-        int task_id FK
-        text subject
-        text summary
-        text branch
-        text pr
-        int created_at
-    }
-
-    task_integrations {
-        int id PK
-        int task_id FK
-        text group
-        text field
-        text value
-        int created_at
-        int updated_at
-    }
-```
-
-### `task_integrations` examples
+## `task_integrations` examples
 
 | group | field | value |
 |-------|-------|-------|
@@ -146,10 +121,11 @@ erDiagram
 | jira | status | "In Progress" |
 | gcp | error_group | projects/.../groups/... |
 | bitbucket | pr_id | 42 |
+| git | branch | US-1459-fix |
 
-### `tags` storage (TBD)
+### `tags` storage
 
-- JSON text column on `tasks` is used for E2 (simplest).
+A JSON text column on `tasks`, as E2 shipped. Not a join table.
 
 ---
 
@@ -165,6 +141,11 @@ stateDiagram-v2
     Done --> [*]
     Archived --> Active: continue today
 ```
+
+The `status` column tracks this independently of the `done` flag: the TUI and CLI
+write `21` on start, `11` on stop/reset, `31` on done, and `11` on un-done. A task
+already checked done keeps `Done` through a stop. The web dashboard does not yet
+write this column — see [tech-spec.md](./tech-spec.md) E7.
 
 Daily scope: each `(user_id, work_date, label)` is one row. "Continue" on a new day creates a **new** row with copied description.
 
@@ -185,12 +166,14 @@ Daily scope: each `(user_id, work_date, label)` is one row. "Continue" on a new 
 
 ## Cross-app sync matrix
 
-When E2 lands, update all consumers in one PR:
+E2 landed: every consumer reads and writes these tables today. Keep this matrix
+as the checklist for the next schema change — a new column must land in all five
+places in one PR.
 
 | Table/column | Web schema | taskService | REST | MCP | TUI db |
 |--------------|------------|-------------|------|-----|--------|
 | tasks.* | ✓ | ✓ | ✓ | ✓ | ✓ |
-| task_comments | ✓ | ✓ | ✓ | ✓ | ✗ not implemented |
+| task_comments | ✓ | ✓ | ✓ | ✓ | ✓ (list/add) |
 | task_integrations | ✓ | ✓ | ✓ | optional | ✓ (read/write) |
 
 See [tasks.md](./tasks.md) E2 checklist.

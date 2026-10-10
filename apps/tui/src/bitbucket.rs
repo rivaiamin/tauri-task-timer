@@ -15,7 +15,6 @@ struct Credentials {
 /// faithful mirror of the response.
 #[derive(Debug, Clone, Deserialize)]
 pub struct PullRequest {
-    #[allow(dead_code)]
     pub id: u64,
     pub title: String,
     pub state: String,        // "OPEN", "MERGED", "DECLINED"
@@ -27,13 +26,42 @@ pub struct PullRequest {
 
 #[derive(Debug, Clone, Deserialize)]
 pub struct Author {
-    #[allow(dead_code)]
     pub display_name: Option<String>,
 }
 
 #[derive(Debug, Deserialize)]
 struct PrListResponse {
     values: Vec<PullRequest>,
+}
+
+#[derive(Debug, Deserialize)]
+struct PrCommentResponse {
+    values: Vec<PrComment>,
+}
+
+/// A PR comment as Bitbucket returns it. `created_on` is kept so the type stays
+/// a faithful mirror of the payload even though the TUI only renders the body.
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrComment {
+    #[allow(dead_code)]
+    pub id: u64,
+    pub content: Option<PrContent>,
+    pub user: Option<Author>,
+    #[allow(dead_code)]
+    pub created_on: Option<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+pub struct PrContent {
+    pub raw: Option<String>,
+}
+
+/// One Bitbucket build/report status attached to a commit — the TUI's view of
+/// "deployment" for a branch.
+#[derive(Clone, Debug)]
+pub struct CommitStatus {
+    pub name: String,
+    pub state: String,
 }
 
 fn load_credentials() -> Option<Credentials> {
@@ -96,6 +124,51 @@ pub fn list_prs(workspace: &str, repo: &str, branch: &str) -> Result<Vec<PullReq
     let resp: PrListResponse =
         serde_json::from_value(data).context("parse PR list response")?;
     Ok(resp.values)
+}
+
+/// Get comments on a PR. Returns up to 20 most recent.
+pub fn get_pr_comments(workspace: &str, repo: &str, pr_id: u64) -> Result<Vec<PrComment>> {
+    let path = format!("/pullrequests/{pr_id}/comments?sort=-created_on&pagelen=20");
+    let data = bb_fetch(workspace, repo, &path, "GET")?;
+    let resp: PrCommentResponse =
+        serde_json::from_value(data).context("parse PR comments response")?;
+    Ok(resp.values)
+}
+
+/// Build/report statuses for a commit. A commit with no reports — including one
+/// Bitbucket answers 404 for — has no statuses, not an error.
+pub fn commit_statuses(workspace: &str, repo: &str, commit: &str) -> Result<Vec<CommitStatus>> {
+    let path = format!("/commit/{commit}/statuses?pagelen=10");
+    let data = match bb_fetch(workspace, repo, &path, "GET") {
+        Ok(data) => data,
+        Err(e) => {
+            let msg = format!("{e:#}");
+            if msg.contains("404") {
+                return Ok(Vec::new());
+            }
+            return Err(e);
+        }
+    };
+    let values = data
+        .get("values")
+        .and_then(|v| v.as_array())
+        .cloned()
+        .unwrap_or_default();
+    Ok(values
+        .iter()
+        .map(|v| {
+            let name = v
+                .get("name")
+                .or_else(|| v.get("key"))
+                .and_then(|n| n.as_str())
+                .unwrap_or("status");
+            let state = v.get("state").and_then(|s| s.as_str()).unwrap_or("UNKNOWN");
+            CommitStatus {
+                name: name.to_string(),
+                state: state.to_string(),
+            }
+        })
+        .collect())
 }
 
 #[cfg(test)]

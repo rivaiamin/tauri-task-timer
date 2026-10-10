@@ -22,8 +22,11 @@ E3 Archive view           ██████████  shipped (TUI + API; we
 E4 JIRA integration       ██████████  shipped
 E5 Git / Bitbucket        ██████████  shipped
 E6 AI agent hooks         ██████████  shipped
-E7 Web dashboard parity   ███░░░░░░░  in progress — [e7-plan.md](./e7-plan.md)
+E7 Web dashboard parity   ██████████  shipped — [e7-plan.md](./e7-plan.md)
 ```
+
+All epics shipped. The web dashboard writes the task `status` on start/stop/reset/
+done via `autoStatus`, matching the TUI — see [tech-spec.md](./tech-spec.md) E7.
 
 ## Affected apps per epic
 
@@ -35,7 +38,7 @@ E7 Web dashboard parity   ███░░░░░░░  in progress — [e7-pl
 | E4 | ✅ | jira.ts | JIRA tools | — |
 | E5 | ✅ | Bitbucket module | optional tools | — |
 | E6 | ✅ | POST /api/session/hook | session tools | — |
-| E7 | — | dashboard daily + archive UI | optional workDate on create | — |
+| E7 | — | dashboard daily + archive UI, extended fields, SSE client | optional workDate on create | — |
 
 ## Related repo docs
 

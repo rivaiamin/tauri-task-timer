@@ -55,8 +55,16 @@ edit:
 | Event | `status` becomes |
 |---|---|
 | start (`Space`) | In Progress (`21`) |
+| stop (`Space`) | To Do (`11`) |
+| reset / reset all (`r` / `R`) | To Do (`11`) |
 | done (`D`) | Done (`31`) |
-| stop (`Space`) | unchanged — a hand-set status survives |
+| un-done (`D` again) | To Do (`11`) |
 
-Focus-mode switch and the agent hooks behave the same way as a stop. The CLI
-(`start`, `done`) writes the same field.
+A task already checked done keeps `Done` through a stop; only un-checking it
+returns the row to To Do. Focus-mode switch and the agent hooks behave the same
+way as a stop. The CLI (`start`, `stop`, `done`, `reset`, `reset-all`) writes the
+same field.
+
+Local status is written *before* the JIRA call, so the list is correct even while
+JIRA is slow or unreachable. A hand-set status (Local OK, BLOCKED) does not
+survive these events — the timer owns the field.

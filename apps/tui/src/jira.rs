@@ -32,28 +32,6 @@ struct TransitionsResponse {
     transitions: Vec<Transition>,
 }
 
-#[derive(Debug, Deserialize)]
-struct SprintIssue {
-    key: String,
-    fields: Option<SprintIssueFields>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SprintIssueFields {
-    summary: Option<String>,
-    status: Option<IssueStatus>,
-}
-
-#[derive(Debug, Deserialize)]
-struct IssueStatus {
-    name: Option<String>,
-}
-
-#[derive(Debug, Deserialize)]
-struct SprintIssuesResponse {
-    issues: Vec<SprintIssue>,
-}
-
 fn load_credentials() -> Option<Credentials> {
     let mut email = env::var("JIRA_EMAIL").ok();
     let mut token = env::var("JIRA_TOKEN").ok();
@@ -313,39 +291,46 @@ pub fn status_when_run_ends(task_is_done: bool) -> String {
 }
 
 /// The status a task's own state implies, as a catalog id:
-/// running → In Progress, done → Done, otherwise nothing.
+/// running → In Progress, done → Done, stopped and unfinished → To Do.
 ///
 /// Mirror image of [`status_when_run_ends`], which resolves the JIRA status
 /// *name* a run's end should transition an issue to; this one resolves the local
 /// catalog id the same run write should store, so the list shows what the timer
 /// is doing without the operator editing the row.
-pub fn status_for_run_state(is_running: bool, is_done: bool) -> Option<&'static str> {
+///
+/// Total on purpose: every combination of the two flags names a status, so a
+/// stop cannot leave the row reading `In Progress` with no timer behind it.
+pub fn status_for_run_state(is_running: bool, is_done: bool) -> &'static str {
     if is_running {
-        Some("21")
+        "21"
     } else if is_done {
-        Some("31")
+        "31"
     } else {
-        None
+        "11"
     }
 }
 
-/// Overwrite a task's stored status with the one its state implies.
+/// Overwrite a task's stored status with the one its own row now implies.
 ///
 /// A layout change — start, stop, done — owns the stored status; leaving it
-/// untouched is what made a running task read `To Do` in the list. No-op when
-/// the state implies nothing (a plain stop) or the row is already correct.
-pub fn auto_status(conn: &rusqlite::Connection, user_id: &str, task_id: i64, is_running: bool, is_done: bool) {
-    let Some(status) = status_for_run_state(is_running, is_done) else {
-        return;
-    };
-    let already: Option<String> = conn
+/// untouched is what made a running task read `To Do` in the list and a stopped
+/// one read `In Progress`. The state is read back from the row rather than taken
+/// from the caller, so a caller holding a snapshot from before the write cannot
+/// apply a stale flag. No-op only when the row is already correct, so every
+/// caller can apply it unconditionally after mutating the timer.
+pub fn auto_status(conn: &rusqlite::Connection, user_id: &str, task_id: i64) {
+    let row: Option<(i64, i64, String)> = conn
         .query_row(
-            "SELECT status FROM tasks WHERE id = ?1 AND user_id = ?2",
+            "SELECT is_running, done, status FROM tasks WHERE id = ?1 AND user_id = ?2",
             rusqlite::params![task_id, user_id],
-            |r| r.get(0),
+            |r| Ok((r.get(0)?, r.get(1)?, r.get(2)?)),
         )
         .ok();
-    if already.as_deref() == Some(status) {
+    let Some((is_running, done, current)) = row else {
+        return;
+    };
+    let status = status_for_run_state(is_running != 0, done != 0);
+    if current == status {
         return;
     }
     let _ = conn.execute(
@@ -525,45 +510,101 @@ pub fn fire_on_done(label: &str, description: &str, seconds: i64, started_ms: Op
     fire_run_end(label, description, seconds, started_ms, true)
 }
 
-/// Fetch issues from a JIRA sprint (Agile REST API).
-/// Returns (issue_key, summary, status_name) tuples.
-pub fn fetch_sprint_issues(board: &str, sprint_id: &str) -> Result<Vec<(String, String, String)>> {
-    let creds = load_credentials().context("JIRA not configured")?;
-    let client = jira_client()?;
-    let url = format!(
-        "{}/rest/agile/1.0/board/{board}/sprint/{sprint_id}/issue?fields=summary,status",
-        jira_site()
-    );
-    let resp = client
-        .get(&url)
-        .basic_auth(&creds.email, Some(&creds.token))
-        .header(reqwest::header::ACCEPT, "application/json")
-        .send()
-        .context("JIRA sprint request failed")?;
-    let status = resp.status();
-    if !status.is_success() {
-        let text = resp.text().unwrap_or_default();
-        bail!("JIRA sprint fetch -> {status}: {text}");
-    }
-    let data: SprintIssuesResponse = resp.json().context("parse sprint issues response")?;
-    Ok(data
-        .issues
-        .into_iter()
-        .map(|i| {
-            let summary = i
-                .fields
-                .as_ref()
-                .and_then(|f| f.summary.clone())
-                .unwrap_or_default();
-            let status_name = i
-                .fields
-                .as_ref()
-                .and_then(|f| f.status.as_ref())
-                .and_then(|s| s.name.clone())
-                .unwrap_or_default();
-            (i.key, summary, status_name)
+/// Which unfinished slice of a sprint to pull. Each mode maps to one JQL
+/// string; the sprint is the scope, the predicate is the mode.
+#[derive(Clone, Copy, PartialEq, Eq, Debug)]
+pub enum SprintQuery {
+    Unassigned,
+    ReporterUndone,
+    AssigneeUndone,
+}
+
+/// The JQL for a query mode. A numeric sprint id is interpolated bare; anything
+/// else is quoted, because a JQL identifier that is not a number must be.
+pub fn jql_for(query: SprintQuery, sprint_id: &str) -> String {
+    let sprint = if !sprint_id.is_empty() && sprint_id.chars().all(|c| c.is_ascii_digit()) {
+        sprint_id.to_string()
+    } else {
+        format!("\"{}\"", sprint_id.replace('"', "\\\""))
+    };
+    let predicate = match query {
+        SprintQuery::Unassigned => "assignee is EMPTY AND statusCategory != Done",
+        SprintQuery::ReporterUndone => "reporter = currentUser() AND statusCategory != Done",
+        SprintQuery::AssigneeUndone => "assignee = currentUser() AND statusCategory != Done",
+    };
+    format!("sprint = {sprint} AND {predicate}")
+}
+
+/// Search issues by JQL. Returns (issue_key, summary, status_name) tuples.
+///
+/// The v3 search endpoint moved to `/search/jql`; when the old path answers 410
+/// (or names the new one), the same body is retried once against it.
+pub fn search_issues(jql: &str) -> Result<Vec<(String, String, String)>> {
+    let body = serde_json::json!({
+        "jql": jql,
+        "fields": ["summary", "status"],
+        "maxResults": 50,
+    });
+    let data = match jira_fetch("/search", "POST", Some(body.clone())) {
+        Ok(data) => data,
+        Err(e) => {
+            let msg = format!("{e:#}");
+            if msg.contains("410") || msg.contains("/search/jql") {
+                jira_fetch("/search/jql", "POST", Some(body))?
+            } else {
+                return Err(e);
+            }
+        }
+    };
+    Ok(parse_issues(&data))
+}
+
+/// Fetch one issue by key. The key is validated as a JIRA key before any
+/// network call, so a typo cannot become a request.
+pub fn fetch_issue(key: &str) -> Result<(String, String, String)> {
+    let Some(key) = issue_key(key, "") else {
+        bail!("not a JIRA key");
+    };
+    let data = jira_fetch(&format!("/issue/{key}?fields=summary,status"), "GET", None)?;
+    Ok((
+        key,
+        data.get("fields")
+            .and_then(|f| f.get("summary"))
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_string(),
+        data.get("fields")
+            .and_then(|f| f.get("status"))
+            .and_then(|s| s.get("name"))
+            .and_then(|s| s.as_str())
+            .unwrap_or_default()
+            .to_string(),
+    ))
+}
+
+fn parse_issues(data: &serde_json::Value) -> Vec<(String, String, String)> {
+    data.get("issues")
+        .and_then(|i| i.as_array())
+        .map(|issues| {
+            issues
+                .iter()
+                .filter_map(|i| {
+                    let key = i.get("key").and_then(|k| k.as_str())?;
+                    let fields = i.get("fields");
+                    let summary = fields
+                        .and_then(|f| f.get("summary"))
+                        .and_then(|s| s.as_str())
+                        .unwrap_or_default();
+                    let status_name = fields
+                        .and_then(|f| f.get("status"))
+                        .and_then(|s| s.get("name"))
+                        .and_then(|s| s.as_str())
+                        .unwrap_or_default();
+                    Some((key.to_string(), summary.to_string(), status_name.to_string()))
+                })
+                .collect()
         })
-        .collect())
+        .unwrap_or_default()
 }
 
 #[cfg(test)]
@@ -722,42 +763,82 @@ mod tests {
     }
 
     #[test]
-    fn run_state_implies_the_in_progress_and_done_ids() {
-        assert_eq!(status_for_run_state(true, false), Some("21"));
-        assert_eq!(status_for_run_state(false, true), Some("31"));
-        // A plain stop implies nothing: the stored status is left alone.
-        assert_eq!(status_for_run_state(false, false), None);
-        // The implied ids must resolve through the catalog the picker shows.
-        assert_eq!(status_label(status_for_run_state(true, false).unwrap()), "In Progress");
-        assert_eq!(status_label(status_for_run_state(false, true).unwrap()), "Done");
+    fn jql_scopes_the_sprint_and_the_mode_predicate() {
+        assert_eq!(
+            jql_for(SprintQuery::Unassigned, "123"),
+            "sprint = 123 AND assignee is EMPTY AND statusCategory != Done"
+        );
+        assert_eq!(
+            jql_for(SprintQuery::ReporterUndone, "123"),
+            "sprint = 123 AND reporter = currentUser() AND statusCategory != Done"
+        );
+        assert_eq!(
+            jql_for(SprintQuery::AssigneeUndone, "123"),
+            "sprint = 123 AND assignee = currentUser() AND statusCategory != Done"
+        );
     }
 
     #[test]
-    fn auto_status_overwrites_and_spares_the_manual_states() {
+    fn jql_quotes_a_non_numeric_sprint_id() {
+        assert_eq!(
+            jql_for(SprintQuery::Unassigned, "Sprint 42"),
+            "sprint = \"Sprint 42\" AND assignee is EMPTY AND statusCategory != Done"
+        );
+    }
+
+    /// The key is checked before any request, so a typo cannot become one.
+    #[test]
+    fn fetch_issue_rejects_a_non_key_without_network() {
+        let err = fetch_issue("not-a-key").unwrap_err();
+        assert!(format!("{err:#}").contains("not a JIRA key"), "{err:#}");
+    }
+
+    #[test]
+    fn run_state_implies_the_in_progress_done_and_todo_ids() {
+        assert_eq!(status_for_run_state(true, false), "21");
+        assert_eq!(status_for_run_state(false, true), "31");
+        // A stop on an unfinished task reads To Do again, not nothing — the row
+        // must not keep claiming In Progress with no timer behind it.
+        assert_eq!(status_for_run_state(false, false), "11");
+        // The implied ids must resolve through the catalog the picker shows.
+        assert_eq!(status_label(status_for_run_state(true, false)), "In Progress");
+        assert_eq!(status_label(status_for_run_state(false, true)), "Done");
+        assert_eq!(status_label(status_for_run_state(false, false)), "To Do");
+    }
+
+    #[test]
+    fn auto_status_follows_the_rows_own_state() {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
-            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, user_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'todo');
-             INSERT INTO tasks (id, user_id, status) VALUES (1, 'u1', '51'), (2, 'u1', '81');",
+            "CREATE TABLE tasks (id INTEGER PRIMARY KEY, user_id TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'todo',
+                                 is_running INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0);
+             INSERT INTO tasks (id, user_id, status) VALUES (1, 'u1', '51'), (2, 'u1', 'todo');",
         )
         .unwrap();
 
         // Start: the layout change wins over whatever the row said.
-        auto_status(&conn, "u1", 1, true, false);
+        conn.execute("UPDATE tasks SET is_running = 1 WHERE id = 1", []).unwrap();
+        auto_status(&conn, "u1", 1);
         assert_eq!(status_label(&status_of(&conn, 1)), "In Progress");
 
-        // A plain stop implies nothing, so a status a human moved the ticket to
-        // (Cek di Local, BLOCKED) survives it.
-        conn.execute("UPDATE tasks SET status = '51' WHERE id = 1", []).unwrap();
-        auto_status(&conn, "u1", 1, false, false);
-        assert_eq!(status_label(&status_of(&conn, 1)), "Cek di Local");
+        // Stop: back to To Do, so a finished run does not leave In Progress behind.
+        conn.execute("UPDATE tasks SET is_running = 0 WHERE id = 1", []).unwrap();
+        auto_status(&conn, "u1", 1);
+        assert_eq!(status_label(&status_of(&conn, 1)), "To Do");
 
-        // Done implies Done even straight from BLOCKED.
-        auto_status(&conn, "u1", 2, false, true);
+        // Done: Done, even straight from a legacy value.
+        conn.execute("UPDATE tasks SET done = 1 WHERE id = 2", []).unwrap();
+        auto_status(&conn, "u1", 2);
         assert_eq!(status_label(&status_of(&conn, 2)), "Done");
+
+        // Un-done: back to To Do rather than staying on Done.
+        conn.execute("UPDATE tasks SET done = 0 WHERE id = 2", []).unwrap();
+        auto_status(&conn, "u1", 2);
+        assert_eq!(status_label(&status_of(&conn, 2)), "To Do");
 
         // Idempotent: a second call leaves the same value.
-        auto_status(&conn, "u1", 2, false, true);
-        assert_eq!(status_label(&status_of(&conn, 2)), "Done");
+        auto_status(&conn, "u1", 2);
+        assert_eq!(status_label(&status_of(&conn, 2)), "To Do");
     }
 
     fn status_of(conn: &rusqlite::Connection, task_id: i64) -> String {

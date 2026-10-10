@@ -315,14 +315,34 @@ function runPathCoverage() {
   const jira = read('apps/tui/src/jira.rs');
 
   // Every stop path must reach the stop oracle, and the oracle must resolve an
-  // unfinished run to the To Do status.
+  // unfinished run to the To Do status. `fire_on_stop` used to be asserted here
+  // as a second route into `fire_run_end`; commit 01fb464 deleted it as dead
+  // code, so the check failed on every revision since. `record_and_reopen` is
+  // the one route that survives, and it is asserted below.
   const recordBody = jira.match(/pub fn record_and_reopen[\s\S]*?\n    }/)?.[0] ?? '';
   check(recordBody.length > 0, 'apps/tui/src/jira.rs: record_and_reopen not found');
   check(/fire_run_end\([\s\S]*?false,?\s*\)/.test(recordBody), 'record_and_reopen no longer requests the unfinished (false) run-end path');
 
-  const stopBody = jira.match(/pub fn fire_on_stop[\s\S]*?\n}/)?.[0] ?? '';
-  check(stopBody.length > 0, 'apps/tui/src/jira.rs: fire_on_stop not found');
-  check(/fire_run_end\([\s\S]*?false,?\s*\)/.test(stopBody), 'fire_on_stop no longer requests the unfinished (false) run-end path');
+  // The local status must move on every stop path too. Its absence is what let
+  // a stopped task keep reading In Progress: the JIRA issue returned to To Do
+  // while the task's own row did not.
+  for (const [file, slice, label] of stopPaths) {
+    const body = read(file).match(slice)?.[0] ?? '';
+    check(
+      /auto_status\(/.test(body),
+      `${file}: ${label} does not write the task's local status through auto_status`
+    );
+  }
+
+  // The status oracle must be total: a stopped, unfinished task is To Do, not
+  // "leave the row alone". A missing status_for_run_state call is what shipped
+  // the original bug.
+  const stateBody = jira.match(/pub fn status_for_run_state[\s\S]*?\n}/)?.[0] ?? '';
+  check(stateBody.length > 0, 'apps/tui/src/jira.rs: status_for_run_state not found');
+  check(
+    /else[\s\S]*?"11"/.test(stateBody),
+    'status_for_run_state must resolve a stopped, unfinished task to To Do (11)'
+  );
 
   const doneBody = jira.match(/pub fn fire_on_done[\s\S]*?\n}/)?.[0] ?? '';
   check(doneBody.length > 0, 'apps/tui/src/jira.rs: fire_on_done not found');

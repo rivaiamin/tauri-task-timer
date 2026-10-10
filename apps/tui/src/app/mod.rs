@@ -28,6 +28,8 @@ pub enum Field {
     Code,
     Notes,
     Tags,
+    Link,
+    Flags,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -40,11 +42,15 @@ pub enum AppMode {
 pub enum ArchiveInput {
     Label,
     Tag,
+    Status,
+    Integration,
 }
 
 pub struct ArchiveState {
     pub filter_q: Option<String>,
     pub filter_tag: Option<String>,
+    pub filter_status: Option<String>,
+    pub filter_integration: Option<String>,
     pub tasks: Vec<Task>,
     pub selected: usize,
 }
@@ -54,6 +60,8 @@ pub enum JiraMode {
     Menu,
     Comment { buffer: String },
     Transition { transitions: Vec<Transition>, selected: usize },
+    SyncPick,
+    FetchKey { buffer: String },
     Syncing,
 }
 
@@ -70,7 +78,18 @@ pub enum Overlay {
     Help,
     ConfirmDelete,
     ConfirmResetAll,
-    Detail,
+    Detail {
+        comments: Vec<crate::db::comments::Comment>,
+        prs: Vec<crate::bitbucket::PullRequest>,
+        statuses: Vec<crate::bitbucket::CommitStatus>,
+    },
+    /// The comment list for one task, optionally with a compose buffer open.
+    Comments {
+        task_id: i64,
+        comments: Vec<crate::db::comments::Comment>,
+        selected: usize,
+        compose: Option<String>,
+    },
     Filter { input: ArchiveInput, buffer: String },
     Form {
         edit_id: Option<i64>,
@@ -82,12 +101,22 @@ pub enum Overlay {
         code: String,
         notes: String,
         tags: String,
+        link: String,
+        is_pinned: bool,
+        is_important: bool,
+        is_archived: bool,
+        is_cancelled: bool,
+        is_deleted: bool,
+        is_completed: bool,
+        /// The status field's dropdown: `Some(cursor)` while it is open, where
+        /// the cursor indexes `jira::JIRA_STATUSES` and its length is the
+        /// "No status" row. `None` means the list is closed. It lives on the
+        /// form rather than in an overlay of its own, so opening it never
+        /// disturbs the other fields.
+        status_pick: Option<usize>,
     },
     Jira { mode: JiraMode },
     Git { mode: GitMode },
-    /// Status picker for the form's status field: the catalog, not free text.
-    /// `selected` indexes `jira::JIRA_STATUSES`; its length is "No status".
-    StatusPick { selected: usize },
 }
 
 pub struct App {
@@ -103,13 +132,14 @@ pub struct App {
     pub status: String,
     status_until: Option<Instant>,
     clipboard: Option<arboard::Clipboard>,
+    /// Still read from `config.toml`, but the four JQL sprint modes scope by
+    /// sprint id alone — the Agile board URL was the only consumer.
+    #[allow(dead_code)]
     pub jira_board: Option<String>,
     pub jira_sprint_id: Option<String>,
     pub git_repo_path: Option<std::path::PathBuf>,
     pub bitbucket_workspace: Option<String>,
     pub bitbucket_repo: Option<String>,
-    /// The form the status picker was opened from, parked while the picker is up.
-    form_under_state: Option<Overlay>,
     hook_listener: crate::hooks::HookListener,
 }
 
@@ -151,6 +181,8 @@ impl App {
             archive: ArchiveState {
                 filter_q: None,
                 filter_tag: None,
+                filter_status: None,
+                filter_integration: None,
                 tasks: Vec::new(),
                 selected: 0,
             },
@@ -163,7 +195,6 @@ impl App {
             git_repo_path,
             bitbucket_workspace,
             bitbucket_repo,
-            form_under_state: None,
             hook_listener: crate::hooks::HookListener::new(),
         };
         app.reload()?;
@@ -209,10 +240,32 @@ impl App {
         self.archive.tasks.get(self.archive.selected)
     }
 
+    /// The task the current mode's cursor is on. Daily and archive each keep
+    /// their own list, so anything opened from a key press must resolve through
+    /// the mode rather than assuming the daily list.
+    pub fn focused_task(&self) -> Option<&Task> {
+        if self.mode == AppMode::Archive {
+            self.archive_selected_task()
+        } else {
+            self.selected_task()
+        }
+    }
+
     fn reload_archive(&mut self) -> Result<()> {
+        // The status filter holds a catalog id: typing "In Progress" resolves to
+        // "21" here so the query compares ids rather than labels.
+        let status = self
+            .archive
+            .filter_status
+            .as_deref()
+            .map(str::trim)
+            .filter(|s| !s.is_empty())
+            .map(|s| jira::resolve_status_id(s).unwrap_or(s).to_string());
         let filter = tasks::ArchiveFilter {
             q: self.archive.filter_q.clone(),
             tag: self.archive.filter_tag.clone(),
+            status,
+            integration: self.archive.filter_integration.clone(),
         };
         self.archive.tasks = tasks::list_archive(&self.conn, &self.user_id, &filter)?;
         if self.archive.selected >= self.archive.tasks.len() && !self.archive.tasks.is_empty() {
@@ -240,6 +293,10 @@ impl App {
         let current = match input {
             ArchiveInput::Label => self.archive.filter_q.clone().unwrap_or_default(),
             ArchiveInput::Tag => self.archive.filter_tag.clone().unwrap_or_default(),
+            ArchiveInput::Status => self.archive.filter_status.clone().unwrap_or_default(),
+            ArchiveInput::Integration => {
+                self.archive.filter_integration.clone().unwrap_or_default()
+            }
         };
         self.overlay = Overlay::Filter { input, buffer: current };
     }
@@ -371,17 +428,21 @@ impl App {
             vec![]
         };
         tasks::start_timer(&self.conn, &self.user_id, id, exclusive)?;
-        let mut warnings = Warnings::new();
+        // Every local write lands before any JIRA call: the list must read
+        // correctly even while a slow or unreachable JIRA is being asked.
+        jira::auto_status(&self.conn, &self.user_id, id);
+        for worklog in &stopped {
+            jira::auto_status(&self.conn, &self.user_id, worklog.task_id);
+        }
         // Fire JIRA: focus-switched tasks → worklog + To Do
+        let mut warnings = Warnings::new();
         for worklog in &stopped {
             warnings.extend(worklog.record_and_reopen());
-            jira::auto_status(&self.conn, &self.user_id, worklog.task_id, false, false);
         }
         // Fire JIRA: started task → In Progress
         if let Some(t) = self.tasks.iter().find(|t| t.id == id) {
             warnings.extend(jira::fire_on_start(&t.label, t.description_text()));
         }
-        jira::auto_status(&self.conn, &self.user_id, id, true, false);
         Ok(warnings)
     }
 
@@ -393,6 +454,10 @@ impl App {
             .find(|t| t.id == id)
             .and_then(|t| Worklog::capture(t, now_ms()));
         tasks::stop_timer(&self.conn, &self.user_id, id)?;
+        // A run ending on an unfinished task reads To Do again — the row must
+        // not keep showing In Progress with no timer behind it. Written before
+        // the JIRA call so the list is correct even while JIRA is slow.
+        jira::auto_status(&self.conn, &self.user_id, id);
         Ok(worklog
             .as_ref()
             .map(Worklog::record_and_reopen)
@@ -413,6 +478,10 @@ impl App {
         for worklog in &stopped {
             tasks::stop_timer(&self.conn, &self.user_id, worklog.task_id)?;
         }
+        // Local state first, JIRA second — a slow JIRA must not delay the list.
+        for worklog in &stopped {
+            jira::auto_status(&self.conn, &self.user_id, worklog.task_id);
+        }
         let mut warnings = Warnings::new();
         for worklog in &stopped {
             warnings.extend(worklog.record_and_reopen());
@@ -431,6 +500,14 @@ impl App {
             code: String::new(),
             notes: String::new(),
             tags: String::new(),
+            link: String::new(),
+            is_pinned: false,
+            is_important: false,
+            is_archived: false,
+            is_cancelled: false,
+            is_deleted: false,
+            is_completed: false,
+            status_pick: None,
         };
     }
 
@@ -444,103 +521,106 @@ impl App {
             label: t.label.clone(),
             description: t.description.clone().unwrap_or_default(),
             elapsed: format_time(t.current_elapsed(now_ms())),
-            status: jira::status_label(&t.status).to_string(),
+            // The field holds a catalog id; the label is for display only, so
+            // storing it here would leave the dropdown unable to find its row.
+            status: jira::resolve_status_id(&t.status).unwrap_or(&t.status).to_string(),
             code: t.code.clone().unwrap_or_default(),
             notes: t.notes.clone().unwrap_or_default(),
             tags: t.tags.clone().unwrap_or_default(),
+            link: t.link.clone().unwrap_or_default(),
+            is_pinned: t.is_pinned,
+            is_important: t.is_important,
+            is_archived: t.is_archived,
+            is_cancelled: t.is_cancelled,
+            is_deleted: t.is_deleted,
+            is_completed: t.is_completed,
+            status_pick: None,
         };
     }
-
-    /// Rebuild the form the picker was opened from, optionally replacing the
-    /// status field. The picker is a field editor, not a separate form, so this
-    /// is the only way back — and the only place the field changes.
-    fn form_under(&mut self, status: Option<String>) -> Overlay {
-        let Overlay::Form {
-            edit_id,
-            field,
-            label,
-            description,
-            elapsed,
-            status: current,
-            code,
-            notes,
-            tags,
-        } = self.form_under_state.take().unwrap_or(Overlay::None)
-        else {
-            return Overlay::None;
-        };
-        Overlay::Form {
-            edit_id,
-            field,
-            label,
-            description,
-            elapsed,
-            status: status.unwrap_or(current),
-            code,
-            notes,
-            tags,
-        }
-    }
-
-    /// Move the form's status field from free text to the catalog: the picker
-    /// opens on whatever that field currently holds.
-    fn open_status_pick(&mut self) {
+    /// Open the form's status dropdown on the row the field already holds, or
+    /// close it if it is already open. The dropdown is part of the form, so
+    /// this is a field toggle rather than a separate overlay.
+    fn toggle_status_pick(&mut self) {
         let Overlay::Form {
             status,
-            edit_id,
-            field,
-            label,
-            description,
-            elapsed,
-            code,
-            notes,
-            tags,
-        } = &self.overlay
+            status_pick,
+            ..
+        } = &mut self.overlay
         else {
             return;
         };
-        let selected = jira::JIRA_STATUSES
-            .iter()
-            .position(|s| s.id == status.trim())
-            .unwrap_or(jira::JIRA_STATUSES.len());
-        self.form_under_state = Some(Overlay::Form {
-            edit_id: *edit_id,
-            field: *field,
-            label: label.clone(),
-            description: description.clone(),
-            elapsed: elapsed.clone(),
-            status: status.clone(),
-            code: code.clone(),
-            notes: notes.clone(),
-            tags: tags.clone(),
-        });
-        self.overlay = Overlay::StatusPick { selected };
+        if status_pick.is_some() {
+            *status_pick = None;
+            return;
+        }
+        // A task stored before the field held catalog ids can still carry a
+        // label, so resolve both; anything unrecognised parks on "No status".
+        let id = jira::resolve_status_id(status.trim()).unwrap_or(status.trim());
+        *status_pick = Some(
+            jira::JIRA_STATUSES
+                .iter()
+                .position(|s| s.id == id)
+                .unwrap_or(jira::JIRA_STATUSES.len()),
+        );
     }
 
     fn submit_form(&mut self) -> Result<()> {
-        let (edit_id, label, description, elapsed, status, code, notes, tags) = match &self.overlay {
-            Overlay::Form {
-                edit_id,
-                label,
-                description,
-                elapsed,
-                status,
-                code,
-                notes,
-                tags,
-                ..
-            } => (
-                *edit_id,
-                label.clone(),
-                description.clone(),
-                elapsed.clone(),
-                status.clone(),
-                code.clone(),
-                notes.clone(),
-                tags.clone(),
-            ),
-            _ => return Ok(()),
+        // Copy the form out: the save path calls `&mut self` helpers, so the
+        // overlay cannot stay borrowed while it runs.
+        let Overlay::Form {
+            edit_id,
+            label,
+            description,
+            elapsed,
+            status,
+            code,
+            notes,
+            tags,
+            link,
+            is_pinned,
+            is_important,
+            is_archived,
+            is_cancelled,
+            is_deleted,
+            is_completed,
+            ..
+        } = &self.overlay
+        else {
+            return Ok(());
         };
+        let (
+            edit_id,
+            label,
+            description,
+            elapsed,
+            status,
+            code,
+            notes,
+            tags,
+            link,
+            is_pinned,
+            is_important,
+            is_archived,
+            is_cancelled,
+            is_deleted,
+            is_completed,
+        ) = (
+            *edit_id,
+            label.clone(),
+            description.clone(),
+            elapsed.clone(),
+            status.clone(),
+            code.clone(),
+            notes.clone(),
+            tags.clone(),
+            link.clone(),
+            *is_pinned,
+            *is_important,
+            *is_archived,
+            *is_cancelled,
+            *is_deleted,
+            *is_completed,
+        );
         if label.trim().is_empty() {
             self.set_status("label is required");
             return Ok(());
@@ -563,6 +643,20 @@ impl App {
         let code_opt = if code.is_empty() { None } else { Some(code.as_str()) };
         let notes_opt = if notes.is_empty() { None } else { Some(notes.as_str()) };
         let tags_opt = if tags.is_empty() { None } else { Some(tags.as_str()) };
+        let link_opt = if link.trim().is_empty() {
+            None
+        } else {
+            Some(link.as_str())
+        };
+        let flags = tasks::TaskPatch {
+            is_pinned: Some(is_pinned),
+            is_important: Some(is_important),
+            is_archived: Some(is_archived),
+            is_cancelled: Some(is_cancelled),
+            is_deleted: Some(is_deleted),
+            is_completed: Some(is_completed),
+            ..Default::default()
+        };
         if let Some(id) = edit_id {
             tasks::update_task(
                 &self.conn,
@@ -576,6 +670,8 @@ impl App {
                     status: status_opt,
                     notes: notes_opt,
                     tags: tags_opt,
+                    link: link_opt,
+                    ..flags
                 },
             )?;
         } else {
@@ -593,17 +689,22 @@ impl App {
             };
             let date = self.date_str();
             let created = tasks::create_task(&self.conn, &self.user_id, &date, &label, desc)?;
-            if elapsed_secs > 0 {
-                tasks::update_task(
-                    &self.conn,
-                    &self.user_id,
-                    created.id,
-                    tasks::TaskPatch {
-                        elapsed_seconds: Some(elapsed_secs),
-                        ..Default::default()
-                    },
-                )?;
-            }
+            // `create_task` only knows label and description, so everything else
+            // the form collected — including the link and the flags — lands here.
+            tasks::update_task(
+                &self.conn,
+                &self.user_id,
+                created.id,
+                tasks::TaskPatch {
+                    elapsed_seconds: Some(elapsed_secs),
+                    code: code_opt,
+                    status: status_opt,
+                    notes: notes_opt,
+                    tags: tags_opt,
+                    link: link_opt,
+                    ..flags
+                },
+            )?;
             self.reload()?;
             if let Some(i) = self.tasks.iter().position(|t| t.id == created.id) {
                 self.selected = i;
@@ -650,6 +751,8 @@ impl App {
                 match input {
                     ArchiveInput::Label => self.archive.filter_q = opt,
                     ArchiveInput::Tag => self.archive.filter_tag = opt,
+                    ArchiveInput::Status => self.archive.filter_status = opt,
+                    ArchiveInput::Integration => self.archive.filter_integration = opt,
                 }
                 self.archive.selected = 0;
                 self.overlay = Overlay::None;
@@ -698,6 +801,16 @@ impl App {
         // Phase 1: in-place state mutations (typing, navigation)
         match &mut mode {
             JiraMode::Comment { buffer } => match key.code {
+                KeyCode::Backspace => { buffer.pop(); }
+                KeyCode::Char(c)
+                    if key.modifiers == KeyModifiers::NONE
+                        || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    buffer.push(c);
+                }
+                _ => {}
+            },
+            JiraMode::FetchKey { buffer } => match key.code {
                 KeyCode::Backspace => { buffer.pop(); }
                 KeyCode::Char(c)
                     if key.modifiers == KeyModifiers::NONE
@@ -758,27 +871,9 @@ impl App {
                     }
                 }
                 KeyCode::Char('3') => {
-                    let board = self.jira_board.clone();
-                    let sprint_id = self.jira_sprint_id.clone();
-                    match (board, sprint_id) {
-                        (Some(board), Some(sprint_id)) => {
-                            self.overlay = Overlay::Jira { mode: JiraMode::Syncing };
-                            match self.sync_sprint(&board, &sprint_id) {
-                                Ok(msg) => {
-                                    self.set_status(msg);
-                                    self.overlay = Overlay::None;
-                                    if let Err(e) = self.reload() { self.err_status(e); }
-                                }
-                                Err(e) => {
-                                    self.set_status(format!("sprint sync: {e}"));
-                                    self.overlay = Overlay::None;
-                                }
-                            }
-                        }
-                        _ => {
-                            self.set_status("set jira_board + jira_sprint_id in config.toml");
-                        }
-                    }
+                    self.overlay = Overlay::Jira {
+                        mode: JiraMode::SyncPick,
+                    };
                 }
                 _ => {
                     self.overlay = Overlay::Jira { mode: JiraMode::Menu };
@@ -877,6 +972,58 @@ impl App {
                     };
                 }
             },
+            JiraMode::SyncPick => match key.code {
+                KeyCode::Esc | KeyCode::Char('q') => {
+                    self.overlay = Overlay::Jira { mode: JiraMode::Menu };
+                }
+                KeyCode::Char('1') => self.run_sprint_query(jira::SprintQuery::Unassigned),
+                KeyCode::Char('2') => self.run_sprint_query(jira::SprintQuery::ReporterUndone),
+                KeyCode::Char('3') => self.run_sprint_query(jira::SprintQuery::AssigneeUndone),
+                KeyCode::Char('4') => {
+                    self.overlay = Overlay::Jira {
+                        mode: JiraMode::FetchKey { buffer: String::new() },
+                    };
+                }
+                _ => {
+                    self.overlay = Overlay::Jira { mode: JiraMode::SyncPick };
+                }
+            },
+            JiraMode::FetchKey { buffer } => match key.code {
+                KeyCode::Esc => {
+                    self.overlay = Overlay::Jira { mode: JiraMode::SyncPick };
+                }
+                KeyCode::Enter => {
+                    let key = buffer.trim().to_string();
+                    if key.is_empty() {
+                        self.set_status("issue key is empty");
+                        self.overlay = Overlay::Jira {
+                            mode: JiraMode::FetchKey { buffer },
+                        };
+                        return Ok(false);
+                    }
+                    self.overlay = Overlay::Jira { mode: JiraMode::Syncing };
+                    match jira::fetch_issue(&key) {
+                        Ok(issue) => {
+                            let issues = vec![issue];
+                            match self.ingest_jira_issues(&issues) {
+                                Ok(msg) => {
+                                    self.set_status(msg);
+                                    if let Err(e) = self.reload() { self.err_status(e); }
+                                }
+                                Err(e) => self.set_status(format!("fetch by key: {e}")),
+                            }
+                        }
+                        Err(e) => self.set_status(format!("fetch by key: {e}")),
+                    }
+                    self.overlay = Overlay::None;
+                }
+                _ => {
+                    // preserve typed buffer
+                    self.overlay = Overlay::Jira {
+                        mode: JiraMode::FetchKey { buffer },
+                    };
+                }
+            },
             JiraMode::Syncing => match key.code {
                 KeyCode::Esc | KeyCode::Enter => {
                     // self.overlay already Overlay::None
@@ -890,13 +1037,14 @@ impl App {
     }
 
 
-    fn sync_sprint(&mut self, board: &str, sprint_id: &str) -> Result<String> {
-        let issues = jira::fetch_sprint_issues(board, sprint_id)?;
+    /// Create-or-update today's tasks for a batch of JIRA issues and link each
+    /// to its issue key. Reports the split so the caller can toast it.
+    fn ingest_jira_issues(&mut self, issues: &[(String, String, String)]) -> Result<String> {
         let today = self.date_str();
         let mut created = 0u32;
         let mut updated = 0u32;
         let user_id = self.user_id.clone();
-        for (key, summary, _status) in &issues {
+        for (key, summary, _status) in issues {
             let label = format!("{key} {summary}");
             let task = tasks::create_task(&self.conn, &user_id, &today, label.trim(), Some(summary))?;
             db::integrations::upsert(&self.conn, task.id, "jira", "issue_key", Some(key))?;
@@ -907,7 +1055,241 @@ impl App {
                 updated += 1;
             }
         }
-        Ok(format!("sprint sync: {created} created, {updated} updated, {} total", issues.len()))
+        let mut msg = format!("{created} created, {updated} updated, {} total", issues.len());
+        if issues.len() >= 50 {
+            msg.push_str(" (first 50)");
+        }
+        Ok(msg)
+    }
+
+    /// Run one of the four sprint modes: fetch, then ingest. Needs only the
+    /// sprint id — the board is not part of JQL.
+    fn run_sprint_query(&mut self, query: jira::SprintQuery) {
+        let Some(sprint_id) = self.jira_sprint_id.clone() else {
+            self.set_status("set jira_sprint_id in config.toml");
+            return;
+        };
+        self.overlay = Overlay::Jira { mode: JiraMode::Syncing };
+        let jql = jira::jql_for(query, &sprint_id);
+        match jira::search_issues(&jql) {
+            Ok(issues) => match self.ingest_jira_issues(&issues) {
+                Ok(msg) => {
+                    self.set_status(format!("jira: {msg}"));
+                    if let Err(e) = self.reload() {
+                        self.err_status(e);
+                    }
+                }
+                Err(e) => self.set_status(format!("jira sync: {e}")),
+            },
+            Err(e) => self.set_status(format!("jira sync: {e}")),
+        }
+        self.overlay = Overlay::None;
+    }
+
+    /// Pull the newest PR comments for a branch into `task_comments`. Capped at
+    /// three PRs and 20 comments each so one import cannot flood a task, and
+    /// deduped on (pr, summary) so re-running it does not double rows.
+    fn import_pr_comments(
+        &mut self,
+        task_id: i64,
+        branch: &str,
+        workspace: &str,
+        repo: &str,
+    ) -> Result<u32> {
+        let prs = crate::bitbucket::list_prs(workspace, repo, branch)?;
+        let existing = db::comments::list(&self.conn, task_id)?;
+        let mut imported = 0u32;
+        for pr in prs.iter().take(3) {
+            let comments = crate::bitbucket::get_pr_comments(workspace, repo, pr.id)?;
+            for c in comments {
+                let summary = c
+                    .content
+                    .as_ref()
+                    .and_then(|c| c.raw.as_deref())
+                    .unwrap_or_default()
+                    .trim()
+                    .to_string();
+                if summary.is_empty() {
+                    continue;
+                }
+                let pr_id = pr.id.to_string();
+                let seen = existing.iter().any(|e| {
+                    e.pr.as_deref() == Some(pr_id.as_str())
+                        && e.summary.as_deref() == Some(summary.as_str())
+                });
+                if seen {
+                    continue;
+                }
+                let author = c
+                    .user
+                    .as_ref()
+                    .and_then(|u| u.display_name.as_deref())
+                    .unwrap_or("unknown");
+                let subject = format!("PR #{} {author}", pr.id);
+                db::comments::add(
+                    &self.conn,
+                    task_id,
+                    Some(&subject),
+                    Some(&summary),
+                    Some(branch),
+                    Some(&pr_id),
+                )?;
+                imported += 1;
+            }
+        }
+        Ok(imported)
+    }
+
+    /// Build the detail overlay: stored comments plus whatever Bitbucket and git
+    /// can say about the selected task's branch. Network failures degrade to an
+    /// empty section and a toast — the detail view still opens.
+    fn open_detail(&mut self) {
+        let Some(task) = self.focused_task().map(|t| (t.id, t.label.clone())) else {
+            return;
+        };
+        let (task_id, _) = task;
+        let comments = db::comments::list(&self.conn, task_id).unwrap_or_default();
+        let branch = self.git_task_branch().unwrap_or_default();
+        let mut prs = Vec::new();
+        let mut statuses = Vec::new();
+        if !branch.is_empty() {
+            if let (Some(ws), Some(repo_name)) =
+                (self.bitbucket_workspace.clone(), self.bitbucket_repo.clone())
+            {
+                match crate::bitbucket::list_prs(&ws, &repo_name, &branch) {
+                    Ok(list) => prs = list,
+                    Err(e) => self.set_status(format!("bitbucket: {e}")),
+                }
+                if let Some(repo) = self.git_repo_path.clone() {
+                    if let Ok(commits) = git::commits_for_branch(&repo, &branch, 1) {
+                        if let Some(head) = commits.first() {
+                            match crate::bitbucket::commit_statuses(&ws, &repo_name, &head.hash) {
+                                Ok(s) => statuses = s,
+                                Err(e) => self.set_status(format!("bitbucket: {e}")),
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        self.overlay = Overlay::Detail {
+            comments,
+            prs,
+            statuses,
+        };
+    }
+
+    /// Open the comment list for the selected task.
+    fn open_comments(&mut self) {
+        let Some(task_id) = self.focused_task().map(|t| t.id) else {
+            return;
+        };
+        let comments = match db::comments::list(&self.conn, task_id) {
+            Ok(c) => c,
+            Err(e) => {
+                self.err_status(e);
+                return;
+            }
+        };
+        self.overlay = Overlay::Comments {
+            task_id,
+            comments,
+            selected: 0,
+            compose: None,
+        };
+    }
+
+    /// Keys for the comment list and its compose buffer.
+    fn handle_comments_key(&mut self, key: KeyEvent) -> Result<()> {
+        // Take the overlay out: the branches below call `&mut self` helpers, so
+        // it cannot stay borrowed across them.
+        let taken = std::mem::replace(&mut self.overlay, Overlay::None);
+        let Overlay::Comments {
+            task_id,
+            comments,
+            mut selected,
+            mut compose,
+        } = taken
+        else {
+            self.overlay = taken;
+            return Ok(());
+        };
+        let restore = |comments: Vec<db::comments::Comment>, selected, compose| Overlay::Comments {
+            task_id,
+            comments,
+            selected,
+            compose,
+        };
+        if let Some(buffer) = compose.as_mut() {
+            match key.code {
+                KeyCode::Esc => {
+                    self.overlay = restore(comments, selected, None);
+                }
+                KeyCode::Backspace => {
+                    buffer.pop();
+                    self.overlay = restore(comments, selected, compose);
+                }
+                KeyCode::Char(c)
+                    if key.modifiers == KeyModifiers::NONE
+                        || key.modifiers == KeyModifiers::SHIFT =>
+                {
+                    buffer.push(c);
+                    self.overlay = restore(comments, selected, compose);
+                }
+                KeyCode::Enter => {
+                    let text = buffer.trim().to_string();
+                    if text.is_empty() {
+                        self.set_status("comment is empty");
+                        self.overlay = restore(comments, selected, compose);
+                        return Ok(());
+                    }
+                    match db::comments::add(
+                        &self.conn,
+                        task_id,
+                        Some("comment"),
+                        Some(&text),
+                        None,
+                        None,
+                    ) {
+                        Ok(_) => {
+                            self.set_status("comment added");
+                            let refreshed = db::comments::list(&self.conn, task_id)?;
+                            self.overlay = restore(refreshed, 0, None);
+                        }
+                        Err(e) => {
+                            self.err_status(e);
+                            self.overlay = restore(comments, selected, compose);
+                        }
+                    }
+                }
+                _ => {
+                    self.overlay = restore(comments, selected, compose);
+                }
+            }
+            return Ok(());
+        }
+        match key.code {
+            KeyCode::Esc | KeyCode::Char('q') | KeyCode::Char('C') => {
+                // self.overlay already Overlay::None
+            }
+            KeyCode::Char('n') => {
+                self.overlay = restore(comments, selected, Some(String::new()));
+            }
+            KeyCode::Char('j') | KeyCode::Down => {
+                if !comments.is_empty() {
+                    selected = (selected + 1).min(comments.len() - 1);
+                }
+                self.overlay = restore(comments, selected, None);
+            }
+            KeyCode::Char('k') | KeyCode::Up => {
+                selected = selected.saturating_sub(1);
+                self.overlay = restore(comments, selected, None);
+            }
+            _ => {
+                self.overlay = restore(comments, selected, None);
+            }
+        }
+        Ok(())
     }
 
     fn open_git_menu(&mut self) {
@@ -919,7 +1301,7 @@ impl App {
     }
 
     fn git_task_branch(&self) -> Option<String> {
-        let task = self.selected_task()?;
+        let task = self.focused_task()?;
         let integrations = db::integrations::list(&self.conn, task.id).ok()?;
         integrations
             .iter()
@@ -1016,6 +1398,32 @@ impl App {
                         }
                     }
                 }
+                KeyCode::Char('4') => {
+                    // Import PR comments into task_comments.
+                    let Some(task_id) = self.selected_task().map(|t| t.id) else {
+                        self.set_status("no task selected");
+                        self.overlay = Overlay::None;
+                        return Ok(false);
+                    };
+                    let branch = self.git_task_branch().unwrap_or_default();
+                    if branch.is_empty() {
+                        self.set_status("no branch linked — use option 1 first");
+                        self.overlay = Overlay::None;
+                        return Ok(false);
+                    }
+                    let (Some(ws), Some(repo_name)) =
+                        (self.bitbucket_workspace.clone(), self.bitbucket_repo.clone())
+                    else {
+                        self.set_status("set bitbucket_workspace + bitbucket_repo in config");
+                        self.overlay = Overlay::None;
+                        return Ok(false);
+                    };
+                    match self.import_pr_comments(task_id, &branch, &ws, &repo_name) {
+                        Ok(n) => self.set_status(format!("imported {n} comments")),
+                        Err(e) => self.set_status(format!("bitbucket: {e}")),
+                    }
+                    self.overlay = Overlay::None;
+                }
                 _ => {}
             },
             GitMode::LinkBranch { mut buffer } => match key.code {
@@ -1068,71 +1476,85 @@ impl App {
         Ok(false)
     }
 
-    /// Keys for the status picker. Never quits, so it reports nothing — it only
-    /// ever closes back into the form it came from.
-    fn handle_status_pick_key(&mut self, key: KeyEvent) -> Result<()> {
-        // Copy the index out: `Overlay` is not `Copy`, so the shorthand bind
-        // would move the field it needs to write back.
-        let Overlay::StatusPick { selected } = &self.overlay else {
-            return Ok(());
-        };
-        let selected = *selected;
+    /// Keys while the form's status dropdown is open. Consumes everything it
+    /// recognises and reports whether it handled the key, so the caller never
+    /// falls through to the text fields underneath.
+    fn handle_status_pick_key(&mut self, key: KeyEvent) -> bool {
         // The row past the last status is "No status".
         let last = jira::JIRA_STATUSES.len();
+        let Overlay::Form {
+            field,
+            status,
+            status_pick,
+            ..
+        } = &mut self.overlay
+        else {
+            return false;
+        };
+        let Some(cursor) = *status_pick else {
+            return false;
+        };
         match key.code {
-            // Esc keeps the field as it was; only Enter applies a choice.
-            KeyCode::Esc => {
-                let restored = self.form_under(None);
-                self.overlay = restored;
+            // Esc leaves the field as it was; only Enter applies a choice.
+            KeyCode::Esc => *status_pick = None,
+            // Tab closes the list and lets focus move on as usual.
+            KeyCode::Tab | KeyCode::BackTab => {
+                *status_pick = None;
+                return false;
             }
-            KeyCode::Char('j') | KeyCode::Down => {
-                self.overlay = Overlay::StatusPick {
-                    selected: (selected + 1).min(last),
-                };
-            }
-            KeyCode::Char('k') | KeyCode::Up => {
-                self.overlay = Overlay::StatusPick {
-                    selected: selected.saturating_sub(1),
-                };
-            }
+            KeyCode::Char('j') | KeyCode::Down => *status_pick = Some((cursor + 1).min(last)),
+            KeyCode::Char('k') | KeyCode::Up => *status_pick = Some(cursor.saturating_sub(1)),
             KeyCode::Char(digit @ '0'..='8') => {
-                self.overlay = Overlay::StatusPick {
-                    selected: (digit as usize - '0' as usize).min(last),
-                };
+                *status_pick = Some((digit as usize - '0' as usize).min(last));
             }
             KeyCode::Enter => {
-                let status = jira::JIRA_STATUSES
-                    .get(selected)
+                *status = jira::JIRA_STATUSES
+                    .get(cursor)
                     .map(|s| s.id.to_string())
                     .unwrap_or_default();
-                let chosen = self.form_under(Some(status));
-                self.overlay = chosen;
+                *status_pick = None;
+                // Move on like Tab would. Staying put would make the next Enter
+                // reopen the list instead of saving the form the footer
+                // promises Enter saves.
+                *field = Field::Code;
             }
-            _ => {}
+            _ => return false,
         }
-        Ok(())
+        true
     }
 
     fn handle_form_key(&mut self, key: KeyEvent) -> Result<bool> {
+        // The dropdown owns the keyboard while it is open, so a `j` there moves
+        // the cursor instead of typing into the field behind it.
+        if self.handle_status_pick_key(key) {
+            return Ok(false);
+        }
         match key.code {
             KeyCode::Esc => {
                 self.overlay = Overlay::None;
                 return Ok(false);
             }
             KeyCode::Enter => {
+                // On the status field Enter opens the catalog rather than
+                // saving — the field is a dropdown, and the form's own hint
+                // says so.
+                if matches!(&self.overlay, Overlay::Form { field: Field::Status, .. }) {
+                    self.toggle_status_pick();
+                    return Ok(false);
+                }
                 self.submit_form()?;
                 return Ok(false);
             }
             _ => {}
         }
-        // The status field is a picker, not a text input: any printable key on it
-        // opens the catalog. Checked before the form borrow so opening can mutate.
+        // Any other printable key on the status field opens the catalog too, so
+        // the dropdown is reachable without knowing the Enter binding.
         let status_focused = matches!(&self.overlay, Overlay::Form { field: Field::Status, .. });
         if status_focused
             && matches!(key.code, KeyCode::Char(_))
             && (key.modifiers == KeyModifiers::NONE || key.modifiers == KeyModifiers::SHIFT)
         {
-            self.open_status_pick();
+            self.toggle_status_pick();
             return Ok(false);
         }
         let Overlay::Form {
@@ -1144,6 +1566,14 @@ impl App {
             code,
             notes,
             tags,
+            link,
+            is_pinned,
+            is_important,
+            is_archived,
+            is_cancelled,
+            is_deleted,
+            is_completed,
+            status_pick: _,
             edit_id: _,
         } = &mut self.overlay
         else {
@@ -1158,8 +1588,31 @@ impl App {
                     Field::Code => Field::Elapsed,
                     Field::Elapsed => Field::Notes,
                     Field::Notes => Field::Tags,
-                    Field::Tags => Field::Label,
+                    Field::Tags => Field::Link,
+                    Field::Link => Field::Flags,
+                    Field::Flags => Field::Label,
                 };
+            }
+            // The flags field is a row of toggles, not text: these keys flip
+            // one each. Daily `d`/`D` bindings are unaffected — this only fires
+            // while the form is open on the flags field.
+            KeyCode::Char(c)
+                if *field == Field::Flags
+                    && (key.modifiers == KeyModifiers::NONE
+                        || key.modifiers == KeyModifiers::SHIFT) =>
+            {
+                let target = match c.to_ascii_lowercase() {
+                    'p' => Some(is_pinned),
+                    'i' => Some(is_important),
+                    'a' => Some(is_archived),
+                    'c' => Some(is_cancelled),
+                    'x' => Some(is_deleted),
+                    'd' => Some(is_completed),
+                    _ => None,
+                };
+                if let Some(flag) = target {
+                    *flag = !*flag;
+                }
             }
             KeyCode::Backspace => {
                 let buf = match field {
@@ -1171,6 +1624,8 @@ impl App {
                     Field::Code => code,
                     Field::Notes => notes,
                     Field::Tags => tags,
+                    Field::Link => link,
+                    Field::Flags => return Ok(false),
                 };
                 buf.pop();
             }
@@ -1185,6 +1640,8 @@ impl App {
                     Field::Code => code,
                     Field::Notes => notes,
                     Field::Tags => tags,
+                    Field::Link => link,
+                    Field::Flags => return Ok(false),
                 };
                 buf.push(c);
             }
@@ -1203,10 +1660,6 @@ impl App {
         match &self.overlay {
             Overlay::Filter { .. } => return self.handle_filter_key(key),
             Overlay::Form { .. } => return self.handle_form_key(key),
-            Overlay::StatusPick { .. } => {
-                self.handle_status_pick_key(key)?;
-                return Ok(false);
-            }
             Overlay::Help => {
                 if matches!(
                     key.code,
@@ -1236,7 +1689,12 @@ impl App {
                 match key.code {
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
                         let date = self.date_str();
+                        // A reset stops every timer, so no row stays In Progress.
+                        let ids: Vec<i64> = self.tasks.iter().map(|t| t.id).collect();
                         tasks::reset_all(&self.conn, &self.user_id, &date)?;
+                        for id in ids {
+                            jira::auto_status(&self.conn, &self.user_id, id);
+                        }
                         self.overlay = Overlay::None;
                         self.reload()?;
                     }
@@ -1247,10 +1705,19 @@ impl App {
                 }
                 return Ok(false);
             }
-            Overlay::Detail => {
-                if matches!(key.code, KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('q')) {
-                    self.overlay = Overlay::None;
+            Overlay::Detail { .. } => {
+                match key.code {
+                    KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('q') => {
+                        self.overlay = Overlay::None;
+                    }
+                    // The detail footer advertises it, so `C` works from here too.
+                    KeyCode::Char('C') => self.open_comments(),
+                    _ => {}
                 }
+                return Ok(false);
+            }
+            Overlay::Comments { .. } => {
+                self.handle_comments_key(key)?;
                 return Ok(false);
             }
             Overlay::Jira { .. } => return self.handle_jira_key(key),
@@ -1275,9 +1742,14 @@ impl App {
                 }
                 KeyCode::Char('/') => self.open_archive_filter(ArchiveInput::Label),
                 KeyCode::Char('t') => self.open_archive_filter(ArchiveInput::Tag),
+                KeyCode::Char('s') => self.open_archive_filter(ArchiveInput::Status),
+                KeyCode::Char('g') => self.open_archive_filter(ArchiveInput::Integration),
                 KeyCode::Char('c') | KeyCode::Enter => self.continue_today()?,
                 KeyCode::Char('i') if self.archive_selected_task().is_some() => {
-                    self.overlay = Overlay::Detail;
+                    self.open_detail();
+                }
+                KeyCode::Char('C') if self.archive_selected_task().is_some() => {
+                    self.open_comments();
                 }
                 _ => {}
             }
@@ -1310,7 +1782,12 @@ impl App {
             KeyCode::Char('e') => self.open_edit(),
             KeyCode::Char('i') => {
                 if self.selected_task().is_some() {
-                    self.overlay = Overlay::Detail;
+                    self.open_detail();
+                }
+            }
+            KeyCode::Char('C') => {
+                if self.selected_task().is_some() {
+                    self.open_comments();
                 }
             }
             KeyCode::Char('d') => {
@@ -1323,6 +1800,9 @@ impl App {
                 if let Some(t) = self.selected_task().cloned() {
                     let new_done = !t.done;
                     let result = tasks::set_done(&self.conn, &self.user_id, t.id, new_done)?;
+                    // Local state first: the row reads Done / To Do immediately,
+                    // whether or not the JIRA hook below can be reached.
+                    jira::auto_status(&self.conn, &self.user_id, t.id);
                     let mut warnings = Warnings::new();
                     if let Some((_, delta, start_ms)) = result {
                         if new_done {
@@ -1330,7 +1810,6 @@ impl App {
                                 jira::fire_on_done(&t.label, t.description_text(), delta, start_ms);
                         }
                     }
-                    jira::auto_status(&self.conn, &self.user_id, t.id, false, new_done);
                     self.reload()?;
                     self.set_status(if new_done { "marked done" } else { "unmarked done" });
                     self.show_jira(warnings);
@@ -1339,6 +1818,8 @@ impl App {
             KeyCode::Char('r') => {
                 if let Some(id) = self.selected_task().map(|t| t.id) {
                     tasks::reset_task(&self.conn, &self.user_id, id)?;
+                    // A reset stops the timer, so the row is no longer In Progress.
+                    jira::auto_status(&self.conn, &self.user_id, id);
                     self.reload()?;
                 }
             }
@@ -1448,15 +1929,30 @@ mod tests {
             code: String::new(),
             notes: String::new(),
             tags: String::new(),
+            link: String::new(),
+            is_pinned: false,
+            is_important: false,
+            is_archived: false,
+            is_cancelled: false,
+            is_deleted: false,
+            is_completed: false,
+            status_pick: None,
         }
     }
 
-    /// The picker is a field editor: whatever it applies must survive into the
-    /// form, which is what `submit_form` later writes to the database.
+    /// The dropdown edits the form's own field, so this reads the status the
+    /// next save would write.
     fn form_status(app: &App) -> &str {
         match &app.overlay {
             Overlay::Form { status, .. } => status,
             _ => panic!("expected the form back after the picker closed"),
+        }
+    }
+
+    fn pick_cursor(app: &App) -> Option<usize> {
+        match &app.overlay {
+            Overlay::Form { status_pick, .. } => *status_pick,
+            _ => panic!("expected the form"),
         }
     }
 
@@ -1472,6 +1968,8 @@ mod tests {
             "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL);
              CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, label TEXT NOT NULL, description TEXT, code TEXT, link TEXT, status TEXT NOT NULL DEFAULT 'todo', notes TEXT, tags TEXT, elapsed_time INTEGER NOT NULL DEFAULT 0, total_time INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0, is_running INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, is_completed INTEGER NOT NULL DEFAULT 0, is_cancelled INTEGER NOT NULL DEFAULT 0, is_deleted INTEGER NOT NULL DEFAULT 0, is_archived INTEGER NOT NULL DEFAULT 0, is_pinned INTEGER NOT NULL DEFAULT 0, is_important INTEGER NOT NULL DEFAULT 0, start_time INTEGER, end_time INTEGER, work_date TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE user_settings (user_id TEXT PRIMARY KEY, timer_mode TEXT NOT NULL DEFAULT 'focus', updated_at INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, subject TEXT, summary TEXT, branch TEXT, pr TEXT, created_at INTEGER NOT NULL);
+             CREATE TABLE task_integrations (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, \"group\" TEXT NOT NULL, field TEXT NOT NULL, value TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
              INSERT INTO users VALUES ('u1','a@b.c','x',0);",
         )
         .unwrap();
@@ -1492,84 +1990,122 @@ mod tests {
     #[test]
     fn picking_a_status_writes_its_catalog_id_into_the_form() {
         let mut app = app_with_form("");
-        app.open_status_pick();
+        app.toggle_status_pick();
         // No stored status → the cursor sits on the "No status" row, past the
         // catalog, and `k` walks up into it (Done is the third row from the top).
-        let Overlay::StatusPick { selected } = app.overlay else {
-            panic!("expected the picker");
-        };
-        assert_eq!(selected, jira::JIRA_STATUSES.len());
+        assert_eq!(pick_cursor(&app), Some(jira::JIRA_STATUSES.len()));
 
         for _ in 0..(jira::JIRA_STATUSES.len() - 2) {
-            app.handle_status_pick_key(key(KeyCode::Char('k'))).unwrap();
+            app.handle_form_key(key(KeyCode::Char('k'))).unwrap();
         }
-        app.handle_status_pick_key(key(KeyCode::Enter)).unwrap();
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(form_status(&app), "31", "the picked status must land in the form");
+        assert_eq!(pick_cursor(&app), None, "Enter closes the dropdown");
     }
 
     #[test]
     fn a_picker_cursor_opens_on_the_status_the_form_already_holds() {
         let mut app = app_with_form("51");
-        app.open_status_pick();
-        let Overlay::StatusPick { selected } = app.overlay else {
-            panic!("expected the picker");
-        };
+        app.toggle_status_pick();
         // Catalog order: 11, 21, 31, 41, 51 → index 4.
-        assert_eq!(selected, 4);
-        app.handle_status_pick_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(pick_cursor(&app), Some(4));
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(form_status(&app), "51");
+    }
+
+    /// The field holds an id, but a task stored before the catalog existed can
+    /// hold a label — the dropdown must still find its row.
+    #[test]
+    fn a_picker_cursor_resolves_a_legacy_label() {
+        let mut app = app_with_form("Cek di Local");
+        app.toggle_status_pick();
+        assert_eq!(pick_cursor(&app), Some(4));
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(form_status(&app), "51", "choosing must normalise to the id");
     }
 
     #[test]
     fn escaping_the_picker_leaves_the_form_status_untouched() {
         let mut app = app_with_form("41");
-        app.open_status_pick();
-        app.handle_status_pick_key(key(KeyCode::Char('j'))).unwrap();
-        app.handle_status_pick_key(key(KeyCode::Esc)).unwrap();
+        app.toggle_status_pick();
+        app.handle_form_key(key(KeyCode::Char('j'))).unwrap();
+        app.handle_form_key(key(KeyCode::Esc)).unwrap();
         assert_eq!(form_status(&app), "41", "Esc must not apply a selection");
+        assert_eq!(pick_cursor(&app), None);
     }
 
     #[test]
     fn the_no_status_row_clears_the_field() {
         let mut app = app_with_form("81");
-        app.open_status_pick();
+        app.toggle_status_pick();
         // Past the last catalog row is "No status".
         for _ in 0..jira::JIRA_STATUSES.len() {
-            app.handle_status_pick_key(key(KeyCode::Char('j'))).unwrap();
+            app.handle_form_key(key(KeyCode::Char('j'))).unwrap();
         }
-        app.handle_status_pick_key(key(KeyCode::Enter)).unwrap();
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(form_status(&app), "");
     }
 
     #[test]
     fn movement_is_clamped_to_the_no_status_row() {
         let mut app = app_with_form("");
-        app.open_status_pick();
+        app.toggle_status_pick();
         for _ in 0..(jira::JIRA_STATUSES.len() + 5) {
-            app.handle_status_pick_key(key(KeyCode::Char('j'))).unwrap();
+            app.handle_form_key(key(KeyCode::Char('j'))).unwrap();
         }
-        let Overlay::StatusPick { selected } = app.overlay else {
-            panic!("expected the picker");
-        };
-        assert_eq!(selected, jira::JIRA_STATUSES.len());
-        app.handle_status_pick_key(key(KeyCode::Char('k'))).unwrap();
-        app.handle_status_pick_key(key(KeyCode::Char('k'))).unwrap();
-        let Overlay::StatusPick { selected } = app.overlay else {
-            panic!("expected the picker");
-        };
-        assert_eq!(selected, jira::JIRA_STATUSES.len() - 2);
+        assert_eq!(pick_cursor(&app), Some(jira::JIRA_STATUSES.len()));
+        app.handle_form_key(key(KeyCode::Char('k'))).unwrap();
+        app.handle_form_key(key(KeyCode::Char('k'))).unwrap();
+        assert_eq!(pick_cursor(&app), Some(jira::JIRA_STATUSES.len() - 2));
     }
 
     /// The form's status field is not a text input: `s` must open the catalog
-    /// rather than append a character, or the picker would be unreachable.
+    /// rather than append a character, or the dropdown would be unreachable.
     #[test]
     fn the_status_field_opens_the_picker_instead_of_typing() {
         let mut app = app_with_form("21");
         app.handle_form_key(key(KeyCode::Char('s'))).unwrap();
-        assert!(matches!(app.overlay, Overlay::StatusPick { .. }));
+        assert!(pick_cursor(&app).is_some());
     }
 
-    /// Every other field still types, so the picker did not swallow the form.
+    /// The form's own hint says Enter picks the status, so Enter on that field
+    /// must open the dropdown rather than save the form.
+    #[test]
+    fn enter_on_the_status_field_opens_the_picker_without_saving() {
+        let mut app = app_with_form("21");
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
+        assert!(pick_cursor(&app).is_some(), "Enter must open the catalog");
+        assert!(
+            app.tasks.is_empty(),
+            "Enter on the status field must not save the form"
+        );
+    }
+
+    /// Committing a choice must move focus off the status field. Staying there
+    /// would make the next Enter reopen the list rather than save the form,
+    /// while the footer still promises Enter saves.
+    #[test]
+    fn committing_a_status_moves_focus_so_the_next_enter_saves() {
+        let mut app = app_with_form("21");
+        // The create path, so the save that follows is observable as a row.
+        if let Overlay::Form { edit_id, label, .. } = &mut app.overlay {
+            *edit_id = None;
+            *label = "US-88".into();
+        }
+        app.toggle_status_pick();
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(pick_cursor(&app), None);
+        assert!(
+            matches!(&app.overlay, Overlay::Form { field: Field::Code, .. }),
+            "focus must leave the status field once a choice is applied"
+        );
+        // The next Enter is now a save, not a reopen of the list.
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(app.tasks.len(), 1, "Enter must have saved the form");
+        assert_eq!(app.tasks[0].status, "21");
+    }
+
+    /// Every other field still types, so the dropdown did not swallow the form.
     #[test]
     fn other_fields_still_accept_text() {
         let mut app = test_app();
@@ -1583,6 +2119,14 @@ mod tests {
             code: String::new(),
             notes: String::new(),
             tags: String::new(),
+            link: String::new(),
+            is_pinned: false,
+            is_important: false,
+            is_archived: false,
+            is_cancelled: false,
+            is_deleted: false,
+            is_completed: false,
+            status_pick: None,
         };
         app.handle_form_key(key(KeyCode::Char('x'))).unwrap();
         let Overlay::Form { label, status, .. } = &app.overlay else {
@@ -1591,4 +2135,177 @@ mod tests {
         assert_eq!(label, "x");
         assert_eq!(status, "21");
     }
-}
+
+    /// Editing a task must open the dropdown on the task's own status, which
+    /// means the form has to carry the catalog id and not the display label.
+    #[test]
+    fn editing_a_task_opens_the_dropdown_on_its_own_status() {
+        let mut app = test_app();
+        tasks::create_task(&app.conn, "u1", "2026-09-17", "US-42", None).unwrap();
+        app.conn
+            .execute("UPDATE tasks SET status = '51' WHERE label = 'US-42'", [])
+            .unwrap();
+        app.reload().unwrap();
+        app.selected = 0;
+        app.open_edit();
+        app.toggle_status_pick();
+        assert_eq!(pick_cursor(&app), Some(4), "Cek di Local is the fifth row");
+        app.handle_form_key(key(KeyCode::Enter)).unwrap();
+        assert_eq!(form_status(&app), "51");
+    }
+
+    /// Every flag key flips exactly its own bool — this is the whole flags
+    /// field, and a wrong mapping would silently write the wrong column.
+    #[test]
+    fn the_flags_field_toggles_one_flag_per_key() {
+        let mut app = test_app();
+        app.overlay = form("21");
+        let Overlay::Form { field, .. } = &mut app.overlay else {
+            unreachable!()
+        };
+        *field = Field::Flags;
+
+        for c in ['p', 'i', 'a', 'c', 'x', 'd'] {
+            app.handle_form_key(key(KeyCode::Char(c))).unwrap();
+        }
+        let Overlay::Form {
+            is_pinned,
+            is_important,
+            is_archived,
+            is_cancelled,
+            is_deleted,
+            is_completed,
+            label,
+            ..
+        } = &app.overlay
+        else {
+            panic!("expected the form");
+        };
+        assert!(*is_pinned && *is_important && *is_archived);
+        assert!(*is_cancelled && *is_deleted && *is_completed);
+        assert_eq!(label, "US-1", "a flag key must not type into another field");
+
+        // Pressing again turns it back off.
+        app.handle_form_key(key(KeyCode::Char('p'))).unwrap();
+        let Overlay::Form { is_pinned, .. } = &app.overlay else {
+            panic!("expected the form");
+        };
+        assert!(!is_pinned);
+    }
+
+    /// The create path used to drop everything the form collected beyond label
+    /// and description.
+    #[test]
+    fn saving_a_new_task_persists_link_and_flags() {
+        let mut app = test_app();
+        app.overlay = Overlay::Form {
+            edit_id: None,
+            field: Field::Label,
+            label: "US-77 new thing".into(),
+            description: String::new(),
+            elapsed: "00:00:00".into(),
+            status: "21".into(),
+            code: "ABC".into(),
+            notes: "note".into(),
+            tags: "backend".into(),
+            link: "https://example.com/77".into(),
+            is_pinned: true,
+            is_important: false,
+            is_archived: false,
+            is_cancelled: false,
+            is_deleted: false,
+            is_completed: false,
+            status_pick: None,
+        };
+        app.submit_form().unwrap();
+
+        let stored = &app.tasks[0];
+        assert_eq!(stored.link.as_deref(), Some("https://example.com/77"));
+        assert!(stored.is_pinned);
+        assert_eq!(stored.code.as_deref(), Some("ABC"));
+        assert_eq!(stored.status, "21");
+        assert_eq!(stored.tags.as_deref(), Some("backend"));
+        assert!(!stored.is_archived);
+    }
+
+    /// `C` opens the list and `n` writes a row through to `task_comments`.
+    #[test]
+    fn composing_a_comment_writes_it_to_the_task() {
+        let mut app = test_app();
+        let task = tasks::create_task(&app.conn, "u1", "2026-09-17", "US-9", None).unwrap();
+        app.reload().unwrap();
+        app.selected = 0;
+
+        app.open_comments();
+        app.handle_comments_key(key(KeyCode::Char('n'))).unwrap();
+        for c in "blocked on review".chars() {
+            app.handle_comments_key(key(KeyCode::Char(c))).unwrap();
+        }
+        app.handle_comments_key(key(KeyCode::Enter)).unwrap();
+
+        let rows = crate::db::comments::list(&app.conn, task.id).unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].summary.as_deref(), Some("blocked on review"));
+        assert_eq!(rows[0].subject.as_deref(), Some("comment"));
+        // The list is showing again with the new row.
+        let Overlay::Comments { compose, .. } = &app.overlay else {
+            panic!("expected the comment list");
+        };
+        assert!(compose.is_none());
+    }
+
+    /// Esc backs out of compose without writing, then out of the list.
+    #[test]
+    fn escaping_compose_writes_nothing() {
+        let mut app = test_app();
+        let task = tasks::create_task(&app.conn, "u1", "2026-09-17", "US-9", None).unwrap();
+        app.reload().unwrap();
+        app.open_comments();
+        app.handle_comments_key(key(KeyCode::Char('n'))).unwrap();
+        app.handle_comments_key(key(KeyCode::Char('x'))).unwrap();
+        app.handle_comments_key(key(KeyCode::Esc)).unwrap();
+        assert!(crate::db::comments::list(&app.conn, task.id).unwrap().is_empty());
+        assert!(matches!(app.overlay, Overlay::Comments { .. }));
+        app.handle_comments_key(key(KeyCode::Esc)).unwrap();
+        assert!(matches!(app.overlay, Overlay::None));
+    }
+
+    /// The archive status filter takes what the operator types and stores the
+    /// catalog id, so a typed name filters the same rows as the id.
+    #[test]
+    fn the_archive_status_filter_resolves_a_typed_name() {
+        let mut app = test_app();
+        let a = tasks::create_task(&app.conn, "u1", "2026-09-16", "US-1", None).unwrap();
+        tasks::create_task(&app.conn, "u1", "2026-09-16", "US-2", None).unwrap();
+        app.conn
+            .execute("UPDATE tasks SET status = '21' WHERE id = ?1", [a.id])
+            .unwrap();
+        app.mode = AppMode::Archive;
+        app.archive.filter_status = Some("In Progress".into());
+        app.reload_archive().unwrap();
+
+        assert_eq!(app.archive.tasks.len(), 1);
+        assert_eq!(app.archive.tasks[0].id, a.id);
+    }
+
+    /// The integration filter is passed straight through to `list_archive`, and
+    /// a task matched by two integration rows is still listed once.
+    #[test]
+    fn the_archive_integration_filter_reaches_the_query() {
+        let mut app = test_app();
+        let a = tasks::create_task(&app.conn, "u1", "2026-09-16", "US-1", None).unwrap();
+        tasks::create_task(&app.conn, "u1", "2026-09-16", "US-2", None).unwrap();
+        db::integrations::upsert(&app.conn, a.id, "jira", "issue_key", Some("US-1459")).unwrap();
+        db::integrations::upsert(&app.conn, a.id, "jira", "sprint", Some("99")).unwrap();
+        app.mode = AppMode::Archive;
+        app.archive.filter_integration = Some("jira".into());
+        app.reload_archive().unwrap();
+
+        assert_eq!(app.archive.tasks.len(), 1, "two matching rows must not duplicate the task");
+        assert_eq!(app.archive.tasks[0].id, a.id);
+
+        // A value-only match works too.
+        app.archive.filter_integration = Some("1459".into());
+        app.reload_archive().unwrap();
+        assert_eq!(app.archive.tasks.len(), 1);
+    }}

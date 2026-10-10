@@ -79,8 +79,15 @@ Prefer labels over memorizing ids.
 JIRA side effects (same fire-and-forget hooks as the TUI; CLI stdout stays the task JSON/line):
 
 - `start` → JIRA **In Progress** (and exclusive peers → worklog + **To Do**).
-- `stop` → JIRA worklog only; status unchanged.
+- `stop` → JIRA worklog + **To Do**; the task's own `status` → **To Do** (`11`).
 - `done` → JIRA worklog + **Cek di Local** (`JIRA_STATUS_DONE`, default `Cek di Local`). Still only when the user/pipeline says the work is finished.
+- `reset` / `reset-all` → stops the timer; each task's own `status` → **To Do** (`11`).
+
+The task's own `status` column follows the same events, so the list shows what the
+timer is doing: start writes `21` (In Progress), stop/reset writes `11` (To Do),
+done writes `31` (Done), and un-done returns to `11`. Local status is written
+before the JIRA call, so it is correct even when JIRA is unreachable. A hand-set
+status (Local OK, BLOCKED) does not survive these events.
 
 These hooks never fail the command — the local timer has already moved — but they do
 not fail silently either. A failure prints `JIRA WARNING: <KEY> <action> failed: <reason>`

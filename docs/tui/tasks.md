@@ -22,12 +22,12 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 - [x] Export markdown report (`report.rs`, `x` key, clipboard)
 - [x] Unit tests (timer math, dedup, report)
 - [ ] Operator sign-off: elapsed matches web
-- [ ] Merge `feat/tui-mvp` → `main`
+- [x] Merge `feat/tui-mvp` → `main` (PR #9)
 
 ### Web (`apps/web`)
 
 - [x] Migration only (no daily UI yet — E7)
-- [ ] Verify `taskService` still works with `work_date` column
+- [x] Verify `taskService` still works with `work_date` column (18 `workDate` references; `taskCreate.test.ts` covers dedup + per-day position)
 
 ### MCP (`apps/mcp`)
 
@@ -60,10 +60,10 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 ### TUI (`apps/tui`)
 
 - [x] Extend `Task` struct + SQL in `db/tasks.rs`
-- [x] `db/integrations.rs`
-- [ ] `db/comments.rs` — removed: nothing in the TUI read or wrote `task_comments`, and the module was the only dead-code holder in `db/`
-- [x] Edit/detail UI for new fields
-- [x] Status is picked from `JIRA_STATUSES` (no free text); status follows the timer (start → In Progress, done → Done, stop → unchanged)
+- [x] `db/comments.rs` (list/add, with `branch`/`pr`), `db/integrations.rs`
+- [x] Edit/detail UI for new fields (link + the six flags on the form; `p/i/a/c/x/d` on the flags field)
+- [x] Status is picked from `JIRA_STATUSES` via an inline dropdown (no free text); status follows the timer (start → In Progress, stop → To Do, done → Done, un-done → To Do)
+- [x] `C` comment list + compose → `task_comments`
 - [x] Tests
 
 ### MCP (`apps/mcp`)
@@ -83,9 +83,9 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 ### TUI
 
 - [x] `AppMode::Daily | Archive` (`a` toggle)
-- [x] `list_archive()` in `db/tasks.rs` (+ 3 tests, q/tag filters, unfinished exclusion)
+- [x] `list_archive()` in `db/tasks.rs` (q/tag/status/integration filters, unfinished exclusion)
 - [x] `ui/archive_view.rs` (filter bar, `c` continue today via E1 dedup rules)
-- [x] Keybinding + help (`a`, `/`, `t`, `c`, daily `a:archive` hint)
+- [x] Keybinding + help (`a`, `/`, `t`, `s`, `g`, `c`, daily `a:archive` hint)
 
 ### Web
 
@@ -106,7 +106,7 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 
 ### TUI
 
-- [x] Sync menu + fetch sprint / by key
+- [x] Sprint picker: unassigned / reporter undone / assignee undone / fetch by key (JQL, no board)
 - [x] Detail, comment, transition UI
 - [x] Store in `task_integrations`
 
@@ -131,7 +131,8 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 ### TUI
 
 - [x] Link branch, show commits, PR status
-- [ ] Import PR comments → `task_comments` (web only; the TUI has no comment store or overlay)
+- [x] Import PR comments → `task_comments` (git menu 4, deduped on pr + summary)
+- [x] Detail view: comments, PR merge state, commit statuses
 
 ### MCP
 
@@ -214,6 +215,29 @@ Implementation plan: [e7-plan.md](./e7-plan.md).
 - [x] Dedup: create same label twice same day → returns existing, no duplicate
 - [x] Archive: non-done tasks visible, "continue today" creates row with dedup
 - [x] Extended fields: edit/save code/link/status/notes/tags, persist across refresh
+
+### Status column parity (follow-up to E7)
+
+- [x] **Web writes `status` on start/stop/reset/done.** `apps/web/src/lib/server/taskStatus.ts` ports the TUI's `auto_status` (`apps/tui/src/jira.rs`) and is wired into `startTimer` (including the focus-switch victim), `stopTimer`, `resetTask`, `resetAll`, and the done toggle in `updateTask`. Start → `21`, stop/reset → `11`, done → `31`, un-done → `11`; an explicit `status` in a PATCH wins.
+- [x] `taskStatus.test.ts` mirrors the TUI's `auto_status_follows_the_rows_own_state` oracle (negative-controlled: each of the three rules fails the suite when broken).
+- [x] Verified end-to-end over the REST API against a copy of `local.db`: full lifecycle, done-task stop keeps `31`, focus-switch victim demoted to `11`, explicit status wins.
+
+---
+
+## Verification scripts
+
+Runnable oracles for the TUI's timer/status behavior. Each has a negative control
+(`--self-test`) that must fail on the behavior the oracle rejects, so a green run
+means the check discriminates.
+
+| Script | Proves |
+|--------|--------|
+| `scripts/verify-status-sync.mjs` | start → `21`, stop → `11`, done → `31`, un-done → `11` |
+| `scripts/verify-status-picker.mjs` | the status picked in a real pty session is what gets stored |
+| `scripts/verify-jira-stop.mjs` | every stop path worklogs then returns the issue to To Do (`--paths` covers each path) |
+| `scripts/verify-clippy-clean.mjs` | the crate is clean under `-D warnings` |
+
+`GATES.md` at the repo root is the current completion ledger for the status work.
 
 ---
 

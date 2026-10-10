@@ -1,6 +1,6 @@
 # Tech Spec — Task Timer TUI (monorepo)
 
-**Last updated:** 2026-09-10
+**Last updated:** 2026-09-21
 
 ## System context
 
@@ -26,6 +26,7 @@ graph TD
 - **Web** owns migrations (Drizzle in `apps/web/drizzle/`).
 - **MCP** is a thin HTTP client to web REST API — never touches DB directly.
 - **Timer rules** must match in three places: `packages/shared/src/timer.ts`, `apps/web/src/lib/server/taskService.ts`, `apps/tui/src/timer.rs` + `db/tasks.rs`.
+- **Task `status` follows the timer in all three clients.** The TUI and CLI write it via `auto_status` (`apps/tui/src/jira.rs`); the web dashboard via `autoStatus` (`apps/web/src/lib/server/taskStatus.ts`), a direct port. Start → `21`, stop/reset → `11`, done → `31`, un-done → `11`. An explicit `status` in a web PATCH wins over the automatic write, matching the TUI edit form. `taskStatus.test.ts` mirrors the TUI's `auto_status_follows_the_rows_own_state` oracle, so a drift in either app fails a test.
 
 ## TUI crate layout
 
@@ -41,7 +42,8 @@ apps/tui/
       mod.rs                       # Connection, WAL pragmas
       user.rs                      # user_id from email
       tasks.rs                     # CRUD + timer ops
-      integrations.rs              # E2 — read/write
+      comments.rs                  # E2 — task_comments list/add
+      integrations.rs              # E2
     app/
       mod.rs                       # Event loop, App state, modals
       keymap.rs                    # Bindings + HELP text
@@ -69,8 +71,8 @@ database_path = "/path/to/apps/web/local.db"
 user_email = "you@example.com"
 # timer_mode = "focus"   # optional; else user_settings.timer_mode
 # JIRA (E4) — env vars: JIRA_SITE, JIRA_EMAIL, JIRA_TOKEN
-# jira_board = "AIMSIS"
-# jira_sprint_id = "123"
+# jira_sprint_id = "123"   # required by the sprint picker (Ctrl+J 3)
+# jira_board = "AIMSIS"    # loaded but unused: the four modes are JQL on sprint id
 # Bitbucket (E5) — env vars: BITBUCKET_EMAIL, BITBUCKET_TOKEN
 # bitbucket_workspace = "your-workspace"
 # bitbucket_repo = "your-repo"
@@ -106,16 +108,57 @@ apart:
 | Function | Answers |
 |---|---|
 | `status_when_run_ends(task_is_done)` | the JIRA status **name** a run's end transitions the issue to (To Do / Cek di Local) |
-| `status_for_run_state(is_running, is_done)` | the local catalog **id** the same write stores (`21` running, `31` done, `None` otherwise) |
+| `status_for_run_state(is_running, is_done)` | the local catalog **id** the same write stores (`21` running, `31` done, `11` stopped) |
 
-`auto_status(conn, user_id, task_id, is_running, is_done)` applies the second: start
-and done overwrite the stored status, a plain stop leaves it alone so a
-hand-set status (Local OK, BLOCKED) survives. The write is unconditional rather
-than "only when empty", because start is a layout change that owns the field —
-otherwise a task left at Done would still read Done while its timer runs.
+`auto_status(conn, user_id, task_id)` applies the second, reading the state back
+from the row rather than taking it from the caller — a caller holding a snapshot
+from before its own write cannot apply a stale flag. Start, stop, reset, and the
+done toggle all route through it, and each writes local state *before* its JIRA
+hook, so the list is correct even while JIRA is slow or unreachable. The write is
+unconditional rather than "only when empty", because start is a layout change
+that owns the field — otherwise a task left at Done would still read Done while
+its timer runs. A hand-set status (Local OK, BLOCKED) is therefore owned by the
+timer too: it survives only until the next start (`21`), stop/reset (`11`), done
+(`31`), or un-done (`11`).
+
+The one asymmetry: a task already checked done keeps `31` through a stop, because
+the state after that stop is still "done". Un-checking it returns the row to `11`.
 
 `status` is `NOT NULL`, so `update_task` falls back to the stored value when the
 caller omits or blanks it; writing NULL is a constraint failure.
+
+### Extended fields (E2)
+
+`TaskPatch` covers the whole `tasks` row the form can edit: `link` (blank clears
+the column) and the six flags `is_pinned`, `is_important`, `is_archived`,
+`is_cancelled`, `is_deleted`, `is_completed`. `None` leaves a field alone, so a
+flag only moves when the form actually set it.
+
+The form's tab order is `Label → Description → Status → Code → Elapsed → Notes →
+Tags → Link → Flags`. The status field is a dropdown, not a text input: Enter (or
+any printable key) opens the catalog inline under the field, `j/k` (or a digit)
+moves the cursor, Enter applies the row and advances focus to `Code` so the next
+Enter saves, and Esc closes without applying. It lives on `Overlay::Form` as
+`status_pick: Option<usize>`, so opening it never disturbs the other fields. The
+flags field treats `p/i/a/c/x/d` as toggles in that column order and ignores
+other text. `create_task` only knows label and description, so the create path
+follows it with one `update_task` carrying everything else the form collected.
+
+`db/comments.rs` is the TUI's only `task_comments` writer: `list` (newest first)
+and `add`, with `branch`/`pr` set for imported PR comments and NULL for ones
+typed in the TUI (`C` → `n`).
+
+`db/integrations.rs` quotes the `group` column everywhere — it is a SQLite
+keyword, and an unquoted `group` in a statement is a syntax error, not a column
+reference.
+
+### Detail overlay
+
+`i` builds `Overlay::Detail` once (`open_detail`): stored comments, the PRs for
+the linked branch (merge state is `PullRequest::state`), and the Bitbucket
+commit statuses for the branch head. Both network sections degrade to empty on
+error and surface the failure in the status line, so the detail view still opens
+offline.
 
 ## Concurrency
 
@@ -223,11 +266,15 @@ Chose option A: standalone `reqwest` calls from TUI. No web server dependency.
 | `get_transitions` | GET available workflow transitions |
 | `transition_issue` | POST transition to move issue status |
 | `pick_transition_id` | Match status name to transition |
-| `fetch_sprint_issues` | GET all issues in a sprint (board + sprint ID) |
+| `jql_for` | Build the JQL for one sprint mode (unassigned / reporter / assignee undone) |
+| `search_issues` | POST JQL search, retrying `/search/jql` when the old path is gone |
+| `fetch_issue` | GET one issue by key (validated as a JIRA key first) |
 
-**TUI controls:** Ctrl+J opens JIRA menu → comment (1), transition (2), sprint sync (3).
+**TUI controls:** Ctrl+J opens JIRA menu → comment (1), transition (2), sprint picker (3).
+The picker offers unassigned (1), reporter undone (2), assignee undone (3), fetch by key (4).
 Credentials via env vars (`JIRA_SITE`, `JIRA_EMAIL`, `JIRA_TOKEN`).
-Board/sprint config in `config.toml` (`jira_board`, `jira_sprint_id`).
+Sprint config in `config.toml` (`jira_sprint_id`) — the four modes are JQL scoped by
+sprint id, so `jira_board` is loaded but unused.
 
 ## E5 — Git / Bitbucket Integration (implemented)
 
@@ -239,9 +286,12 @@ Hybrid approach: local git CLI for branch/commit info, Bitbucket REST API for PR
 | `git::commits_for_branch` | List recent commits on a branch |
 | `git::branch_ahead_behind` | Ahead/behind count vs upstream or main |
 | `bitbucket::bb_fetch` | Shared Bitbucket REST API fetcher |
-| `bitbucket::list_prs` | List PRs for a branch |
+| `bitbucket::list_prs` | List PRs for a branch (state carries `OPEN`/`MERGED`/`DECLINED`) |
+| `bitbucket::get_pr_comments` | Get the 20 newest comments on a PR |
+| `bitbucket::commit_statuses` | Build/report statuses for a commit (404 → empty) |
 
-**TUI controls:** Ctrl+B opens Git menu → link branch (1), show commits (2), PR status (3).
+**TUI controls:** Ctrl+B opens Git menu → link branch (1), show commits (2), PR status (3),
+import PR comments (4).
 Credentials via env vars (`BITBUCKET_EMAIL`, `BITBUCKET_TOKEN`).
 Workspace/repo in `config.toml` (`bitbucket_workspace`, `bitbucket_repo`).
 Repo path auto-detected from `database_path` or set via `git_repo_path`.
@@ -249,14 +299,22 @@ Branch linked via `task_integrations` (`group=git, field=branch`).
 
 ## E7 — Web dashboard parity
 
-Plan: [e7-plan.md](./e7-plan.md). TUI remains the reference; web catches up.
+Plan: [e7-plan.md](./e7-plan.md). TUI remains the reference; web has caught up on
+the daily workflow, fields, archive, and live refresh.
 
-| Already in web | Still to do |
-|----------------|-------------|
-| `?date=` load + date bar | `createTask` TUI dedup + optional `workDate` |
-| `GET /api/tasks?archived=` | `/dashboard/archive` UI + continue today |
-| PATCH extended fields | edit modal + card badges |
-| SSE `{ type: 'change' }` publish | client still listens for `tasks-changed` (never fires) |
+| Shipped | Notes |
+|---------|-------|
+| `?date=` load + date bar | |
+| `createTask` TUI dedup + optional `workDate` | |
+| `POST /api/tasks { workDate }`; per-day position | |
+| Edit modal + card badges for code/status/tags | |
+| `/dashboard/archive` UI + continue today | |
+| SSE client listens for `{ type: 'change' }` | |
+| web writes `status` on start/stop/reset/done | via `autoStatus`, same rules as the TUI |
+
+`taskService.ts` now moves the task's own `status` on every layout change, so a
+task started from the web dashboard reads In Progress exactly as it would in the
+TUI. An explicit `status` in a PATCH wins over the automatic write.
 
 Timer math stays in `packages/shared` + `taskService`. Do not re-filter `work_date` client-side.
 

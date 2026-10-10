@@ -14,9 +14,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
 
     let running = app.running_label().unwrap_or("—");
     let title = format!(
-        " Archive ─ filters q={} tag={} ─ {} results ",
+        " Archive ─ filters q={} tag={} status={} int={} ─ {} results ",
         display_filter(&app.archive.filter_q),
         display_filter(&app.archive.filter_tag),
+        display_filter(&app.archive.filter_status),
+        display_filter(&app.archive.filter_integration),
         app.archive.tasks.len()
     );
     let head = Paragraph::new(vec![Line::from(vec![
@@ -29,9 +31,11 @@ pub fn draw(frame: &mut Frame, app: &App) {
     frame.render_widget(head, header);
 
     let filter_bar = format!(
-        " /:filter label  t:filter tag  c:continue today  a:back to daily  (active: q={} tag={})",
+        " /:filter label  t:filter tag  s:filter status  g:filter integration  c:continue today  a:back to daily  (active: q={} tag={} status={} int={})",
         display_filter(&app.archive.filter_q),
         display_filter(&app.archive.filter_tag),
+        display_filter(&app.archive.filter_status),
+        display_filter(&app.archive.filter_integration),
     );
 
     let chunks = Layout::default()
@@ -80,7 +84,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     let list = List::new(items).block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
     frame.render_widget(list, chunks[1]);
 
-    let hints = " a:daily  c:continue today  /:filter  t:tag  j/k:move  i:detail  ?:help  q:quit ";
+    let hints = " a:daily  c:continue today  /:filter  t:tag  s:status  g:integration  j/k:move  i:detail  C:comments  ?:help  q:quit ";
     let (status_area, hints_area) = if app.status.is_empty() {
         (None, footer)
     } else {
@@ -106,13 +110,22 @@ pub fn draw(frame: &mut Frame, app: &App) {
         Overlay::Help => draw_help(frame),
         Overlay::ConfirmDelete => draw_confirm(frame, "Delete this task?  y / n"),
         Overlay::ConfirmResetAll => draw_confirm(frame, "Reset all timers today?  y / n"),
-        Overlay::Detail => {
-            if let Some(t) = app.archive_selected_task().or_else(|| app.selected_task()) {
-                draw_detail(frame, t);
+        Overlay::Detail {
+            comments,
+            prs,
+            statuses,
+        } => {
+            if let Some(t) = app.focused_task() {
+                super::timer_view::draw_detail(frame, t, comments, prs, statuses);
             }
         }
+        Overlay::Comments {
+            comments,
+            selected,
+            compose,
+            ..
+        } => super::timer_view::draw_comments(frame, comments, *selected, compose.as_deref()),
         Overlay::Form { .. } => {}
-        Overlay::StatusPick { selected } => super::widgets::draw_status_pick(frame, *selected),
         Overlay::Filter { input, buffer } => draw_filter(frame, input, buffer),
         Overlay::Jira { mode } => super::widgets::draw_jira(frame, mode),
         Overlay::Git { .. } => {}
@@ -167,6 +180,8 @@ fn draw_filter(frame: &mut Frame, input: &ArchiveInput, buffer: &str) {
     let title = match input {
         ArchiveInput::Label => " filter: label substring ",
         ArchiveInput::Tag => " filter: tag substring ",
+        ArchiveInput::Status => " filter: status (id or name) ",
+        ArchiveInput::Integration => " filter: integration substring ",
     };
     let block = Block::default().borders(Borders::ALL).title(title);
     let inner = block.inner(area);
@@ -182,62 +197,4 @@ fn draw_filter(frame: &mut Frame, input: &ArchiveInput, buffer: &str) {
         .wrap(Wrap { trim: false }),
         inner,
     );
-}
-
-fn draw_detail(frame: &mut Frame, task: &crate::db::tasks::Task) {
-    let area = centered(frame.area(), 70, 20);
-    frame.render_widget(Clear, area);
-    let block = Block::default().borders(Borders::ALL).title(" task detail ");
-    let inner = block.inner(area);
-    frame.render_widget(block, area);
-    let mut lines: Vec<Line> = Vec::new();
-    lines.push(Line::from(vec![
-        Span::styled(" label:  ", Style::default().fg(Color::DarkGray)),
-        Span::raw(&task.label),
-    ]));
-    lines.push(Line::from(vec![
-        Span::styled(" date:   ", Style::default().fg(Color::DarkGray)),
-        Span::raw(&task.work_date),
-    ]));
-    if let Some(ref d) = task.description {
-        if !d.is_empty() {
-            for l in d.lines() {
-                lines.push(Line::from(Span::raw(format!(" desc:   {}", l))));
-            }
-        }
-    }
-    lines.push(Line::from(vec![
-        Span::styled(" status: ", Style::default().fg(Color::DarkGray)),
-        Span::raw(&task.status),
-    ]));
-    if let Some(ref code) = task.code {
-        lines.push(Line::from(vec![
-            Span::styled(" code:   ", Style::default().fg(Color::DarkGray)),
-            Span::raw(code.as_str()),
-        ]));
-    }
-    if let Some(ref tags) = task.tags {
-        lines.push(Line::from(vec![
-            Span::styled(" tags:   ", Style::default().fg(Color::DarkGray)),
-            Span::raw(tags.as_str()),
-        ]));
-    }
-    if let Some(ref notes) = task.notes {
-        if !notes.is_empty() {
-            lines.push(Line::from(vec![]));
-            lines.push(Line::from(Span::styled(
-                " notes:",
-                Style::default().fg(Color::DarkGray),
-            )));
-            for nl in notes.lines() {
-                lines.push(Line::from(Span::raw(format!("   {}", nl))));
-            }
-        }
-    }
-    lines.push(Line::from(vec![]));
-    lines.push(Line::from(Span::styled(
-        " c: continue today  Esc / i / q: close",
-        Style::default().fg(Color::DarkGray),
-    )));
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: false }), inner);
 }

@@ -53,9 +53,10 @@ Shipped on `feat/tui-mvp`.
 | FR-10 | CLI: `--config`, `--date`, `--db` | P1 |
 | FR-11 | Export markdown daily report to clipboard (`x`) | P1 |
 
-**Web note (deferred to E7):** dashboard still shows all tasks, ignores `work_date`.
+**Web note (closed in E7):** the dashboard now filters by `work_date` and defaults
+to today.
 
-**MCP note:** existing tools work; no `work_date` filter on list yet.
+**MCP note:** `list_tasks` accepts a `date` filter.
 
 ---
 
@@ -153,17 +154,22 @@ From IDEA.md:
 
 ---
 
-## E7 — Web dashboard parity
+## E7 — Web dashboard parity ✅
 
 Catch-up epic so web is not left behind TUI. Implementation: [e7-plan.md](./e7-plan.md).
 
-| Requirement | Notes |
-|-------------|-------|
-| Daily view | `?date=` + date bar shipped; create still writes calendar today |
-| Continue-by-title | Port TUI `create_task` into `taskService.createTask` |
-| Extended fields UI | Schema/API done; edit modal + badges remaining |
-| Archive / backlog | List API done; `/dashboard/archive` remaining |
-| SSE | Server emits `change`; dashboard still listens for `tasks-changed` |
+| Requirement | Status |
+|-------------|--------|
+| Daily view | Shipped — `?date=` + date bar; create writes the viewed day |
+| Continue-by-title | Shipped — `resolveCreate` ports TUI `create_task` dedup |
+| Extended fields UI | Shipped — edit modal + code/status/tag badges |
+| Archive / backlog | Shipped — `/dashboard/archive` with filters + continue today |
+| SSE | Shipped — server emits `change`; dashboard listens for `change` |
+
+**Status column:** closed. `apps/web/src/lib/server/taskStatus.ts` (`autoStatus`, a
+port of the TUI's `auto_status`) moves the task's own `status` on start, stop,
+reset, and the done toggle, so the web dashboard now shows In Progress for a
+running task exactly as the TUI does. An explicit `status` in a PATCH still wins.
 
 ---
 
@@ -174,14 +180,23 @@ Catch-up epic so web is not left behind TUI. Implementation: [e7-plan.md](./e7-p
 | Daily timer without web server | ✅ E1 |
 | Elapsed matches web within 1s | ✅ E1 |
 | Schema change ships web + TUI same PR | E2+ |
-| Agent session auto-tracks time | E6 |
-| Web daily view matches TUI behavior | E7 |
+| Agent session auto-tracks time | ✅ E6 |
+| Web daily view matches TUI behavior | ✅ E7 (except the status column — see E7) |
+
+## Resolved questions
+
+1. **JIRA: Rust in TUI vs invoke TS `jira.ts` sidecar?** Rust. The TUI calls the
+   JIRA REST API directly via `reqwest` (`apps/tui/src/jira.rs`); no sidecar and
+   no web server dependency.
+2. **Archive definition: `done = false` only, or full status flags from E2?** Full
+   flags. `list_archive` excludes `done`, `is_archived`, `is_deleted`, and
+   `is_cancelled`, and filters by `q` / `tag` / `status` / `integration`.
+3. **`tags` storage: JSON column vs join table?** JSON text column on `tasks`, as
+   E2 shipped.
 
 ## Open questions
 
-1. JIRA: Rust in TUI vs invoke TS `jira.ts` sidecar?
-2. Archive definition: `done = false` only, or full status flags from E2?
-3. `tags` storage: JSON column vs join table?
+None outstanding.
 
 ## References
 
