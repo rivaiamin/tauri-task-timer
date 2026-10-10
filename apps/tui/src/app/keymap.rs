@@ -15,6 +15,7 @@ pub const HELP: &[(&str, &str)] = &[
     ("R", "reset all timers today"),
     ("m", "toggle focus / parallel"),
     ("x", "export markdown report to clipboard"),
+    ("o", "open the task's JIRA issue in the browser"),
     ("?", "this help"),
     ("a", "toggle daily \u{2194} archive"),
     ("/", "filter archive by label"),

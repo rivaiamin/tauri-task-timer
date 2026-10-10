@@ -10,7 +10,7 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 
 ### Schema (`apps/web`)
 
-- [x] Migration `0002`: `work_date`, `done`, indexes, unique `(user_id, work_date, label)`
+- [x] Migration `0002`: `work_date`, `done`, indexes (superseded by the day-identity split below)
 - [x] `schema.ts` updated
 
 ### TUI (`apps/tui`)
@@ -20,18 +20,18 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 - [x] Port taskService timer ops to `db/tasks.rs`
 - [x] Keymap + `?` help + modals
 - [x] Export markdown report (`report.rs`, `x` key, clipboard)
-- [x] Unit tests (timer math, dedup, report)
+- [x] Unit tests (timer math, identity upsert + day-row ensure, report)
 - [ ] Operator sign-off: elapsed matches web
 - [x] Merge `feat/tui-mvp` → `main` (PR #9)
 
 ### Web (`apps/web`)
 
 - [x] Migration only (no daily UI yet — E7)
-- [x] Verify `taskService` still works with `work_date` column (18 `workDate` references; `taskCreate.test.ts` covers dedup + per-day position)
+- [x] Verify `taskService` still works with the day-scoped columns (`workDate` throughout; `taskCreate.test.ts` covers the identity upsert + per-day position)
 
 ### MCP (`apps/mcp`)
 
-- [ ] Smoke test: list/create/start/stop against DB with `work_date` rows
+- [ ] Smoke test: list/create/start/stop against DB with `task_days` rows
 
 ### Monorepo
 
@@ -83,8 +83,8 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 ### TUI
 
 - [x] `AppMode::Daily | Archive` (`a` toggle)
-- [x] `list_archive()` in `db/tasks.rs` (q/tag/status/integration filters, unfinished exclusion)
-- [x] `ui/archive_view.rs` (filter bar, `c` continue today via E1 dedup rules)
+- [x] `list_archive()` in `db/tasks.rs` (q/tag/status/integration filters; grouped — one entry per task with its days)
+- [x] `ui/archive_view.rs` (filter bar, `c` continue today — resolves the task by label and adds today's day entry)
 - [x] Keybinding + help (`a`, `/`, `t`, `s`, `g`, `c`, daily `a:archive` hint)
 
 ### Web
@@ -108,7 +108,8 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 
 - [x] Sprint picker: unassigned / reporter undone / assignee undone / fetch by key (JQL, no board)
 - [x] Detail, comment, transition UI
-- [x] Store in `task_integrations`
+- [x] Store in `task_integrations` (`jira/issue_key` + the fetched `jira/status`)
+- [x] `o` opens the issue in the browser (`{JIRA_SITE}/browse/{KEY}`); the detail view lists the stored rows
 
 ### Web
 
@@ -177,13 +178,13 @@ Implementation plan: [e7-plan.md](./e7-plan.md).
 - [x] `+page.svelte`: date picker bar — prev day / date input / next day
 - [x] URL reflects date (`/dashboard?date=2026-09-07`); bookmarkable
 - [x] `addTask` posts `workDate` of the viewed day (not always calendar today)
-- [x] `resetAll` scoped to viewed `work_date` (TUI resets that day only)
+- [x] `resetAll` scoped to the viewed date (TUI resets that day only)
 
-### 2. Create Dedup (`apps/web/src/lib/server/taskService.ts`)
+### 2. Create Path (`apps/web/src/lib/server/taskService.ts`)
 
-- [x] `createTask`: same label + same `work_date` → return existing row (no insert)
-- [x] `createTask`: same label + different `work_date` → insert new row, copy description from most recent same-label row if caller didn't supply one
-- [x] Unit tests matching TUI `create_same_label_same_day_returns_existing` / `create_same_label_new_day_copies_description`
+- [x] `createTask`: upsert the task identity by `(user_id, label)`; an existing identity is reused, never duplicated
+- [x] `createTask`: `ensureDayRow` for the requested date — an existing day row is returned unchanged, a missing one is inserted with `position = MAX(position)+1` for that date
+- [x] Unit tests matching TUI `create_same_label_same_day_returns_existing` / `create_same_label_new_day_adds_a_day_row`
 
 ### 3. Extended Field UI (`apps/web/src/routes/dashboard/`)
 
@@ -195,9 +196,9 @@ Implementation plan: [e7-plan.md](./e7-plan.md).
 ### 4. Archive Page (`apps/web/src/routes/dashboard/archive/`)
 
 - [x] New route `+page.svelte` + `+page.server.ts`
-- [x] Fetch from `GET /api/tasks?archived=true` with filter params (`q`, `tag`, `status`)
+- [x] Fetch from `GET /api/tasks` (no `date`) with filter params (`q`, `tag`, `status`); each task carries its `days[]`
 - [x] Filter bar: text search, tag select, status select
-- [x] "Continue today" button per task → POST create with dedup (task 2)
+- [x] "Continue today" button per task → POST create (upserts the identity, ensures today's day row)
 - [x] Navigation link from daily dashboard ↔ archive
 
 ### 5. SSE Fix + Extend (`apps/web/src/lib/server/`)
@@ -212,8 +213,8 @@ Implementation plan: [e7-plan.md](./e7-plan.md).
 - [x] Create in web → visible in TUI after refresh
 - [x] Create in TUI → visible in web via SSE
 - [x] Date navigation: prev/next day loads correct tasks, URL bookmarkable
-- [x] Dedup: create same label twice same day → returns existing, no duplicate
-- [x] Archive: non-done tasks visible, "continue today" creates row with dedup
+- [x] Same label twice same day → returns the same task and its existing day row, no duplicate
+- [x] Archive: one entry per task with its days listed; "continue today" adds today's day entry
 - [x] Extended fields: edit/save code/link/status/notes/tags, persist across refresh
 
 ### Status column parity (follow-up to E7)

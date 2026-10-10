@@ -9,6 +9,18 @@ TUI is the reference UX. This epic makes the SvelteKit dashboard match daily wor
 Every gap this plan opened with has since been closed. The waves below are kept
 as the record of how, with their status inline.
 
+> **Superseded on the create/archive rules (day-identity split).** This plan
+> describes the model where `tasks` held one row per `(user, work_date, label)`,
+> so the same label on a new day created a **new row** and "continue today"
+> meant inserting one. That is no longer the model: `tasks` is now the task
+> identity (one row per `(user, label)`) and `task_days` holds one row per day
+> worked, so the same label on a new day adds a day to the **same task**, and the
+> archive shows one entry per task with every day listed. The `work_date`,
+> `elapsed_time`, `position` and lifecycle columns named below as living on
+> `tasks` now live on `task_days`. Read this file as the history of E7, not as
+> the current contract — [`erd.md`](./erd.md) and
+> [`tech-spec.md`](./tech-spec.md) carry the current schema.
+
 ---
 
 ## What's already shipped

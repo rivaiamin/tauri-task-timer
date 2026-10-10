@@ -48,39 +48,63 @@ pub fn draw(frame: &mut Frame, app: &App) {
     );
 
     let now = now_ms();
-    let items: Vec<ListItem> = if app.archive.tasks.is_empty() {
-        vec![ListItem::new(Line::from(Span::styled(
-            "  no unfinished tasks matching filters — try clearing with Esc",
+    // One entry per task, each followed by the days it was worked. The day
+    // lines are the point of the archive: a task worked on three days shows
+    // three dates with three separate times under a single label.
+    let mut items: Vec<ListItem> = Vec::new();
+    if app.archive.tasks.is_empty() {
+        items.push(ListItem::new(Line::from(Span::styled(
+            "  no tasks matching filters — try clearing with Esc",
             Style::default().fg(Color::DarkGray),
-        )))]
+        ))));
     } else {
-        app.archive
-            .tasks
-            .iter()
-            .enumerate()
-            .map(|(i, t)| {
-                let elapsed = format_time(t.current_elapsed(now));
-                let date = &t.work_date;
-                let tags = t
-                    .tags
-                    .as_deref()
-                    .map(|s| format!(" [{}]", s))
-                    .unwrap_or_default();
-                let style = if i == app.archive.selected {
-                    Style::default()
-                        .fg(Color::Cyan)
-                        .add_modifier(Modifier::UNDERLINED | Modifier::BOLD)
-                } else {
-                    Style::default()
-                };
+        for (i, t) in app.archive.tasks.iter().enumerate() {
+            let selected = i == app.archive.selected;
+            let tags = t
+                .tags
+                .as_deref()
+                .map(|s| format!(" [{}]", s))
+                .unwrap_or_default();
+            let head_style = if selected {
+                Style::default()
+                    .fg(Color::Cyan)
+                    .add_modifier(Modifier::UNDERLINED | Modifier::BOLD)
+            } else {
+                Style::default()
+            };
+            let day_count = t.days.len();
+            items.push(
                 ListItem::new(Line::from(vec![Span::raw(format!(
-                    "{}  {}  {}{}",
-                    date, elapsed, t.label, tags
+                    "{}  {} day{}  {}{}",
+                    format_time(t.total_elapsed(now)),
+                    day_count,
+                    if day_count == 1 { "" } else { "s" },
+                    t.label,
+                    tags
                 ))])
-                .style(style))
-            })
-            .collect()
-    };
+                .style(head_style)),
+            );
+            // Oldest first, so the newest day is nearest the task it belongs to.
+            for day in &t.days {
+                let state = if day.is_running { "  [running]" } else { "" };
+                let marker = if day.done { "✓" } else { "·" };
+                items.push(ListItem::new(Line::from(Span::styled(
+                    format!(
+                        "    {} {}  {}{}",
+                        marker,
+                        day.work_date,
+                        format_time(day.current_elapsed(now)),
+                        state
+                    ),
+                    if day.is_running {
+                        Style::default().fg(Color::Green)
+                    } else {
+                        Style::default().fg(Color::DarkGray)
+                    },
+                ))));
+            }
+        }
+    }
     let list = List::new(items).block(Block::default().borders(Borders::LEFT | Borders::RIGHT));
     frame.render_widget(list, chunks[1]);
 
@@ -114,9 +138,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
             comments,
             prs,
             statuses,
+            integrations,
         } => {
             if let Some(t) = app.focused_task() {
-                super::timer_view::draw_detail(frame, t, comments, prs, statuses);
+                super::timer_view::draw_detail(frame, t, comments, prs, statuses, integrations);
             }
         }
         Overlay::Comments {

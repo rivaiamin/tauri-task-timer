@@ -1,7 +1,7 @@
 import { json, error, type RequestHandler } from '@sveltejs/kit';
 import { z } from 'zod';
 import { resolveActor, requireScope } from '$lib/server/actor';
-import { startTimer, stopTimer, listTasks } from '$lib/server/taskService';
+import { startTimer, stopTimer, listArchive } from '$lib/server/taskService';
 
 const hookSchema = z.discriminatedUnion('event', [
   z.object({ event: z.literal('session_start'), task_id: z.number().int().positive() }),
@@ -22,18 +22,19 @@ export const POST: RequestHandler = async (event) => {
 
   switch (hookEvent) {
     case 'session_start': {
-      const task = startTimer(actor.userId, parsed.data.task_id, true);
+      const task = startTimer(actor.userId, parsed.data.task_id, undefined, true);
       if (!task) throw error(404, 'Task not found');
       return json({ ok: true, task });
     }
     case 'waiting_user':
     case 'session_end': {
-      // Stop all running timers for this user today.
-      const { tasks } = listTasks(actor.userId);
-      const running = tasks.filter((t) => t.isRunning);
-      for (const t of running) {
-        stopTimer(actor.userId, t.id);
-      }
+      // Stop every running timer, on any day: an agent session ending is not
+      // scoped to today, and a run started yesterday and left going must stop too.
+      const { tasks } = listArchive(actor.userId);
+      const running = tasks.flatMap((t) =>
+        (t.days ?? []).filter((d) => d.isRunning).map((d) => ({ taskId: t.id, workDate: d.workDate }))
+      );
+      for (const r of running) stopTimer(actor.userId, r.taskId, r.workDate);
       return json({ ok: true, stopped: running.length });
     }
   }

@@ -63,8 +63,9 @@ A single-file-per-concern static app — no build framework, no backend.
   Requests authenticate by **session cookie** (the browser) **or `Bearer` API
   key** (AI agents). See `docs/ai-control.md`.
 - Routes: `/` (redirects based on session), `/login`, `/register`,
-  `/dashboard` (the timer UI), `/dashboard/archive` (unfinished backlog with
-  label/tag/status filters and "continue today"), `/dashboard/keys` (API keys).
+  `/dashboard` (the timer UI), `/dashboard/archive` (one entry per task with a
+  per-day time breakdown, plus label/tag/status filters and "continue today"),
+  `/dashboard/keys` (API keys).
 
 ### Shared package (`packages/shared`, package `shared`)
 

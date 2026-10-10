@@ -21,6 +21,10 @@ export const sessions = sqliteTable('sessions', {
   expiresAt: integer('expires_at', { mode: 'timestamp_ms' }).notNull()
 });
 
+// Task identity: one row per (user, label). The label, description and other
+// content fields live here, so the same label on a new day is the same task.
+// Everything that varies per day — timer, position, lifecycle flags — lives in
+// `taskDays`.
 export const tasks = sqliteTable(
   'tasks',
   {
@@ -29,15 +33,38 @@ export const tasks = sqliteTable(
       .notNull()
       .references(() => users.id, { onDelete: 'cascade' }),
     label: text('label').notNull(),
-    workDate: text('work_date')
-      .notNull()
-      .default(sql`(date('now'))`),
     code: text('code'),
     description: text('description'),
     link: text('link'),
-    status: text('status').notNull().default('todo'),
     notes: text('notes'),
     tags: text('tags', { mode: 'json' }).$type<string[]>(),
+    createdAt: integer('created_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .$defaultFn(() => new Date()),
+    updatedAt: integer('updated_at', { mode: 'timestamp_ms' })
+      .notNull()
+      .$defaultFn(() => new Date())
+  },
+  (t) => [
+    index('idx_tasks_user').on(t.userId),
+    uniqueIndex('idx_tasks_user_label').on(t.userId, t.label)
+  ]
+);
+
+// One day's work on a task: one row per (task, work_date). The timer, the
+// day's ordering, and the day's lifecycle state live here, so the same task can
+// be worked on many days and each day keeps its own recorded time.
+export const taskDays = sqliteTable(
+  'task_days',
+  {
+    id: integer('id').primaryKey({ autoIncrement: true }),
+    taskId: integer('task_id')
+      .notNull()
+      .references(() => tasks.id, { onDelete: 'cascade' }),
+    workDate: text('work_date')
+      .notNull()
+      .default(sql`(date('now'))`),
+    status: text('status').notNull().default('todo'),
     elapsedTime: integer('elapsed_time').notNull().default(0),
     totalTime: integer('total_time').notNull().default(0),
     position: integer('position').notNull().default(0),
@@ -59,10 +86,10 @@ export const tasks = sqliteTable(
       .$defaultFn(() => new Date())
   },
   (t) => [
-    index('idx_tasks_user').on(t.userId),
-    index('idx_tasks_position').on(t.userId, t.position),
-    index('idx_tasks_user_date').on(t.userId, t.workDate),
-    uniqueIndex('idx_tasks_user_date_label').on(t.userId, t.workDate, t.label)
+    index('idx_task_days_task').on(t.taskId),
+    index('idx_task_days_date_position').on(t.workDate, t.position),
+    index('idx_task_days_date').on(t.workDate),
+    uniqueIndex('idx_task_days_task_date').on(t.taskId, t.workDate)
   ]
 );
 

@@ -39,11 +39,25 @@ key cannot mint or list other keys.
 
 ## The task object
 
+A task is two things: an **identity** row (`label`, `description`, `code`, `link`,
+`notes`, `tags`) keyed by `(user_id, label)`, and one **day row** per date it was
+worked, carrying that day's time and lifecycle. `id` is the identity's id and
+stays the public handle for every `/api/tasks/:id/*` route. On a dated query the
+viewed day is flattened onto the task, so the daily UI reads it as before; `dayId`
+is that day row's own id.
+
 ```jsonc
 {
-  "id": 42,
+  "id": 42,                     // task identity id
   "label": "Write RFC",
   "description": null,
+  "code": null,
+  "link": null,
+  "notes": null,
+  "tags": null,
+  "workDate": "2026-09-21",     // the viewed day; null on an archive query
+  "dayId": 907,                 // task_days.id of the viewed day
+  "status": "todo",
   "position": 0,
   "isRunning": true,
   "done": false,                // marked finished (moves the JIRA issue to Cek di Local)
@@ -59,29 +73,74 @@ List responses wrap tasks with a total:
 { "tasks": [ /* Task[] */ ], "totalElapsedSeconds": 255 }
 ```
 
+**Archive shape.** `GET /api/tasks` with **no `date`** returns every task — not
+just unfinished ones — each carrying a `days[]` array with one entry per day it
+was worked (`work_date` ASC):
+
+```jsonc
+{
+  "tasks": [
+    {
+      "id": 42,
+      "label": "Write RFC",
+      "days": [
+        // Each entry is a full TaskDayDTO; only the fields the archive UI needs
+        // are shown here.
+        { "id": 907, "workDate": "2026-09-21", "elapsedSeconds": 120,
+          "currentElapsedSeconds": 135, "status": "todo", "done": false, "position": 0 },
+        { "id": 812, "workDate": "2026-09-18", "elapsedSeconds": 3600,
+          "currentElapsedSeconds": 3600, "status": "done", "done": true, "position": 2 }
+      ]
+    }
+  ],
+  "totalElapsedSeconds": 3735
+}
+```
+
+`totalElapsedSeconds` is the sum of every day's current elapsed. `q` filters the
+label, `tag` filters tags, and `status`/`done`/`archived` filter **which days
+appear in `days[]`** — a task with no surviving day is dropped.
+
+On an archive task `workDate` and `dayId` are `null`, and the task's own
+`elapsedSeconds`/`currentElapsedSeconds`/`totalTime` are the roll-up **sum** of its
+`days[]` (so the totals are meaningful without walking the array).
+
 ## Endpoints
 
 ### Tasks
 
 | Method | Path | Scope | Body | Returns |
 |---|---|---|---|---|
-| GET | `/api/tasks` | read | — | `{ tasks, totalElapsedSeconds }` |
-| POST | `/api/tasks` | write | `{ label, description?, workDate? }` | Task (201) |
-| PATCH | `/api/tasks/:id` | write | `{ label?, description?, elapsed_seconds?, done?, code?, link?, status?, notes?, tags? }` | Task |
+| GET | `/api/tasks?date=YYYY-MM-DD` | read | — | `{ tasks, totalElapsedSeconds }` — that day's view |
+| GET | `/api/tasks` | read | — | `{ tasks, totalElapsedSeconds }` — archive, each task with `days[]` |
+| POST | `/api/tasks` | write | `{ label, description?, workDate?, code?, link?, status?, notes?, tags? }` | Task (201) |
+| PATCH | `/api/tasks/:id` | write | identity: `{ label?, description?, code?, link?, notes?, tags? }`; day: `{ elapsed_seconds?, done?, status?, is_*?, workDate? }` | Task |
 | DELETE | `/api/tasks/:id` | write | — | `204` |
-| POST | `/api/tasks/reorder` | write | `{ ids: number[] }` (all ids in new order) | `{ tasks, … }` |
+| POST | `/api/tasks/reorder` | write | `{ ids: number[], workDate? }` (all ids in new order) | `{ tasks, … }` |
+
+`GET` filters: `archived`, `done`, `status`, `q`, `tag` (see the archive shape above).
+
+**`PATCH` splits identity from day.** `label`, `description`, `code`, `link`,
+`notes`, `tags` write the task identity; `elapsed_seconds`, `done`, `status` and
+the flags write a **day row**. An optional `workDate` selects which day (default
+today), so `PATCH` is how you correct one day's time without touching the task's
+other days. `DELETE` removes the identity and cascades its days.
 
 ### Timer control
 
 | Method | Path | Scope | Body | Returns |
 |---|---|---|---|---|
-| POST | `/api/tasks/:id/start` | write | `{ exclusive? }` | Task |
-| POST | `/api/tasks/:id/stop` | write | — | Task |
-| POST | `/api/tasks/:id/reset` | write | — | Task |
+| POST | `/api/tasks/:id/start` | write | `{ exclusive?, workDate? }` | Task |
+| POST | `/api/tasks/:id/stop` | write | `{ workDate? }` | Task |
+| POST | `/api/tasks/:id/reset` | write | `{ workDate? }` | Task |
 | POST | `/api/tasks/reset-all` | write | `{ workDate? }` | `{ tasks, … }` |
 
 `exclusive` on **start**: `true` stops all other running timers first (focus);
 `false` leaves them running (parallel). Omit it to use the user's saved timer mode.
+Focus mode stops other **running day rows** regardless of date — a running timer is
+running whatever day it belongs to.
+
+`workDate` on any timer route defaults to today and picks the day row to mutate.
 
 ### Settings
 
@@ -106,6 +165,27 @@ seconds / 3600. Unlike the other endpoints this returns raw text, not JSON.
 curl -H "Authorization: Bearer $KEY" "$BASE/api/report?format=markdown"
 ```
 
+### Integrations (per task)
+
+The `task_integrations` rows the TUI detail view shows and the archive filters on
+(`group` / `field` / `value`, keyed by `(task, group, field)`).
+
+| Method | Path | Scope | Body | Returns |
+|---|---|---|---|---|
+| GET | `/api/tasks/:id/integrations` | read | — | `[{ id, taskId, group, field, value, … }]` |
+| PATCH | `/api/tasks/:id/integrations` | write | `{ group, field, value }` | the row |
+
+`PATCH` upserts: re-sending the same `(group, field)` replaces the value instead of
+appending. `value: null` clears it while keeping the row addressable.
+
+Known groups: `jira` (`issue_key`, `status`), `git` (`branch`), `agent` (`status`,
+`session`, `attention`). The `agent` group is written by the sprint orchestrator
+(`~/.agents/skills/orchestrator`) and drives the TUI's agent badge; it may also be
+written through this route. Writes here fire an SSE `integration` change, so the
+dashboard refreshes live — a write through the **TUI CLI** (`task-timer-tui
+integration set`) does not, because it touches SQLite directly with no web server in
+the path.
+
 ### API keys (session only)
 
 | Method | Path | Body | Returns |
@@ -124,21 +204,22 @@ key field.
 | Timer event | JIRA effect |
 |---|---|
 | **create** a task | auto-fetches JIRA issue title and sets as task description |
-| **start** a task | issue → **In Progress**; the task's own `status` → **In Progress** |
-| **stop** a task | worklog for the run, then issue → **To Do**; the task's own `status` → **To Do** |
-| focus-mode **switch** (start B, auto-stops A) | A → **To Do** + worklog for A's run; A's `status` → **To Do** |
-| agent hook pause / session end | worklog + **To Do** for every stopped task; each `status` → **To Do** |
-| **reset** / **reset all** | stops the timer; each `status` → **To Do** |
-| mark **`done`** (PATCH `{done:true}`) | stops any live run + final worklog, issue → **Cek di Local**; the task's own `status` → **Done** |
-| un-mark **`done`** | issue untouched; the task's own `status` → **To Do** |
+| **start** a task | issue → **In Progress**; that day's `status` → **In Progress** |
+| **stop** a task | worklog for the run, then issue → **To Do**; that day's `status` → **To Do** |
+| focus-mode **switch** (start B, auto-stops A) | A → **To Do** + worklog for A's run; A's day `status` → **To Do** |
+| agent hook pause / session end | worklog + **To Do** for every stopped task; each day `status` → **To Do** |
+| **reset** / **reset all** | stops the timer; each day `status` → **To Do** |
+| mark **`done`** (PATCH `{done:true}`) | stops any live run + final worklog, issue → **Cek di Local**; that day's `status` → **Done** |
+| un-mark **`done`** | issue untouched; that day's `status` → **To Do** |
 
 A stopped task only goes back to **To Do** when it is *not* checked done. Checking
 it done is the one thing that leaves the issue at the done status, so a stop can
 never silently undo a completed ticket.
 
-The task's own `status` column follows the same events, so the list shows what the
+The **day row's** `status` follows the same events, so the list shows what the
 timer is doing without an edit: **start** writes In Progress, **stop**/reset writes
-To Do, and **done** writes Done (un-done returns to To Do). Local state is written
+To Do, and **done** writes Done (un-done returns to To Do). Status is per day, so
+marking one day done leaves the task's other days alone. Local state is written
 before the JIRA call, so the list stays correct while JIRA is slow or unreachable.
 All three clients write it — the TUI and CLI via `auto_status`
 (`apps/tui/src/jira.rs`), the web dashboard via `autoStatus`

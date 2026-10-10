@@ -30,16 +30,24 @@ const SCHEMA = `
 CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL);
 CREATE TABLE tasks (
   id INTEGER PRIMARY KEY AUTOINCREMENT,
-  user_id TEXT NOT NULL, label TEXT NOT NULL, description TEXT, code TEXT, link TEXT,
-  status TEXT NOT NULL DEFAULT 'todo', notes TEXT, tags TEXT,
+  user_id TEXT NOT NULL, label TEXT NOT NULL, code TEXT, description TEXT, link TEXT,
+  notes TEXT, tags TEXT,
+  created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
+);
+CREATE UNIQUE INDEX idx_tasks_user_label ON tasks (user_id, label);
+CREATE TABLE task_days (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  task_id INTEGER NOT NULL, work_date TEXT NOT NULL,
+  status TEXT NOT NULL DEFAULT 'todo',
   elapsed_time INTEGER NOT NULL DEFAULT 0, total_time INTEGER NOT NULL DEFAULT 0,
   position INTEGER NOT NULL DEFAULT 0, is_running INTEGER NOT NULL DEFAULT 0,
   done INTEGER NOT NULL DEFAULT 0, is_completed INTEGER NOT NULL DEFAULT 0,
   is_cancelled INTEGER NOT NULL DEFAULT 0, is_deleted INTEGER NOT NULL DEFAULT 0,
   is_archived INTEGER NOT NULL DEFAULT 0, is_pinned INTEGER NOT NULL DEFAULT 0,
   is_important INTEGER NOT NULL DEFAULT 0, start_time INTEGER, end_time INTEGER,
-  work_date TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
+  created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0
 );
+CREATE UNIQUE INDEX idx_task_days_task_date ON task_days (task_id, work_date);
 CREATE TABLE user_settings (user_id TEXT PRIMARY KEY, timer_mode TEXT NOT NULL DEFAULT 'focus', updated_at INTEGER NOT NULL DEFAULT 0);
 `;
 
@@ -61,7 +69,10 @@ function makeFixture(label) {
     email,
     'x'
   );
-  db.prepare('INSERT INTO tasks (user_id, label, work_date) VALUES (?, ?, ?)').run(email, label, today);
+  const { lastInsertRowid } = db
+    .prepare('INSERT INTO tasks (user_id, label) VALUES (?, ?)')
+    .run(email, label);
+  db.prepare('INSERT INTO task_days (task_id, work_date) VALUES (?, ?)').run(lastInsertRowid, today);
   db.close();
 
   writeFileSync(
@@ -91,7 +102,7 @@ function runCli(fixture, args) {
 function row(dbPath, label) {
   const db = new DatabaseSync(dbPath, { readOnly: true });
   try {
-    return db.prepare('SELECT status, is_running, done FROM tasks WHERE label = ?').get(label);
+    return db.prepare('SELECT td.status, td.is_running, td.done FROM tasks t JOIN task_days td ON td.task_id = t.id WHERE t.label = ?').get(label);
   } finally {
     db.close();
   }
@@ -154,7 +165,7 @@ function statusSyncHolds(fixture, { preChange }) {
   // status the row had before the start, then measure that against the oracle.
   if (preChange) {
     const db = new DatabaseSync(dbPath);
-    db.prepare('UPDATE tasks SET status = ? WHERE label = ?').run(afterCreate, label);
+    db.prepare('UPDATE task_days SET status = ? WHERE task_id = (SELECT id FROM tasks WHERE label = ?)').run(afterCreate, label);
     db.close();
   }
 

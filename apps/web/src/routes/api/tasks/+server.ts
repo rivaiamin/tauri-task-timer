@@ -1,9 +1,10 @@
 import { json, error, type RequestHandler } from '@sveltejs/kit';
 import { z } from 'zod';
 import { resolveActor, requireScope } from '$lib/server/actor';
-import { listTasks, createTask } from '$lib/server/taskService';
+import { listTasks, listArchive, createTask } from '$lib/server/taskService';
 
-// GET /api/tasks — list the caller's tasks with computed elapsed + total.
+// GET /api/tasks — with ?date=YYYY-MM-DD, that day's list; without, the archive:
+// every task with its days[].
 // Query: ?date=YYYY-MM-DD&archived=bool&done=bool&status=str&q=str&tag=str
 export const GET: RequestHandler = async (event) => {
   const actor = await resolveActor(event);
@@ -18,14 +19,18 @@ export const GET: RequestHandler = async (event) => {
   const q = event.url.searchParams.get('q');
   const tag = event.url.searchParams.get('tag');
   const parseBool = (v: string | null) => (v === 'true' ? true : v === 'false' ? false : undefined);
-  return json(listTasks(actor.userId, {
-    workDate: date ?? undefined,
-    archived: parseBool(archived),
-    done: parseBool(done),
+  const filter = {
     status: status ?? undefined,
     q: q ?? undefined,
-    tag: tag ?? undefined,
-  }));
+    tag: tag ?? undefined
+  };
+  const archivedBool = parseBool(archived);
+  if (date === null) {
+    // Archive: q/tag pick the tasks, status/done/archived pick which of their days show.
+    return json(listArchive(actor.userId, { ...filter, done: parseBool(done), archived: archivedBool }));
+  }
+  // Day view: the same params narrow that day's list.
+  return json(listTasks(actor.userId, date, { ...filter, done: parseBool(done), archived: archivedBool }));
 };
 
 const createSchema = z.object({
@@ -40,6 +45,7 @@ const createSchema = z.object({
 });
 
 // POST /api/tasks — create a task. Body: { label, description?, workDate? }
+// Creating a label that already exists returns that task and adds the day.
 export const POST: RequestHandler = async (event) => {
   const actor = await resolveActor(event);
   requireScope(actor, 'tasks:write');

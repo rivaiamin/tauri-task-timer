@@ -82,6 +82,10 @@ pub enum Overlay {
         comments: Vec<crate::db::comments::Comment>,
         prs: Vec<crate::bitbucket::PullRequest>,
         statuses: Vec<crate::bitbucket::CommitStatus>,
+        /// Stored `task_integrations` rows — the `jira` key/status the sprint
+        /// fetch writes, and the linked `git` branch. Read from the DB rather
+        /// than re-fetched, so the detail view shows what was saved.
+        integrations: Vec<crate::db::integrations::Integration>,
     },
     /// The comment list for one task, optionally with a compose buffer open.
     Comments {
@@ -92,7 +96,7 @@ pub enum Overlay {
     },
     Filter { input: ArchiveInput, buffer: String },
     Form {
-        edit_id: Option<i64>,
+        edit_day_id: Option<i64>,
         field: Field,
         label: String,
         description: String,
@@ -140,6 +144,9 @@ pub struct App {
     pub git_repo_path: Option<std::path::PathBuf>,
     pub bitbucket_workspace: Option<String>,
     pub bitbucket_repo: Option<String>,
+    /// Agent state per task id, for the daily list's badge. Refreshed with the
+    /// task list, since both come from the same DB and change together.
+    pub agent_states: std::collections::HashMap<i64, crate::db::integrations::AgentState>,
     hook_listener: crate::hooks::HookListener,
 }
 
@@ -195,6 +202,7 @@ impl App {
             git_repo_path,
             bitbucket_workspace,
             bitbucket_repo,
+            agent_states: std::collections::HashMap::new(),
             hook_listener: crate::hooks::HookListener::new(),
         };
         app.reload()?;
@@ -227,6 +235,9 @@ impl App {
 
     fn reload(&mut self) -> Result<()> {
         self.tasks = tasks::list_tasks(&self.conn, &self.user_id, &self.date_str())?;
+        // Same cadence as the task list: the orchestrator writes these rows, so a
+        // badge is never more stale than the times beside it.
+        self.agent_states = crate::db::integrations::agent_states(&self.conn).unwrap_or_default();
         if self.selected >= self.tasks.len() && !self.tasks.is_empty() {
             self.selected = self.tasks.len() - 1;
         }
@@ -399,65 +410,63 @@ impl App {
     }
 
     fn start_stop(&mut self) -> Result<()> {
-        let Some((id, running)) = self.selected_task().map(|t| (t.id, t.is_running)) else {
+        let Some((day_id, running)) = self.selected_task().map(|t| (t.day_id, t.is_running)) else {
             return Ok(());
         };
         let warnings = if running {
-            self.stop_task(id)?
+            self.stop_task(day_id)?
         } else {
-            self.start_task(id)?
+            self.start_task(day_id)?
         };
         self.reload()?;
         self.show_jira(warnings);
         Ok(())
     }
 
-    /// Start a task. In focus mode, stops other running tasks (with worklog + To Do transition).
-    /// Fires In Progress transition for the started task.
-    fn start_task(&mut self, id: i64) -> Result<Warnings> {
+    /// Start a task's timer for the day being viewed. In focus mode, stops every
+    /// other running day row (with worklog + To Do transition), including one
+    /// left running on an earlier day. Fires the In Progress transition for the
+    /// started task.
+    fn start_task(&mut self, day_id: i64) -> Result<Warnings> {
         let exclusive = self.timer_mode == "focus";
-        // Snapshot running tasks before exclusive start stops them
-        let stopped: Vec<Worklog> = if exclusive {
-            let now = now_ms();
-            self.tasks
-                .iter()
-                .filter(|t| t.id != id)
-                .filter_map(|t| Worklog::capture(t, now))
-                .collect()
-        } else {
-            vec![]
-        };
-        tasks::start_timer(&self.conn, &self.user_id, id, exclusive)?;
+        let (started, stopped_rows) =
+            match tasks::start_timer(&self.conn, &self.user_id, day_id, exclusive)? {
+                Some(pair) => pair,
+                None => return Ok(Warnings::new()),
+            };
         // Every local write lands before any JIRA call: the list must read
         // correctly even while a slow or unreachable JIRA is being asked.
-        jira::auto_status(&self.conn, &self.user_id, id);
-        for worklog in &stopped {
-            jira::auto_status(&self.conn, &self.user_id, worklog.task_id);
+        jira::auto_status(&self.conn, &self.user_id, day_id);
+        for victim in &stopped_rows {
+            jira::auto_status(&self.conn, &self.user_id, victim.day_id);
         }
         // Fire JIRA: focus-switched tasks → worklog + To Do
         let mut warnings = Warnings::new();
-        for worklog in &stopped {
-            warnings.extend(worklog.record_and_reopen());
+        for victim in &stopped_rows {
+            if let Some(worklog) = Worklog::capture(victim, now_ms()) {
+                warnings.extend(worklog.record_and_reopen());
+            }
         }
         // Fire JIRA: started task → In Progress
-        if let Some(t) = self.tasks.iter().find(|t| t.id == id) {
-            warnings.extend(jira::fire_on_start(&t.label, t.description_text()));
-        }
+        warnings.extend(jira::fire_on_start(
+            &started.label,
+            started.description_text(),
+        ));
         Ok(warnings)
     }
 
-    /// Stop a task. Fires worklog + To Do; Shift-D is what moves an issue to done.
-    fn stop_task(&mut self, id: i64) -> Result<Warnings> {
+    /// Stop a day's timer. Fires worklog + To Do; Shift-D is what moves an issue to done.
+    fn stop_task(&mut self, day_id: i64) -> Result<Warnings> {
         let worklog = self
             .tasks
             .iter()
-            .find(|t| t.id == id)
+            .find(|t| t.day_id == day_id)
             .and_then(|t| Worklog::capture(t, now_ms()));
-        tasks::stop_timer(&self.conn, &self.user_id, id)?;
+        tasks::stop_timer(&self.conn, &self.user_id, day_id)?;
         // A run ending on an unfinished task reads To Do again — the row must
         // not keep showing In Progress with no timer behind it. Written before
         // the JIRA call so the list is correct even while JIRA is slow.
-        jira::auto_status(&self.conn, &self.user_id, id);
+        jira::auto_status(&self.conn, &self.user_id, day_id);
         Ok(worklog
             .as_ref()
             .map(Worklog::record_and_reopen)
@@ -469,18 +478,20 @@ impl App {
     /// Returns whether any tasks were running, plus any JIRA hook failures.
     fn stop_all_running(&mut self) -> Result<(bool, Warnings)> {
         let now = now_ms();
-        let stopped: Vec<Worklog> = self
-            .tasks
+        // Running timers are found across every day, not only the one on screen:
+        // a run left going on an earlier date still has to be closed out.
+        let running = tasks::list_running(&self.conn, &self.user_id)?;
+        let stopped: Vec<Worklog> = running
             .iter()
             .filter_map(|t| Worklog::capture(t, now))
             .collect();
         let had = !stopped.is_empty();
-        for worklog in &stopped {
-            tasks::stop_timer(&self.conn, &self.user_id, worklog.task_id)?;
+        for task in &running {
+            tasks::stop_timer(&self.conn, &self.user_id, task.day_id)?;
         }
         // Local state first, JIRA second — a slow JIRA must not delay the list.
-        for worklog in &stopped {
-            jira::auto_status(&self.conn, &self.user_id, worklog.task_id);
+        for task in &running {
+            jira::auto_status(&self.conn, &self.user_id, task.day_id);
         }
         let mut warnings = Warnings::new();
         for worklog in &stopped {
@@ -491,7 +502,7 @@ impl App {
 
     fn open_create(&mut self) {
         self.overlay = Overlay::Form {
-            edit_id: None,
+            edit_day_id: None,
             field: Field::Label,
             label: String::new(),
             description: String::new(),
@@ -516,7 +527,10 @@ impl App {
             return;
         };
         self.overlay = Overlay::Form {
-            edit_id: Some(t.id),
+            // `update_task` addresses the day row, and `tasks.id` and
+            // `task_days.id` are separate sequences — passing `t.id` here edited
+            // whichever task happened to own that day number instead.
+            edit_day_id: Some(t.day_id),
             field: Field::Label,
             label: t.label.clone(),
             description: t.description.clone().unwrap_or_default(),
@@ -568,7 +582,7 @@ impl App {
         // Copy the form out: the save path calls `&mut self` helpers, so the
         // overlay cannot stay borrowed while it runs.
         let Overlay::Form {
-            edit_id,
+            edit_day_id,
             label,
             description,
             elapsed,
@@ -589,7 +603,7 @@ impl App {
             return Ok(());
         };
         let (
-            edit_id,
+            edit_day_id,
             label,
             description,
             elapsed,
@@ -605,7 +619,7 @@ impl App {
             is_deleted,
             is_completed,
         ) = (
-            *edit_id,
+            *edit_day_id,
             label.clone(),
             description.clone(),
             elapsed.clone(),
@@ -657,11 +671,11 @@ impl App {
             is_completed: Some(is_completed),
             ..Default::default()
         };
-        if let Some(id) = edit_id {
+        if let Some(day_id) = edit_day_id {
             tasks::update_task(
                 &self.conn,
                 &self.user_id,
-                id,
+                day_id,
                 tasks::TaskPatch {
                     label: Some(&label),
                     description: Some(&description),
@@ -691,10 +705,11 @@ impl App {
             let created = tasks::create_task(&self.conn, &self.user_id, &date, &label, desc)?;
             // `create_task` only knows label and description, so everything else
             // the form collected — including the link and the flags — lands here.
+            // It writes the day row the create just made.
             tasks::update_task(
                 &self.conn,
                 &self.user_id,
-                created.id,
+                created.day_id,
                 tasks::TaskPatch {
                     elapsed_seconds: Some(elapsed_secs),
                     code: code_opt,
@@ -729,8 +744,9 @@ impl App {
         if i < 0 || i >= self.tasks.len() as isize {
             return Ok(());
         }
-        let a = self.tasks[self.selected].id;
-        let b = self.tasks[i as usize].id;
+        // Ordering is a property of the day, so the swap names day rows.
+        let a = self.tasks[self.selected].day_id;
+        let b = self.tasks[i as usize].day_id;
         tasks::reorder_swap(&self.conn, &self.user_id, a, b)?;
         self.selected = i as usize;
         self.reload()
@@ -789,6 +805,27 @@ impl App {
     fn jira_issue_key(&self) -> Option<String> {
         self.selected_task()
             .and_then(|t| jira::issue_key_from_task(&t.label, t.description.as_deref().unwrap_or("")))
+    }
+
+    /// Open the focused task's JIRA issue in the browser.
+    ///
+    /// JIRA renders its own issue better than a TUI panel can, and the PRD's
+    /// non-goals rule out replicating it, so the TUI's part is the handoff: a
+    /// key in the label or description is enough, and a task without one gets a
+    /// status line rather than a failed spawn.
+    fn open_jira_issue(&mut self) {
+        let Some(task) = self.focused_task() else {
+            return;
+        };
+        let Some(key) = jira::issue_key_from_task(&task.label, task.description_text()) else {
+            self.set_status("no JIRA key in task label/description");
+            return;
+        };
+        let url = jira::issue_url(&key);
+        match jira::open_in_browser(&url) {
+            Ok(()) => self.set_status(format!("opened {key} in browser")),
+            Err(e) => self.set_status(format!("{e:#}")),
+        }
     }
 
     fn handle_jira_key(&mut self, key: KeyEvent) -> Result<bool> {
@@ -948,7 +985,7 @@ impl App {
                                         let _ = tasks::update_task(
                                             &self.conn,
                                             &self.user_id,
-                                            task.id,
+                                            task.day_id,
                                             tasks::TaskPatch {
                                                 status: Some(&status_id),
                                                 ..Default::default()
@@ -1039,15 +1076,17 @@ impl App {
 
     /// Create-or-update today's tasks for a batch of JIRA issues and link each
     /// to its issue key. Reports the split so the caller can toast it.
+    ///
+    /// The rows themselves are written by `tasks::ingest_jira_issues` — the same
+    /// function `jira ensure` calls — so the label format and integration keying
+    /// have exactly one owner.
     fn ingest_jira_issues(&mut self, issues: &[(String, String, String)]) -> Result<String> {
         let today = self.date_str();
         let mut created = 0u32;
         let mut updated = 0u32;
         let user_id = self.user_id.clone();
-        for (key, summary, _status) in issues {
-            let label = format!("{key} {summary}");
-            let task = tasks::create_task(&self.conn, &user_id, &today, label.trim(), Some(summary))?;
-            db::integrations::upsert(&self.conn, task.id, "jira", "issue_key", Some(key))?;
+        let rows = tasks::ingest_jira_issues(&self.conn, &user_id, &today, issues)?;
+        for (task, (_, summary, _)) in rows.iter().zip(issues.iter()) {
             if task.description.as_deref() == Some(summary.as_str()) && !summary.is_empty() {
                 // newly created (description matched summary = no prior desc)
                 created += 1;
@@ -1176,6 +1215,7 @@ impl App {
             comments,
             prs,
             statuses,
+            integrations: db::integrations::list(&self.conn, task_id).unwrap_or_default(),
         };
     }
 
@@ -1574,7 +1614,7 @@ impl App {
             is_deleted,
             is_completed,
             status_pick: _,
-            edit_id: _,
+            edit_day_id: _,
         } = &mut self.overlay
         else {
             return Ok(false);
@@ -1690,10 +1730,10 @@ impl App {
                     KeyCode::Char('y') | KeyCode::Char('Y') => {
                         let date = self.date_str();
                         // A reset stops every timer, so no row stays In Progress.
-                        let ids: Vec<i64> = self.tasks.iter().map(|t| t.id).collect();
+                        let day_ids: Vec<i64> = self.tasks.iter().map(|t| t.day_id).collect();
                         tasks::reset_all(&self.conn, &self.user_id, &date)?;
-                        for id in ids {
-                            jira::auto_status(&self.conn, &self.user_id, id);
+                        for day_id in day_ids {
+                            jira::auto_status(&self.conn, &self.user_id, day_id);
                         }
                         self.overlay = Overlay::None;
                         self.reload()?;
@@ -1712,6 +1752,8 @@ impl App {
                     }
                     // The detail footer advertises it, so `C` works from here too.
                     KeyCode::Char('C') => self.open_comments(),
+                    // The footer advertises this too: hand the issue to the browser.
+                    KeyCode::Char('o') => self.open_jira_issue(),
                     _ => {}
                 }
                 return Ok(false);
@@ -1750,6 +1792,9 @@ impl App {
                 }
                 KeyCode::Char('C') if self.archive_selected_task().is_some() => {
                     self.open_comments();
+                }
+                KeyCode::Char('o') if self.archive_selected_task().is_some() => {
+                    self.open_jira_issue();
                 }
                 _ => {}
             }
@@ -1799,10 +1844,10 @@ impl App {
                 // Shift-D: toggle done flag (JIRA → Cek di Local on false→true)
                 if let Some(t) = self.selected_task().cloned() {
                     let new_done = !t.done;
-                    let result = tasks::set_done(&self.conn, &self.user_id, t.id, new_done)?;
+                    let result = tasks::set_done(&self.conn, &self.user_id, t.day_id, new_done)?;
                     // Local state first: the row reads Done / To Do immediately,
                     // whether or not the JIRA hook below can be reached.
-                    jira::auto_status(&self.conn, &self.user_id, t.id);
+                    jira::auto_status(&self.conn, &self.user_id, t.day_id);
                     let mut warnings = Warnings::new();
                     if let Some((_, delta, start_ms)) = result {
                         if new_done {
@@ -1816,16 +1861,17 @@ impl App {
                 }
             }
             KeyCode::Char('r') => {
-                if let Some(id) = self.selected_task().map(|t| t.id) {
-                    tasks::reset_task(&self.conn, &self.user_id, id)?;
+                if let Some(day_id) = self.selected_task().map(|t| t.day_id) {
+                    tasks::reset_task(&self.conn, &self.user_id, day_id)?;
                     // A reset stops the timer, so the row is no longer In Progress.
-                    jira::auto_status(&self.conn, &self.user_id, id);
+                    jira::auto_status(&self.conn, &self.user_id, day_id);
                     self.reload()?;
                 }
             }
             KeyCode::Char('R') => self.overlay = Overlay::ConfirmResetAll,
             KeyCode::Char('m') => self.toggle_mode()?,
             KeyCode::Char('x') => self.export_markdown(),
+            KeyCode::Char('o') => self.open_jira_issue(),
             _ => {}
         }
         Ok(false)
@@ -1835,17 +1881,31 @@ impl App {
         use crate::hooks::HookEvent;
         match ev {
             HookEvent::SessionStart { task_id } => {
-                let id = if let Some(tid) = task_id {
-                    tid
+                // A hook names a task, not a day: start it on the day being
+                // viewed, creating that day's row if this is the first run.
+                let (task_id, label) = if let Some(tid) = task_id {
+                    match tasks::get_task_on(&self.conn, &self.user_id, tid, &self.date_str())? {
+                        Some(t) => (tid, t.label),
+                        None => {
+                            self.set_status(format!("hook: task {tid} is not on this day"));
+                            return Ok(());
+                        }
+                    }
                 } else if let Some(t) = self.selected_task() {
-                    t.id
+                    (t.id, t.label.clone())
                 } else {
                     self.set_status("hook: no task selected");
                     return Ok(());
                 };
-                let warnings = self.start_task(id)?;
+                let day = tasks::ensure_day_row(
+                    &self.conn,
+                    &self.user_id,
+                    task_id,
+                    &self.date_str(),
+                )?;
+                let warnings = self.start_task(day.day_id)?;
                 self.reload()?;
-                self.set_status(format!("hook: timer started (task {id})"));
+                self.set_status(format!("hook: timer started ({label})"));
                 self.show_jira(warnings);
             }
             HookEvent::WaitingUser => {
@@ -1920,7 +1980,7 @@ mod tests {
 
     fn form(status: &str) -> Overlay {
         Overlay::Form {
-            edit_id: Some(7),
+            edit_day_id: Some(7),
             field: Field::Status,
             label: "US-1".into(),
             description: "desc".into(),
@@ -1966,7 +2026,10 @@ mod tests {
         let conn = rusqlite::Connection::open_in_memory().unwrap();
         conn.execute_batch(
             "CREATE TABLE users (id TEXT PRIMARY KEY, email TEXT NOT NULL UNIQUE, password_hash TEXT NOT NULL, created_at INTEGER NOT NULL);
-             CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, label TEXT NOT NULL, description TEXT, code TEXT, link TEXT, status TEXT NOT NULL DEFAULT 'todo', notes TEXT, tags TEXT, elapsed_time INTEGER NOT NULL DEFAULT 0, total_time INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0, is_running INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, is_completed INTEGER NOT NULL DEFAULT 0, is_cancelled INTEGER NOT NULL DEFAULT 0, is_deleted INTEGER NOT NULL DEFAULT 0, is_archived INTEGER NOT NULL DEFAULT 0, is_pinned INTEGER NOT NULL DEFAULT 0, is_important INTEGER NOT NULL DEFAULT 0, start_time INTEGER, end_time INTEGER, work_date TEXT NOT NULL, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
+             CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL, label TEXT NOT NULL, code TEXT, description TEXT, link TEXT, notes TEXT, tags TEXT, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0);
+             CREATE UNIQUE INDEX idx_tasks_user_label ON tasks (user_id, label);
+             CREATE TABLE task_days (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, work_date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'todo', elapsed_time INTEGER NOT NULL DEFAULT 0, total_time INTEGER NOT NULL DEFAULT 0, position INTEGER NOT NULL DEFAULT 0, is_running INTEGER NOT NULL DEFAULT 0, done INTEGER NOT NULL DEFAULT 0, is_completed INTEGER NOT NULL DEFAULT 0, is_cancelled INTEGER NOT NULL DEFAULT 0, is_deleted INTEGER NOT NULL DEFAULT 0, is_archived INTEGER NOT NULL DEFAULT 0, is_pinned INTEGER NOT NULL DEFAULT 0, is_important INTEGER NOT NULL DEFAULT 0, start_time INTEGER, end_time INTEGER, created_at INTEGER NOT NULL DEFAULT 0, updated_at INTEGER NOT NULL DEFAULT 0, FOREIGN KEY (task_id) REFERENCES tasks(id) ON DELETE CASCADE);
+             CREATE UNIQUE INDEX idx_task_days_task_date ON task_days (task_id, work_date);
              CREATE TABLE user_settings (user_id TEXT PRIMARY KEY, timer_mode TEXT NOT NULL DEFAULT 'focus', updated_at INTEGER NOT NULL DEFAULT 0);
              CREATE TABLE task_comments (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, subject TEXT, summary TEXT, branch TEXT, pr TEXT, created_at INTEGER NOT NULL);
              CREATE TABLE task_integrations (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL, \"group\" TEXT NOT NULL, field TEXT NOT NULL, value TEXT, created_at INTEGER NOT NULL, updated_at INTEGER NOT NULL);
@@ -2088,8 +2151,8 @@ mod tests {
     fn committing_a_status_moves_focus_so_the_next_enter_saves() {
         let mut app = app_with_form("21");
         // The create path, so the save that follows is observable as a row.
-        if let Overlay::Form { edit_id, label, .. } = &mut app.overlay {
-            *edit_id = None;
+        if let Overlay::Form { edit_day_id, label, .. } = &mut app.overlay {
+            *edit_day_id = None;
             *label = "US-88".into();
         }
         app.toggle_status_pick();
@@ -2110,7 +2173,7 @@ mod tests {
     fn other_fields_still_accept_text() {
         let mut app = test_app();
         app.overlay = Overlay::Form {
-            edit_id: Some(7),
+            edit_day_id: Some(7),
             field: Field::Label,
             label: String::new(),
             description: String::new(),
@@ -2141,9 +2204,9 @@ mod tests {
     #[test]
     fn editing_a_task_opens_the_dropdown_on_its_own_status() {
         let mut app = test_app();
-        tasks::create_task(&app.conn, "u1", "2026-09-17", "US-42", None).unwrap();
+        let t = tasks::create_task(&app.conn, "u1", "2026-09-17", "US-42", None).unwrap();
         app.conn
-            .execute("UPDATE tasks SET status = '51' WHERE label = 'US-42'", [])
+            .execute("UPDATE task_days SET status = '51' WHERE id = ?1", [t.day_id])
             .unwrap();
         app.reload().unwrap();
         app.selected = 0;
@@ -2152,6 +2215,50 @@ mod tests {
         assert_eq!(pick_cursor(&app), Some(4), "Cek di Local is the fifth row");
         app.handle_form_key(key(KeyCode::Enter)).unwrap();
         assert_eq!(form_status(&app), "51");
+    }
+
+    /// Editing must address the row the user selected. `tasks.id` and
+    /// `task_days.id` are separate sequences, so passing the task id as a day id
+    /// edited whichever task owned that day number — and a rename then collided
+    /// with the selected task's own label.
+    #[test]
+    fn editing_a_task_updates_the_selected_task_not_the_row_with_its_id() {
+        let mut app = test_app();
+        // Two days for the first task, so the second task's id (2) lands on the
+        // first task's *second* day row — the sequences diverge exactly here.
+        tasks::create_task(&app.conn, "u1", "2026-09-17", "First", None).unwrap();
+        tasks::create_task(&app.conn, "u1", "2026-09-16", "First", None).unwrap();
+        let second = tasks::create_task(&app.conn, "u1", "2026-09-17", "Second", None).unwrap();
+        assert_ne!(second.id, second.day_id, "the two ids must differ for this test");
+
+        app.reload().unwrap();
+        app.selected = app
+            .tasks
+            .iter()
+            .position(|t| t.id == second.id)
+            .expect("Second is on the viewed day");
+        app.open_edit();
+        if let Overlay::Form { label, .. } = &mut app.overlay {
+            *label = "Second renamed".into();
+        }
+        app.submit_form().unwrap();
+
+        app.reload().unwrap();
+        let on_viewed_day = app
+            .tasks
+            .iter()
+            .find(|t| t.id == second.id)
+            .expect("the edited task is still on the day");
+        assert_eq!(on_viewed_day.label, "Second renamed");
+        // The other task's day rows are untouched.
+        for date in ["2026-09-16", "2026-09-17"] {
+            let first = tasks::list_tasks(&app.conn, "u1", date)
+                .unwrap()
+                .into_iter()
+                .find(|t| t.id != second.id)
+                .expect("First is still there");
+            assert_eq!(first.label, "First", "First must keep its own label");
+        }
     }
 
     /// Every flag key flips exactly its own bool — this is the whole flags
@@ -2199,7 +2306,7 @@ mod tests {
     fn saving_a_new_task_persists_link_and_flags() {
         let mut app = test_app();
         app.overlay = Overlay::Form {
-            edit_id: None,
+            edit_day_id: None,
             field: Field::Label,
             label: "US-77 new thing".into(),
             description: String::new(),
@@ -2278,7 +2385,7 @@ mod tests {
         let a = tasks::create_task(&app.conn, "u1", "2026-09-16", "US-1", None).unwrap();
         tasks::create_task(&app.conn, "u1", "2026-09-16", "US-2", None).unwrap();
         app.conn
-            .execute("UPDATE tasks SET status = '21' WHERE id = ?1", [a.id])
+            .execute("UPDATE task_days SET status = '21' WHERE id = ?1", [a.day_id])
             .unwrap();
         app.mode = AppMode::Archive;
         app.archive.filter_status = Some("In Progress".into());
@@ -2286,6 +2393,38 @@ mod tests {
 
         assert_eq!(app.archive.tasks.len(), 1);
         assert_eq!(app.archive.tasks[0].id, a.id);
+    }
+
+    /// A sprint fetch must keep the issue's status, not just its key — that row
+    /// is what the detail view and the archive's integration filter read.
+    #[test]
+    fn ingesting_a_jira_issue_stores_its_key_and_status() {
+        let mut app = test_app();
+        let issues = vec![(
+            "US-1459".to_string(),
+            "Fix login".to_string(),
+            "In Progress".to_string(),
+        )];
+        app.ingest_jira_issues(&issues).unwrap();
+
+        let task_id: i64 = app
+            .conn
+            .query_row("SELECT id FROM tasks WHERE label LIKE 'US-1459%'", [], |r| {
+                r.get(0)
+            })
+            .unwrap();
+        let rows = db::integrations::list(&app.conn, task_id).unwrap();
+        let value = |field: &str| {
+            rows.iter()
+                .find(|i| i.group == "jira" && i.field == field)
+                .and_then(|i| i.value.clone())
+        };
+        assert_eq!(value("issue_key").as_deref(), Some("US-1459"));
+        assert_eq!(
+            value("status").as_deref(),
+            Some("In Progress"),
+            "the fetched status must be persisted rather than discarded"
+        );
     }
 
     /// The integration filter is passed straight through to `list_archive`, and

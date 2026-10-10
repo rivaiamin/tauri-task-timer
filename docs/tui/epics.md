@@ -21,10 +21,10 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 ### Acceptance criteria
 
-- [x] TUI lists today's tasks for configured user
+- [x] TUI lists the tasks with a day row on the selected date
 - [x] Elapsed while running matches web within 1s
-- [x] Day navigation filters by `work_date`
-- [x] Continue-by-title copies description
+- [x] Day navigation moves the viewed `work_date`
+- [x] Continuing on a new day adds that day's row to the same task
 - [x] Focus mode stops other tasks same day
 - [x] `cargo test -p task-timer-tui` passes
 - [x] Export markdown report to clipboard (`x`; matches web/MCP format)
@@ -62,22 +62,22 @@ TUI leads UX and schema decisions. Each epic lists **all apps** that must change
 
 **Status:** Done (`main`) · **Depends on:** E2
 
-**Goal:** Backlog of unfinished work across days.
+**Goal:** Every task with the days it was worked and each day's time.
 
 ### Apps
 
 | App | Deliverable |
 |-----|-------------|
 | TUI | Archive screen, filters, "continue today" |
-| Web | `GET /api/tasks/archive` or query params (can slip to E7 UI) |
+| Web | `GET /api/tasks` (no `date`) — archive with `days[]` and query params |
 | MCP | `list_tasks` filter by `done`, `status` |
 
 ### Acceptance criteria
 
 - [x] TUI toggles daily ↔ archive
-- [x] Archive lists non-finished tasks per agreed rules
+- [x] Archive shows one entry per task, with every day it was worked and that day's time
 - [x] Filter by label substring, tag, status, and integration substring
-- [x] Continue today creates row via E1 dedup rules
+- [x] Continue today resolves the task identity and adds today's day entry
 
 ---
 
@@ -181,20 +181,20 @@ would move it to In Progress. Closed by `apps/web/src/lib/server/taskStatus.ts`
 | # | Task | Depends on |
 |---|------|-----------|
 | 1 | Date navigation (prev/next, `?date=` param) | — |
-| 2 | Create dedup + continue-by-title | — |
+| 2 | Identity upsert + day-row ensure | — |
 | 3 | Extended field UI (code, link, status, notes, tags) | E2 |
 | 4 | Archive page with filters + "continue today" | E3 |
 | 5 | Fix SSE handler + extend to comments/integrations | — |
 
 ### Acceptance criteria
 
-- [x] Dashboard defaults to today; only shows that day's tasks
+- [x] Dashboard defaults to today; only shows the tasks with a day row on that date
 - [x] Date navigation: prev/next day, URL bookmarkable
-- [x] Create duplicate label same day → returns existing task (no dupe)
-- [x] Create same label new day → copies description from most recent
+- [x] Create the same label twice same day → same task and day row, no dupe
+- [x] Create the same label on a new day → adds that day's row to the same task
 - [x] Extended fields (code, link, status, notes, tags) editable in UI
 - [x] Archive view with filter bar (q, tag, status)
-- [x] "Continue today" from archive creates row via dedup rules
+- [x] "Continue today" from archive adds today's day entry to the task
 - [x] SSE auto-refreshes dashboard on task/comment/integration changes
 - [x] Side-by-side: TUI total elapsed = web total elapsed for same day
 
