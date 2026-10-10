@@ -286,6 +286,11 @@ Ingest writes two `task_integrations` rows per issue — `jira/issue_key` and
 `jira/status` (the status JIRA reported). The task's own `status` column is still
 owned by `auto_status`, never by a fetch.
 
+The `agent` group (`status`, `session`, `attention`) is written by the sprint
+orchestrator, not by any TUI menu: it records what an agent is doing on the ticket
+so the daily list can badge it. See `erd.md` § `task_integrations` for the full
+contract and `apps/tui/README.md` § Agent badge for the display rules.
+
 `o` (daily list, archive, detail) opens `{JIRA_SITE}/browse/{KEY}` in the browser
 via `jira::issue_url` + `jira::open_in_browser`. The opener is spawned, not
 waited on, so the frame never blocks on the browser. A task with no key in its

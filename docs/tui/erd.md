@@ -128,17 +128,42 @@ erDiagram
 
 ## `task_integrations` examples
 
-| group | field | value |
-|-------|-------|-------|
-| jira | issue_key | AIMSIS-1234 |
-| jira | status | "In Progress" |
-| gcp | error_group | projects/.../groups/... |
-| bitbucket | pr_id | 42 |
-| git | branch | US-1459-fix |
+| group | field | value | written by |
+|-------|-------|-------|------------|
+| jira | issue_key | AIMSIS-1234 | TUI sprint sync / fetch-by-key |
+| jira | status | "In Progress" | TUI sprint sync (what JIRA reported) |
+| gcp | error_group | projects/.../groups/... | — |
+| bitbucket | pr_id | 42 | — |
+| git | branch | US-1459-fix | TUI git menu (`Ctrl+B`) |
+| agent | status | running | sprint orchestrator |
+| agent | session | 79ddc960-… | sprint orchestrator |
+| agent | attention | true | sprint orchestrator |
 
 `jira/issue_key` and `jira/status` are both written by the TUI's sprint sync and
 fetch-by-key ingest. `jira/status` holds the status JIRA reported for the issue,
 not the task's own `status` column — that one follows the timer (`auto_status`).
+
+The `agent` group records what an agent is doing on the ticket, so the daily list
+can badge it (`apps/tui/README.md` § Agent badge). All three fields are written by
+`~/.agents/scripts/orchestrator_run.py` through `task-timer-tui integration set`:
+
+- `status` — Paseo's own word (`running`, `idle`, `closed`, `failed`), stored
+  verbatim rather than translated.
+- `session` — the Paseo agent id, so a row can be traced back to `paseo inspect`.
+- `attention` — `true` when Paseo reports `requiresAttention`; written only when
+  known, so an update that lacks it leaves the previous value alone.
+
+Rows are keyed by `(task_id, group, field)`, so a writer updates in place rather
+than appending. Nothing outside the orchestrator writes the `agent` group, and the
+orchestrator writes no other group — that is the whole contract.
+
+`agent/*` is also writable through the existing REST route
+(`PATCH /api/tasks/:id/integrations`, `docs/api.md`), but the orchestrator does not
+use it: the write goes through the TUI CLI so the timer stays the schema owner and
+no web server has to be running. One consequence is worth knowing: the CLI writes
+SQLite directly, so the web dashboard does **not** get an SSE `integration` event
+for these rows and picks them up on its next visibility refresh. The TUI, which
+reloads every second, is the live surface for agent state.
 
 ### `tags` storage
 

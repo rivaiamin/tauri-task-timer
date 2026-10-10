@@ -165,6 +165,27 @@ seconds / 3600. Unlike the other endpoints this returns raw text, not JSON.
 curl -H "Authorization: Bearer $KEY" "$BASE/api/report?format=markdown"
 ```
 
+### Integrations (per task)
+
+The `task_integrations` rows the TUI detail view shows and the archive filters on
+(`group` / `field` / `value`, keyed by `(task, group, field)`).
+
+| Method | Path | Scope | Body | Returns |
+|---|---|---|---|---|
+| GET | `/api/tasks/:id/integrations` | read | — | `[{ id, taskId, group, field, value, … }]` |
+| PATCH | `/api/tasks/:id/integrations` | write | `{ group, field, value }` | the row |
+
+`PATCH` upserts: re-sending the same `(group, field)` replaces the value instead of
+appending. `value: null` clears it while keeping the row addressable.
+
+Known groups: `jira` (`issue_key`, `status`), `git` (`branch`), `agent` (`status`,
+`session`, `attention`). The `agent` group is written by the sprint orchestrator
+(`~/.agents/skills/orchestrator`) and drives the TUI's agent badge; it may also be
+written through this route. Writes here fire an SSE `integration` change, so the
+dashboard refreshes live — a write through the **TUI CLI** (`task-timer-tui
+integration set`) does not, because it touches SQLite directly with no web server in
+the path.
+
 ### API keys (session only)
 
 | Method | Path | Body | Returns |
