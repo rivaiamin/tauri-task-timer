@@ -228,17 +228,29 @@ fn resolve_task_identity(conn: &Connection, user_id: &str, selector: &str) -> Re
         }
     }
     match db::tasks::find_task_identities_by_label(conn, user_id, selector)?.as_slice() {
+        [] => {}
+        [task] => return Ok(task.clone()),
+        rest => return Err(ambiguous(selector, rest)),
+    }
+
+    // The JIRA sprint fetch labels a task `KEY summary`, so a bare key is the
+    // natural handle for it. Exact match wins above, so this only runs when no
+    // label *is* the key — a task labelled `US-1` is never shadowed by
+    // `US-1 something`.
+    match db::tasks::find_task_identities_by_label_prefix(conn, user_id, selector)?.as_slice() {
         [] => bail!("task {selector} not found"),
         [task] => Ok(task.clone()),
-        rest => {
-            let ids = rest
-                .iter()
-                .map(|t| t.id.to_string())
-                .collect::<Vec<_>>()
-                .join(", ");
-            bail!("ambiguous label {selector}: ids {ids} (use numeric id)")
-        }
+        rest => Err(ambiguous(selector, rest)),
     }
+}
+
+fn ambiguous(selector: &str, rest: &[Task]) -> anyhow::Error {
+    let ids = rest
+        .iter()
+        .map(|t| t.id.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::anyhow!("ambiguous label {selector}: ids {ids} (use numeric id)")
 }
 
 pub fn run(
@@ -681,5 +693,67 @@ mod tests {
         // across users — which is exactly what the scoping has to guard.
         assert_eq!(resolve_task_identity(&conn, "u1", "US-2").unwrap().id, 1);
         assert_eq!(resolve_task_identity(&conn, "u2", "US-2").unwrap().id, 2);
+    }
+
+    /// The JIRA sprint fetch writes `KEY summary` labels, so a bare key has to
+    /// reach them or the orchestrator cannot address half the sprint.
+    #[test]
+    fn a_bare_key_reaches_a_task_labelled_key_and_summary() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO tasks (user_id, label) VALUES ('u1', 'US-7 [Rework]');
+             INSERT INTO task_days (task_id, work_date) VALUES (1, '2026-09-01');",
+        )
+        .unwrap();
+
+        assert_eq!(resolve_task_identity(&conn, "u1", "US-7").unwrap().id, 1);
+    }
+
+    #[test]
+    fn an_exact_label_wins_over_a_longer_label_sharing_its_prefix() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO tasks (user_id, label) VALUES ('u1', 'US-7'), ('u1', 'US-7 [Rework]');
+             INSERT INTO task_days (task_id, work_date) VALUES (1, '2026-09-01'), (2, '2026-09-01');",
+        )
+        .unwrap();
+
+        assert_eq!(
+            resolve_task_identity(&conn, "u1", "US-7").unwrap().id,
+            1,
+            "the task actually labelled US-7 is not shadowed by its longer sibling"
+        );
+    }
+
+    #[test]
+    fn a_prefix_does_not_match_a_longer_number() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO tasks (user_id, label) VALUES ('u1', 'US-10 fixed');
+             INSERT INTO task_days (task_id, work_date) VALUES (1, '2026-09-01');",
+        )
+        .unwrap();
+
+        // `US-1 %` must not match `US-10 fixed`, or US-1 would write rows onto
+        // the wrong ticket.
+        let err = resolve_task_identity(&conn, "u1", "US-1").unwrap_err();
+        assert_eq!(err.to_string(), "task US-1 not found");
+        assert_eq!(resolve_task_identity(&conn, "u1", "US-10").unwrap().id, 1);
+    }
+
+    #[test]
+    fn two_tasks_sharing_a_key_prefix_are_ambiguous_rather_than_guessed() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO tasks (user_id, label) VALUES ('u1', 'US-7 alpha'), ('u1', 'US-7 beta');
+             INSERT INTO task_days (task_id, work_date) VALUES (1, '2026-09-01'), (2, '2026-09-01');",
+        )
+        .unwrap();
+
+        let err = resolve_task_identity(&conn, "u1", "US-7").unwrap_err();
+        assert!(
+            err.to_string().starts_with("ambiguous label US-7: ids 1, 2"),
+            "{err}"
+        );
     }
 }

@@ -215,6 +215,30 @@ pub fn find_task_identities_by_label(
     Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
 }
 
+/// Identities whose label *starts with* `prefix` followed by a word boundary.
+///
+/// The JIRA sprint fetch labels a task `KEY summary`, so the bare key is the
+/// natural handle for a task whose label carries extra text. Matching on the
+/// space keeps `US-1` from also matching `US-10`, and the caller rejects an
+/// ambiguous result rather than picking one.
+pub fn find_task_identities_by_label_prefix(
+    conn: &Connection,
+    user_id: &str,
+    prefix: &str,
+) -> Result<Vec<Task>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLS} {JOIN}
+         WHERE t.user_id = ?1 AND t.label LIKE ?2 ESCAPE '\\' COLLATE NOCASE AND {IDENTITY_DAY}
+         ORDER BY t.id ASC"
+    ))?;
+    let pattern = format!(
+        "{} %",
+        prefix.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    );
+    let rows = stmt.query_map(params![user_id, pattern], map_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// The day row by its own id — what a mutation returns after writing.
 pub fn get_task_by_day(conn: &Connection, user_id: &str, day_id: i64) -> Result<Option<Task>> {
     conn.query_row(
