@@ -144,6 +144,9 @@ pub struct App {
     pub git_repo_path: Option<std::path::PathBuf>,
     pub bitbucket_workspace: Option<String>,
     pub bitbucket_repo: Option<String>,
+    /// Agent state per task id, for the daily list's badge. Refreshed with the
+    /// task list, since both come from the same DB and change together.
+    pub agent_states: std::collections::HashMap<i64, crate::db::integrations::AgentState>,
     hook_listener: crate::hooks::HookListener,
 }
 
@@ -199,6 +202,7 @@ impl App {
             git_repo_path,
             bitbucket_workspace,
             bitbucket_repo,
+            agent_states: std::collections::HashMap::new(),
             hook_listener: crate::hooks::HookListener::new(),
         };
         app.reload()?;
@@ -231,6 +235,9 @@ impl App {
 
     fn reload(&mut self) -> Result<()> {
         self.tasks = tasks::list_tasks(&self.conn, &self.user_id, &self.date_str())?;
+        // Same cadence as the task list: the orchestrator writes these rows, so a
+        // badge is never more stale than the times beside it.
+        self.agent_states = crate::db::integrations::agent_states(&self.conn).unwrap_or_default();
         if self.selected >= self.tasks.len() && !self.tasks.is_empty() {
             self.selected = self.tasks.len() - 1;
         }

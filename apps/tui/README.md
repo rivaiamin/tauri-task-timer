@@ -113,3 +113,26 @@ task-timer-tui --json integration set US-2455 agent status      # clears to NULL
 
 Known groups: `jira` (`issue_key`, `status`), `git` (`branch`), `agent`
 (`status`, `session`, `attention`).
+
+### Agent badge
+
+A task carrying `agent/status` shows a badge on its daily-list row, right after
+the JIRA status, so the list answers "which ticket has an agent on it" without a
+keypress:
+
+```
+  [PSB] [Frontend]     00:42:00  To Do  ⚙running
+✓ AIMSIS-19331         03:01:12  Done   ⚙!closed
+✓ AIMSIS-19925         01:11:41  Done   ⚙closed
+```
+
+- `⚙running` (magenta) — the agent is live; `⚙closed` (grey) is history.
+- `⚙!status` (red) — `agent/attention` is `true`, i.e. Paseo's
+  `requiresAttention`: the agent needs you.
+- The status word is Paseo's own (`running`, `idle`, `closed`, `failed`), stored
+  verbatim by whoever writes the row — it is not translated here.
+- A task with no `agent/status` renders exactly as before: no badge, no empty
+  placeholder. A row holding only `agent/attention` gets no badge either.
+- Read in `reload()` — one indexed query per second for the whole day, not one
+  per task, and no network call. The `i` detail view lists every row.
+- The sprint orchestrator is the writer; see `~/.agents/skills/orchestrator`.

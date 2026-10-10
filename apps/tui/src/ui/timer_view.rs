@@ -68,6 +68,25 @@ pub fn draw(frame: &mut Frame, app: &App) {
                     format!("  {status_display}"),
                     Style::default().fg(status_color),
                 ));
+                // The agent badge sits after the JIRA status: it is about the work
+                // in flight, not the ticket's own state. A task with no agent rows
+                // adds nothing here, so the row is unchanged for every task the
+                // orchestrator is not touching.
+                if let Some(agent) = app.agent_states.get(&t.id) {
+                    if let Some(badge) = agent.badge() {
+                        let color = if agent.attention {
+                            Color::Red
+                        } else if agent.is_live() {
+                            Color::Magenta
+                        } else {
+                            Color::DarkGray
+                        };
+                        spans.push(Span::styled(
+                            format!("  ⚙{badge}"),
+                            Style::default().fg(color),
+                        ));
+                    }
+                }
                 let mut style = Style::default();
                 if t.is_running {
                     style = style.fg(Color::Green);
