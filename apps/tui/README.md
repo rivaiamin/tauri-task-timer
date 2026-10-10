@@ -84,6 +84,20 @@ Local status is written *before* the JIRA call, so the list is correct even whil
 JIRA is slow or unreachable. A hand-set status (Local OK, BLOCKED) does not
 survive these events — the timer owns the field.
 
+`status set` moves it from a shell, without touching JIRA:
+
+```bash
+task-timer-tui --json status set US-2449 "Local OK"
+task-timer-tui --json status set US-2449 41          # same thing by id
+```
+
+The status is picked from the same `JIRA_STATUSES` catalog the edit form uses, so
+an unknown value is rejected (with the accepted list) rather than written into the
+row. Only the day named by `--date` moves; the task's other days keep their own
+status. Because the timer owns the field, the next `start` / `stop` / `done` on
+that day overwrites it — this is for a driver recording where a ticket actually
+is, not for pinning a status the timer would fight.
+
 ## Integrations
 
 `task_integrations` holds the per-task key/value rows the detail view shows and

@@ -89,6 +89,11 @@ pub enum Command {
         #[command(subcommand)]
         action: IntegrationAction,
     },
+    /// Move the selected day's own status without touching JIRA.
+    Status {
+        #[command(subcommand)]
+        action: StatusAction,
+    },
     Report {
         #[arg(long, value_enum, default_value_t = ReportFormat::Markdown)]
         format: ReportFormat,
@@ -111,6 +116,19 @@ pub enum IntegrationAction {
         field: String,
         #[arg(value_name = "VALUE")]
         value: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum StatusAction {
+    /// Set the day row's `status`. Accepts a catalog id (`41`) or its label
+    /// (`Local OK`); the timer's own events still overwrite it.
+    Set {
+        #[arg(value_name = "TASK")]
+        task: String,
+        /// Catalog id or label, e.g. `41` or `Local OK`.
+        #[arg(value_name = "STATUS")]
+        status: String,
     },
 }
 
@@ -466,6 +484,40 @@ pub fn run(
                 }
             }
         }
+        Command::Status { action } => {
+            match action {
+                StatusAction::Set { task, status } => {
+                    let task = resolve_task(conn, user_id, date_iso, &task)?;
+                    // The catalog is the single source of the ids the dashboard and
+                    // JIRA use, so a typo is rejected here rather than written into
+                    // the row and rendered as a raw id everywhere downstream.
+                    let Some(status_id) = jira::resolve_status_id(&status) else {
+                        bail!(
+                            "unknown status {status:?}; expected one of: {}",
+                            jira::JIRA_STATUSES
+                                .iter()
+                                .map(|s| format!("{} ({})", s.label, s.id))
+                                .collect::<Vec<_>>()
+                                .join(", ")
+                        );
+                    };
+                    let id = task.id;
+                    let day_id = task.day_id;
+                    // Only the day row's status moves: `update_task` also writes the
+                    // identity, and this must not touch a field it was not asked to.
+                    let changed = conn.execute(
+                        "UPDATE task_days SET status = ?1, updated_at = ?2 WHERE id = ?3",
+                        rusqlite::params![status_id, now_ms(), day_id],
+                    )?;
+                    if changed == 0 {
+                        bail!("task {id} not found");
+                    }
+                    let task = db::tasks::get_task_by_day(conn, user_id, day_id)?
+                        .ok_or_else(|| anyhow::anyhow!("task {id} not found"))?;
+                    emit_task(&task, json)
+                }
+            }
+        }
         Command::Report { format } => {
             let tasks = db::tasks::list_tasks(conn, user_id, date_iso)?;
             let now = now_ms();
@@ -754,6 +806,69 @@ mod tests {
         assert!(
             err.to_string().starts_with("ambiguous label US-7: ids 1, 2"),
             "{err}"
+        );
+    }
+
+    fn day_status(conn: &Connection, day_id: i64) -> String {
+        conn.query_row(
+            "SELECT status FROM task_days WHERE id = ?1",
+            [day_id],
+            |r| r.get(0),
+        )
+        .unwrap()
+    }
+
+    fn set_status(conn: &Connection, selector: &str, status: &str) -> Result<()> {
+        run(
+            Command::Status {
+                action: StatusAction::Set {
+                    task: selector.into(),
+                    status: status.into(),
+                },
+            },
+            conn,
+            "u1",
+            "2026-09-17",
+            "parallel",
+            true,
+        )
+    }
+
+    #[test]
+    fn status_set_accepts_a_catalog_label_or_id() {
+        let conn = setup();
+        seed(&conn);
+        // The selector resolves the day named by --date, so this is day 2.
+        set_status(&conn, "US-1", "Local OK").unwrap();
+        assert_eq!(day_status(&conn, 2), "41");
+        set_status(&conn, "US-1", "51").unwrap();
+        assert_eq!(day_status(&conn, 2), "51");
+    }
+
+    #[test]
+    fn status_set_rejects_a_status_outside_the_catalog() {
+        let conn = setup();
+        seed(&conn);
+
+        let err = set_status(&conn, "US-1", "Bogus").unwrap_err();
+        let msg = err.to_string();
+        assert!(msg.contains("unknown status"), "{msg}");
+        assert!(msg.contains("Local OK (41)"), "names the accepted values: {msg}");
+        assert_eq!(day_status(&conn, 2), "todo", "nothing was written");
+    }
+
+    #[test]
+    fn status_set_moves_only_the_selected_day() {
+        let conn = setup();
+        seed(&conn);
+
+        set_status(&conn, "US-1", "Local OK").unwrap();
+
+        assert_eq!(day_status(&conn, 2), "41", "the --date day moved");
+        assert_eq!(
+            day_status(&conn, 1),
+            "todo",
+            "the task's other day is untouched"
         );
     }
 }
