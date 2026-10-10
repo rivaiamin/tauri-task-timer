@@ -351,6 +351,106 @@ pub fn create_task(
     ensure_day_row(conn, user_id, task_id, work_date)
 }
 
+/// One fetched JIRA issue, as the timer stores it.
+///
+/// The tuple shape is what `jira::fetch_issue` / `jira::search_issues` return:
+/// `(key, summary, status_name)`.
+pub type JiraIssue = (String, String, String);
+
+/// Find the task a selector names, by identity rather than by day.
+///
+/// The lookup every `integration` command and `jira ensure` share: an exact label
+/// match wins, then a `selector %` prefix (so a bare `US-2449` finds the sprint
+/// fetch's `US-2449 <summary>`), then nothing. A numeric selector is the identity
+/// id. An ambiguous match is an error, never a guess.
+///
+/// This lives here, not in the CLI, so the TUI's JIRA menu and the headless
+/// command resolve a key to the same task.
+pub fn find_task_identity(
+    conn: &Connection,
+    user_id: &str,
+    selector: &str,
+) -> Result<Option<Task>> {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        bail!("task selector is required");
+    }
+    if selector.chars().all(|c| c.is_ascii_digit()) {
+        if let Ok(id) = selector.parse::<i64>() {
+            return get_task_identity(conn, user_id, id);
+        }
+    }
+    match find_task_identities_by_label(conn, user_id, selector)?.as_slice() {
+        [] => {}
+        [task] => return Ok(Some(task.clone())),
+        rest => return Err(ambiguous_identity(selector, rest)),
+    }
+    match find_task_identities_by_label_prefix(conn, user_id, selector)?.as_slice() {
+        [] => Ok(None),
+        [task] => Ok(Some(task.clone())),
+        rest => Err(ambiguous_identity(selector, rest)),
+    }
+}
+
+fn ambiguous_identity(selector: &str, rest: &[Task]) -> anyhow::Error {
+    let ids = rest
+        .iter()
+        .map(|t| t.id.to_string())
+        .collect::<Vec<_>>()
+        .join(", ");
+    anyhow::anyhow!("ambiguous label {selector}: ids {ids} (use numeric id)")
+}
+
+/// Store a batch of fetched JIRA issues as timer tasks: the identity labelled
+/// `KEY summary`, its row for `work_date`, and the `jira/issue_key` +
+/// `jira/status` integration rows.
+///
+/// This is the one writer for both entry points — the interactive sprint
+/// picker / fetch-by-key and the headless `jira ensure` — so the label format and
+/// the integration keying cannot drift between them.
+///
+/// A ticket already in the timer is *reused*, not duplicated. A bare `US-2449`
+/// task and the fetch's `US-2449 <summary>` label are the same identity to a
+/// human, so creating a second row would split the ticket's integration rows
+/// across two ids — and the sprint runner, which resolves a key by exact label,
+/// would read the empty one. `resolve` is the same exact-then-prefix lookup the
+/// `integration` commands use, so the runner and `ensure` agree on which task a
+/// key names.
+///
+/// A task with no such identity is created (upsert on `idx_tasks_user_label`, day
+/// row on `idx_task_days_task_date`), which is what makes a repeated call
+/// idempotent. The task's own `status` column is left alone; the timer owns it.
+pub fn ingest_jira_issues(
+    conn: &Connection,
+    user_id: &str,
+    work_date: &str,
+    issues: &[JiraIssue],
+) -> Result<Vec<Task>> {
+    let mut tasks = Vec::with_capacity(issues.len());
+    for (key, summary, status) in issues {
+        // Prefer the task this key already names. An ambiguous match propagates
+        // as an error rather than falling through to a create — a third row for a
+        // key matching two is worse than refusing.
+        let existing = find_task_identity(conn, user_id, key)?;
+        let task = match existing {
+            Some(task) => ensure_day_row(conn, user_id, task.id, work_date)?,
+            None => {
+                let label = format!("{key} {summary}");
+                create_task(conn, user_id, work_date, label.trim(), Some(summary))?
+            }
+        };
+        crate::db::integrations::upsert(conn, task.id, "jira", "issue_key", Some(key))?;
+        // Kept beside the key so the detail view and the archive's integration
+        // filter can read what JIRA reported. An empty status (a fetch that
+        // returned no status) must not blank a previously stored one.
+        if !status.is_empty() {
+            crate::db::integrations::upsert(conn, task.id, "jira", "status", Some(status))?;
+        }
+        tasks.push(task);
+    }
+    Ok(tasks)
+}
+
 /// Close a running day row, committing its live seconds. Returns the delta that
 /// was added, for worklogging.
 fn stop_row(conn: &Connection, user_id: &str, row: &Task, now: i64) -> Result<i64> {

@@ -1,4 +1,4 @@
-use anyhow::{bail, Result};
+use anyhow::{bail, Context, Result};
 use chrono::NaiveDate;
 use clap::{Parser, Subcommand, ValueEnum};
 use rusqlite::Connection;
@@ -94,6 +94,11 @@ pub enum Command {
         #[command(subcommand)]
         action: StatusAction,
     },
+    /// Materialize a JIRA ticket as a timer task (see `jira ensure`).
+    Jira {
+        #[command(subcommand)]
+        action: JiraAction,
+    },
     Report {
         #[arg(long, value_enum, default_value_t = ReportFormat::Markdown)]
         format: ReportFormat,
@@ -116,6 +121,20 @@ pub enum IntegrationAction {
         field: String,
         #[arg(value_name = "VALUE")]
         value: Option<String>,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum JiraAction {
+    /// Fetch one issue by key and make sure the timer has a task for it.
+    ///
+    /// Creates the identity (labelled `KEY summary`) and today's day row if they
+    /// are missing, and refreshes the `jira/issue_key` + `jira/status`
+    /// integration rows. Idempotent: a second run duplicates nothing. Does not
+    /// start the timer — that stays the operator's or the agent hook's call.
+    Ensure {
+        #[arg(value_name = "KEY")]
+        key: String,
     },
 }
 
@@ -230,45 +249,15 @@ fn resolve_task(
 /// row is addressable: a task not worked today still has a JIRA key and still
 /// shows agent state. A numeric selector is the identity id; a label is matched
 /// across every day the task was worked. Ambiguity is possible here (unlike the
-/// day-scoped `resolve_task`) because the same label can exist on two
-/// identities, so it errors rather than guessing.
+/// day-scoped `resolve_task`), so it errors rather than guessing.
+///
+/// The lookup itself is `db::tasks::find_task_identity`, shared with
+/// `db::tasks::ingest_jira_issues` so `jira ensure` and the `integration`
+/// commands cannot disagree about which task a key names.
 fn resolve_task_identity(conn: &Connection, user_id: &str, selector: &str) -> Result<Task> {
     let selector = selector.trim();
-    if selector.is_empty() {
-        bail!("task selector is required");
-    }
-    if selector.chars().all(|c| c.is_ascii_digit()) {
-        if let Ok(id) = selector.parse::<i64>() {
-            if let Some(task) = db::tasks::get_task_identity(conn, user_id, id)? {
-                return Ok(task);
-            }
-            bail!("task {selector} not found");
-        }
-    }
-    match db::tasks::find_task_identities_by_label(conn, user_id, selector)?.as_slice() {
-        [] => {}
-        [task] => return Ok(task.clone()),
-        rest => return Err(ambiguous(selector, rest)),
-    }
-
-    // The JIRA sprint fetch labels a task `KEY summary`, so a bare key is the
-    // natural handle for it. Exact match wins above, so this only runs when no
-    // label *is* the key — a task labelled `US-1` is never shadowed by
-    // `US-1 something`.
-    match db::tasks::find_task_identities_by_label_prefix(conn, user_id, selector)?.as_slice() {
-        [] => bail!("task {selector} not found"),
-        [task] => Ok(task.clone()),
-        rest => Err(ambiguous(selector, rest)),
-    }
-}
-
-fn ambiguous(selector: &str, rest: &[Task]) -> anyhow::Error {
-    let ids = rest
-        .iter()
-        .map(|t| t.id.to_string())
-        .collect::<Vec<_>>()
-        .join(", ");
-    anyhow::anyhow!("ambiguous label {selector}: ids {ids} (use numeric id)")
+    db::tasks::find_task_identity(conn, user_id, selector)?
+        .ok_or_else(|| anyhow::anyhow!("task {selector} not found"))
 }
 
 pub fn run(
@@ -518,6 +507,20 @@ pub fn run(
                 }
             }
         }
+        Command::Jira { action } => match action {
+            JiraAction::Ensure { key } => {
+                // `fetch_issue` validates the key shape before any request, so a
+                // typo fails here rather than as a JIRA 404.
+                let issue = jira::fetch_issue(&key)
+                    .with_context(|| format!("fetch JIRA issue {key}"))?;
+                let rows = db::tasks::ingest_jira_issues(conn, user_id, date_iso, &[issue])?;
+                let task = rows
+                    .into_iter()
+                    .next()
+                    .ok_or_else(|| anyhow::anyhow!("JIRA returned no issue for {key}"))?;
+                emit_task(&task, json)
+            }
+        },
         Command::Report { format } => {
             let tasks = db::tasks::list_tasks(conn, user_id, date_iso)?;
             let now = now_ms();
@@ -597,6 +600,190 @@ mod tests {
             .into_iter()
             .map(|r| (r.group, r.field, r.value))
             .collect()
+    }
+
+    /// `jira ensure`'s write path: one identity, one day row, two `jira/*` rows.
+    fn count(conn: &Connection, sql: &str) -> i64 {
+        conn.query_row(sql, [], |r| r.get(0)).unwrap()
+    }
+
+    #[test]
+    fn ingest_creates_the_identity_the_day_row_and_the_jira_rows() {
+        let conn = setup();
+        let issues = vec![(
+            "US-1459".to_string(),
+            "Fix login".to_string(),
+            "In Progress".to_string(),
+        )];
+        let rows = db::tasks::ingest_jira_issues(&conn, "u1", "2026-09-17", &issues).unwrap();
+
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].label, "US-1459 Fix login");
+        assert_eq!(rows[0].work_date, "2026-09-17");
+        // The fetched status is cached as an integration row, and the task's own
+        // status column is left to the timer.
+        assert_eq!(
+            integration_rows(&conn),
+            vec![
+                ("jira".into(), "issue_key".into(), Some("US-1459".into())),
+                ("jira".into(), "status".into(), Some("In Progress".into())),
+            ]
+        );
+        assert_eq!(rows[0].status, "todo", "a fetch must not move the timer's status");
+        assert!(!rows[0].is_running, "a fetch must not start the timer");
+    }
+
+    /// The idempotency claim: running it twice adds no row and no duplicate, and
+    /// the stored status is refreshed in place rather than appended.
+    #[test]
+    fn ingest_twice_duplicates_nothing_and_updates_the_status_in_place() {
+        let conn = setup();
+        let first = vec![(
+            "US-1459".to_string(),
+            "Fix login".to_string(),
+            "In Progress".to_string(),
+        )];
+        let a = db::tasks::ingest_jira_issues(&conn, "u1", "2026-09-17", &first).unwrap();
+
+        let second = vec![(
+            "US-1459".to_string(),
+            "Fix login".to_string(),
+            "Local OK".to_string(),
+        )];
+        let b = db::tasks::ingest_jira_issues(&conn, "u1", "2026-09-17", &second).unwrap();
+
+        assert_eq!(a[0].id, b[0].id, "the same label must resolve to the same identity");
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tasks"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM task_days"), 1);
+        assert_eq!(
+            count(&conn, "SELECT COUNT(*) FROM task_integrations"),
+            2,
+            "a re-run must update the two rows, not append two more"
+        );
+        assert_eq!(
+            integration_rows(&conn)[1].2.as_deref(),
+            Some("Local OK"),
+            "the refreshed JIRA status replaces the stored one"
+        );
+    }
+
+    /// The same ticket worked on a second day gains a day row, not a second task
+    /// — the identity upsert is what keeps `integration set` addressable across
+    /// days.
+    #[test]
+    fn ingest_on_a_new_day_adds_a_day_row_to_the_same_identity() {
+        let conn = setup();
+        let issues = vec![(
+            "US-1459".to_string(),
+            "Fix login".to_string(),
+            "In Progress".to_string(),
+        )];
+        let a = db::tasks::ingest_jira_issues(&conn, "u1", "2026-09-17", &issues).unwrap();
+        let b = db::tasks::ingest_jira_issues(&conn, "u1", "2026-09-18", &issues).unwrap();
+
+        assert_eq!(a[0].id, b[0].id);
+        assert_eq!(b[0].work_date, "2026-09-18");
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tasks"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM task_days"), 2);
+    }
+
+    /// An issue JIRA reports without a status must not blank the status already
+    /// stored — a later fetch that omits the field is not evidence it changed.
+    #[test]
+    fn ingest_keeps_the_stored_status_when_the_fetch_reports_none() {
+        let conn = setup();
+        let with_status = vec![(
+            "US-1459".to_string(),
+            "Fix login".to_string(),
+            "In Progress".to_string(),
+        )];
+        db::tasks::ingest_jira_issues(&conn, "u1", "2026-09-17", &with_status).unwrap();
+
+        let without = vec![("US-1459".to_string(), "Fix login".to_string(), String::new())];
+        db::tasks::ingest_jira_issues(&conn, "u1", "2026-09-17", &without).unwrap();
+
+        assert_eq!(
+            integration_rows(&conn)[1].2.as_deref(),
+            Some("In Progress"),
+            "an empty fetched status must not overwrite a known one"
+        );
+    }
+
+    /// A ticket already in the timer must be reused, not duplicated. A bare
+    /// `US-2449` and the fetch's `US-2449 <summary>` are the same ticket, and
+    /// creating a second identity would split its integration rows — the sprint
+    /// runner resolves the key by exact label and would read the empty one.
+    #[test]
+    fn ingest_reuses_an_existing_bare_key_task_instead_of_creating_a_second() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO tasks (user_id, label) VALUES ('u1', 'US-2449');
+             INSERT INTO task_days (task_id, work_date) VALUES (1, '2026-09-17');",
+        )
+        .unwrap();
+
+        let issues = vec![(
+            "US-2449".to_string(),
+            "Upload survey files".to_string(),
+            "In Progress".to_string(),
+        )];
+        let rows = db::tasks::ingest_jira_issues(&conn, "u1", "2026-09-17", &issues).unwrap();
+
+        assert_eq!(rows[0].id, 1, "the existing identity must be reused");
+        assert_eq!(
+            rows[0].label, "US-2449",
+            "an existing label is the operator's, not the fetch's to rewrite"
+        );
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tasks"), 1, "no second identity");
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM task_days"), 1, "no second day row");
+        // The rows land on the identity the runner would resolve the key to.
+        assert_eq!(integration_rows(&conn)[0].2.as_deref(), Some("US-2449"));
+    }
+
+    /// The same key fetched on a later day reuses the identity and gains a day
+    /// row, so agent state stays addressable across days.
+    #[test]
+    fn ingest_reuses_the_identity_across_days() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO tasks (user_id, label) VALUES ('u1', 'US-2449');
+             INSERT INTO task_days (task_id, work_date) VALUES (1, '2026-09-16');",
+        )
+        .unwrap();
+
+        let issues = vec![(
+            "US-2449".to_string(),
+            "Upload survey files".to_string(),
+            "In Progress".to_string(),
+        )];
+        let rows = db::tasks::ingest_jira_issues(&conn, "u1", "2026-09-17", &issues).unwrap();
+
+        assert_eq!(rows[0].id, 1);
+        assert_eq!(rows[0].work_date, "2026-09-17");
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tasks"), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM task_days"), 2);
+    }
+
+    /// Two tasks matching the key prefix is ambiguous: the ingest must refuse
+    /// rather than pick one or create a third.
+    #[test]
+    fn ingest_refuses_an_ambiguous_key_rather_than_guessing() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO tasks (user_id, label) VALUES ('u1', 'US-7 alpha'), ('u1', 'US-7 beta');
+             INSERT INTO task_days (task_id, work_date) VALUES (1, '2026-09-17'), (2, '2026-09-17');",
+        )
+        .unwrap();
+
+        let issues = vec![(
+            "US-7".to_string(),
+            "Some summary".to_string(),
+            "In Progress".to_string(),
+        )];
+        let err = db::tasks::ingest_jira_issues(&conn, "u1", "2026-09-17", &issues).unwrap_err();
+
+        assert!(err.to_string().contains("ambiguous"), "got: {err}");
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tasks"), 2, "nothing may be created");
     }
 
     #[test]

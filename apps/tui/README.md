@@ -57,6 +57,30 @@ archive, or the detail view) hands `{JIRA_SITE}/browse/{KEY}` to your default
 browser. The detail view (`i`) shows the stored integration rows alongside
 comments and PR state.
 
+### `jira ensure` (headless)
+
+A sprint key that has no timer task is invisible to everything downstream: the
+sprint runner writes agent state with `integration set`, which resolves a task
+*identity*, so a ticket it has not got a task for is skipped as
+`integration-skipped reason=no-timer-task` and never gets a badge or a
+`status set`. `jira ensure` is the explicit way to create that task from a shell
+— the runner itself deliberately never creates one.
+
+```bash
+task-timer-tui --json jira ensure US-2449
+```
+
+It fetches the issue, then creates-or-reuses the task labelled `KEY summary` plus
+today's day row (or `--date`'s), and refreshes the `jira/issue_key` and
+`jira/status` integration rows. It is idempotent — a second run duplicates
+nothing — and it does **not** start the timer or move the task's status: the E6
+hooks and the operator still own that. The key is validated before any request,
+so a typo fails locally instead of as a JIRA 404.
+
+The same ingest runs when you fetch by key or run a sprint picker in the TUI
+(`Ctrl+J`); both go through `db::tasks::ingest_jira_issues`, so the label format
+and the stored rows cannot drift between the menu and the CLI.
+
 ## Status
 
 The `status` field in the edit form is picked from the JIRA catalog, not typed:

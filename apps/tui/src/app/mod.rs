@@ -1076,21 +1076,17 @@ impl App {
 
     /// Create-or-update today's tasks for a batch of JIRA issues and link each
     /// to its issue key. Reports the split so the caller can toast it.
+    ///
+    /// The rows themselves are written by `tasks::ingest_jira_issues` — the same
+    /// function `jira ensure` calls — so the label format and integration keying
+    /// have exactly one owner.
     fn ingest_jira_issues(&mut self, issues: &[(String, String, String)]) -> Result<String> {
         let today = self.date_str();
         let mut created = 0u32;
         let mut updated = 0u32;
         let user_id = self.user_id.clone();
-        for (key, summary, status) in issues {
-            let label = format!("{key} {summary}");
-            let task = tasks::create_task(&self.conn, &user_id, &today, label.trim(), Some(summary))?;
-            db::integrations::upsert(&self.conn, task.id, "jira", "issue_key", Some(key))?;
-            // The issue's own status, kept beside the key so the detail view and
-            // the archive's integration filter can read what JIRA reported. The
-            // task's `status` column stays owned by the timer, not by a fetch.
-            if !status.is_empty() {
-                db::integrations::upsert(&self.conn, task.id, "jira", "status", Some(status))?;
-            }
+        let rows = tasks::ingest_jira_issues(&self.conn, &user_id, &today, issues)?;
+        for (task, (_, summary, _)) in rows.iter().zip(issues.iter()) {
             if task.description.as_deref() == Some(summary.as_str()) && !summary.is_empty() {
                 // newly created (description matched summary = no prior desc)
                 created += 1;

@@ -286,6 +286,14 @@ Ingest writes two `task_integrations` rows per issue — `jira/issue_key` and
 `jira/status` (the status JIRA reported). The task's own `status` column is still
 owned by `auto_status`, never by a fetch.
 
+The ingest itself lives in `db::tasks::ingest_jira_issues`, and both the menu and
+the headless `jira ensure KEY` subcommand call it, so the `KEY summary` label
+format and the two integration rows have one writer. `jira ensure` is the
+operator's/prep-script's way to materialize a ticket the sprint runner would
+otherwise skip as `no-timer-task`; it is idempotent (the identity upserts on
+`idx_tasks_user_label`, the day row on `idx_task_days_task_date`) and never starts
+the timer or moves the status. The sprint runner stays read-only on tasks.
+
 The `agent` group (`status`, `session`, `attention`) is written by the sprint
 orchestrator, not by any TUI menu: it records what an agent is doing on the ticket
 so the daily list can badge it. See `erd.md` § `task_integrations` for the full
