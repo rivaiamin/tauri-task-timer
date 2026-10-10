@@ -83,3 +83,33 @@ same field.
 Local status is written *before* the JIRA call, so the list is correct even while
 JIRA is slow or unreachable. A hand-set status (Local OK, BLOCKED) does not
 survive these events — the timer owns the field.
+
+## Integrations
+
+`task_integrations` holds the per-task key/value rows the detail view shows and
+the archive filters on. `integration list` / `integration set` read and write
+them from a shell, which is how an external driver (the sprint orchestrator)
+records what an agent is doing without touching SQLite directly.
+
+```bash
+task-timer-tui --json integration list US-2455
+task-timer-tui --json integration set US-2455 jira issue_key US-2455
+task-timer-tui --json integration set US-2455 agent status running
+task-timer-tui --json integration set US-2455 agent status      # clears to NULL
+```
+
+- Rows are keyed by `(task, group, field)`, so `set` on an existing pair
+  **updates in place**; it never appends a duplicate.
+- An omitted `VALUE` writes `NULL` rather than deleting the row, so the field
+  stays addressable and the next `set` updates it.
+- The selector resolves the task **identity**, not a day: `--date` does not apply,
+  and a task whose last day was last week is still addressable. That is deliberate
+  — the rows FK to `tasks.id`, so a JIRA key or agent state does not belong to one
+  day's row. A numeric selector is the identity id; a label is matched across every
+  day worked.
+- Nothing here writes JIRA. The `jira/*` rows are the TUI's own cache of what JIRA
+  last reported (sprint fetch, transition); an external writer may set them too,
+  but the task's own `status` column is still owned by the timer.
+
+Known groups: `jira` (`issue_key`, `status`), `git` (`branch`), `agent`
+(`status`, `session`, `attention`).

@@ -83,9 +83,34 @@ pub enum Command {
         #[arg(value_name = "TASK")]
         task: String,
     },
+    /// Read and write `task_integrations` rows (the `jira` / `git` / `agent`
+    /// groups the detail view shows and the archive filters on).
+    Integration {
+        #[command(subcommand)]
+        action: IntegrationAction,
+    },
     Report {
         #[arg(long, value_enum, default_value_t = ReportFormat::Markdown)]
         format: ReportFormat,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum IntegrationAction {
+    /// Every stored row for one task, ordered by group then field.
+    List {
+        #[arg(value_name = "TASK")]
+        task: String,
+    },
+    /// Set one `(task, group, field)` row. An omitted VALUE clears the row to
+    /// NULL rather than deleting it, so the field stays addressable.
+    Set {
+        #[arg(value_name = "TASK")]
+        task: String,
+        group: String,
+        field: String,
+        #[arg(value_name = "VALUE")]
+        value: Option<String>,
     },
 }
 
@@ -168,6 +193,41 @@ fn resolve_task(
     }
     let matches = db::tasks::find_tasks_by_label(conn, user_id, date_iso, selector)?;
     match matches.as_slice() {
+        [] => bail!("task {selector} not found"),
+        [task] => Ok(task.clone()),
+        rest => {
+            let ids = rest
+                .iter()
+                .map(|t| t.id.to_string())
+                .collect::<Vec<_>>()
+                .join(", ");
+            bail!("ambiguous label {selector}: ids {ids} (use numeric id)")
+        }
+    }
+}
+
+/// Resolve a `TASK` selector to the task *identity*, not to a day.
+///
+/// Integration rows FK to the identity, so `--date` must not decide whether the
+/// row is addressable: a task not worked today still has a JIRA key and still
+/// shows agent state. A numeric selector is the identity id; a label is matched
+/// across every day the task was worked. Ambiguity is possible here (unlike the
+/// day-scoped `resolve_task`) because the same label can exist on two
+/// identities, so it errors rather than guessing.
+fn resolve_task_identity(conn: &Connection, user_id: &str, selector: &str) -> Result<Task> {
+    let selector = selector.trim();
+    if selector.is_empty() {
+        bail!("task selector is required");
+    }
+    if selector.chars().all(|c| c.is_ascii_digit()) {
+        if let Ok(id) = selector.parse::<i64>() {
+            if let Some(task) = db::tasks::get_task_identity(conn, user_id, id)? {
+                return Ok(task);
+            }
+            bail!("task {selector} not found");
+        }
+    }
+    match db::tasks::find_task_identities_by_label(conn, user_id, selector)?.as_slice() {
         [] => bail!("task {selector} not found"),
         [task] => Ok(task.clone()),
         rest => {
@@ -340,6 +400,60 @@ pub fn run(
                 Ok(())
             }
         }
+        Command::Integration { action } => {
+            match action {
+                IntegrationAction::List { task } => {
+                    let task = resolve_task_identity(conn, user_id, &task)?;
+                    let rows = db::integrations::list(conn, task.id)?;
+                    if json {
+                        emit_json(
+                            &rows
+                                .iter()
+                                .map(|r| {
+                                    serde_json::json!({
+                                        "group": r.group,
+                                        "field": r.field,
+                                        "value": r.value,
+                                    })
+                                })
+                                .collect::<Vec<_>>(),
+                        )
+                    } else {
+                        for r in &rows {
+                            println!(
+                                "{}\t{}\t{}",
+                                r.group,
+                                r.field,
+                                r.value.as_deref().unwrap_or("")
+                            );
+                        }
+                        Ok(())
+                    }
+                }
+                IntegrationAction::Set {
+                    task,
+                    group,
+                    field,
+                    value,
+                } => {
+                    let task = resolve_task_identity(conn, user_id, &task)?;
+                    // `upsert` keys on (task, group, field), so re-setting a field
+                    // updates in place — the agent's current state replaces its
+                    // last, it does not accumulate rows.
+                    db::integrations::upsert(conn, task.id, &group, &field, value.as_deref())?;
+                    if json {
+                        emit_json(&serde_json::json!({
+                            "group": group,
+                            "field": field,
+                            "value": value,
+                        }))
+                    } else {
+                        println!("set\t{}\t{}\t{}", group, field, value.as_deref().unwrap_or(""));
+                        Ok(())
+                    }
+                }
+            }
+        }
         Command::Report { format } => {
             let tasks = db::tasks::list_tasks(conn, user_id, date_iso)?;
             let now = now_ms();
@@ -358,5 +472,214 @@ pub fn run(
             println!("{text}");
             Ok(())
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    /// The schema the CLI writes against: identity + day rows + integrations,
+    /// mirroring `apps/web/drizzle`. Integration rows FK to the identity, which
+    /// is the whole point of these tests.
+    fn setup() -> Connection {
+        let conn = Connection::open_in_memory().unwrap();
+        conn.execute_batch(
+            "CREATE TABLE tasks (id INTEGER PRIMARY KEY AUTOINCREMENT, user_id TEXT NOT NULL,
+                                 label TEXT NOT NULL, description TEXT, code TEXT, link TEXT,
+                                 notes TEXT, tags TEXT, created_at INTEGER NOT NULL DEFAULT 0,
+                                 updated_at INTEGER NOT NULL DEFAULT 0);
+             CREATE UNIQUE INDEX idx_tasks_user_label ON tasks (user_id, label);
+             CREATE TABLE task_days (id INTEGER PRIMARY KEY AUTOINCREMENT, task_id INTEGER NOT NULL,
+                                     work_date TEXT NOT NULL, status TEXT NOT NULL DEFAULT 'todo',
+                                     elapsed_time INTEGER NOT NULL DEFAULT 0,
+                                     total_time INTEGER NOT NULL DEFAULT 0,
+                                     position INTEGER NOT NULL DEFAULT 0,
+                                     is_running INTEGER NOT NULL DEFAULT 0,
+                                     done INTEGER NOT NULL DEFAULT 0,
+                                     is_completed INTEGER NOT NULL DEFAULT 0,
+                                     is_cancelled INTEGER NOT NULL DEFAULT 0,
+                                     is_deleted INTEGER NOT NULL DEFAULT 0,
+                                     is_archived INTEGER NOT NULL DEFAULT 0,
+                                     is_pinned INTEGER NOT NULL DEFAULT 0,
+                                     is_important INTEGER NOT NULL DEFAULT 0,
+                                     start_time INTEGER, end_time INTEGER,
+                                     created_at INTEGER NOT NULL DEFAULT 0,
+                                     updated_at INTEGER NOT NULL DEFAULT 0);
+             CREATE UNIQUE INDEX idx_task_days_task_date ON task_days (task_id, work_date);
+             CREATE TABLE task_integrations (id INTEGER PRIMARY KEY AUTOINCREMENT,
+                                             task_id INTEGER NOT NULL, \"group\" TEXT NOT NULL,
+                                             field TEXT NOT NULL, value TEXT,
+                                             created_at INTEGER NOT NULL,
+                                             updated_at INTEGER NOT NULL);",
+        )
+        .unwrap();
+        conn
+    }
+
+    /// One identity worked on two days, the older day being the one a
+    /// date-scoped lookup would miss.
+    fn seed(conn: &Connection) {
+        conn.execute_batch(
+            "INSERT INTO tasks (user_id, label) VALUES ('u1', 'US-1');
+             INSERT INTO task_days (task_id, work_date) VALUES (1, '2026-09-01'), (1, '2026-09-17');",
+        )
+        .unwrap();
+    }
+
+    fn integration_rows(conn: &Connection) -> Vec<(String, String, Option<String>)> {
+        db::integrations::list(conn, 1)
+            .unwrap()
+            .into_iter()
+            .map(|r| (r.group, r.field, r.value))
+            .collect()
+    }
+
+    #[test]
+    fn identity_lookup_finds_a_task_not_worked_on_the_requested_date() {
+        let conn = setup();
+        seed(&conn);
+
+        // The day-scoped resolver the timer commands use cannot see this task on
+        // a date it has no row for...
+        assert!(resolve_task(&conn, "u1", "2026-10-10", "US-1").is_err());
+        // ...but integration rows belong to the identity, so this must.
+        let task = resolve_task_identity(&conn, "u1", "US-1").unwrap();
+        assert_eq!(task.id, 1);
+        assert_eq!(
+            resolve_task_identity(&conn, "u1", "1").unwrap().id,
+            1,
+            "numeric selector names the identity too"
+        );
+    }
+
+    #[test]
+    fn integration_set_upserts_one_row_per_group_and_field() {
+        let conn = setup();
+        seed(&conn);
+
+        let set = |group: &str, field: &str, value: Option<&str>| {
+            run(
+                Command::Integration {
+                    action: IntegrationAction::Set {
+                        task: "US-1".into(),
+                        group: group.into(),
+                        field: field.into(),
+                        value: value.map(str::to_string),
+                    },
+                },
+                &conn,
+                "u1",
+                "2026-10-10",
+                "parallel",
+                true,
+            )
+            .unwrap();
+        };
+
+        set("jira", "issue_key", Some("US-1"));
+        set("jira", "status", Some("To Do"));
+        set("jira", "status", Some("Local OK"));
+
+        assert_eq!(
+            integration_rows(&conn),
+            vec![
+                ("jira".into(), "issue_key".into(), Some("US-1".into())),
+                ("jira".into(), "status".into(), Some("Local OK".into())),
+            ],
+            "re-setting a field replaces its value instead of adding a row"
+        );
+    }
+
+    #[test]
+    fn clearing_a_value_keeps_the_row_addressable() {
+        let conn = setup();
+        seed(&conn);
+
+        let set = |value: Option<&str>| {
+            run(
+                Command::Integration {
+                    action: IntegrationAction::Set {
+                        task: "US-1".into(),
+                        group: "agent".into(),
+                        field: "status".into(),
+                        value: value.map(str::to_string),
+                    },
+                },
+                &conn,
+                "u1",
+                "2026-10-10",
+                "parallel",
+                true,
+            )
+            .unwrap();
+        };
+
+        set(Some("running"));
+        set(None);
+
+        assert_eq!(
+            integration_rows(&conn),
+            vec![("agent".into(), "status".into(), None)],
+            "a cleared field is still listed, so the next write updates it"
+        );
+    }
+
+    #[test]
+    fn integration_list_reads_back_what_set_wrote() {
+        let conn = setup();
+        seed(&conn);
+
+        for (group, field, value) in [("jira", "issue_key", "US-1"), ("git", "branch", "US-1-fix")] {
+            run(
+                Command::Integration {
+                    action: IntegrationAction::Set {
+                        task: "US-1".into(),
+                        group: group.into(),
+                        field: field.into(),
+                        value: Some(value.into()),
+                    },
+                },
+                &conn,
+                "u1",
+                "2026-10-10",
+                "parallel",
+                true,
+            )
+            .unwrap();
+        }
+
+        assert_eq!(
+            integration_rows(&conn),
+            vec![
+                ("git".into(), "branch".into(), Some("US-1-fix".into())),
+                ("jira".into(), "issue_key".into(), Some("US-1".into())),
+            ],
+            "list is ordered by group then field"
+        );
+    }
+
+    #[test]
+    fn an_unknown_selector_is_an_error_not_an_empty_result() {
+        let conn = setup();
+        seed(&conn);
+
+        let err = resolve_task_identity(&conn, "u1", "US-404").unwrap_err();
+        assert_eq!(err.to_string(), "task US-404 not found");
+    }
+
+    #[test]
+    fn a_label_is_scoped_to_its_own_user() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO tasks (user_id, label) VALUES ('u1', 'US-2'), ('u2', 'US-2');
+             INSERT INTO task_days (task_id, work_date) VALUES (1, '2026-09-01'), (2, '2026-09-01');",
+        )
+        .unwrap();
+
+        // The unique index is per (user_id, label), so a label can only repeat
+        // across users — which is exactly what the scoping has to guard.
+        assert_eq!(resolve_task_identity(&conn, "u1", "US-2").unwrap().id, 1);
+        assert_eq!(resolve_task_identity(&conn, "u2", "US-2").unwrap().id, 2);
     }
 }

@@ -176,6 +176,45 @@ pub fn get_task_on(
     .map_err(Into::into)
 }
 
+/// One representative day row per identity, so the shared projection still
+/// applies. `task_integrations` FKs to the task identity and not to a day, so a
+/// caller addressing a task by id or label without naming a date needs this
+/// rather than `get_task_on` — which would miss a task not worked today. Same
+/// representative-day choice as `list_archive`.
+const IDENTITY_DAY: &str =
+    "td.id = (SELECT MAX(d2.id) FROM task_days d2 WHERE d2.task_id = t.id)";
+
+/// The task identity by its own id, whatever days it was worked.
+pub fn get_task_identity(
+    conn: &Connection,
+    user_id: &str,
+    task_id: i64,
+) -> Result<Option<Task>> {
+    conn.query_row(
+        &format!("SELECT {COLS} {JOIN} WHERE t.user_id = ?1 AND t.id = ?2 AND {IDENTITY_DAY}"),
+        params![user_id, task_id],
+        map_row,
+    )
+    .optional()
+    .map_err(Into::into)
+}
+
+/// Every identity whose label matches, whatever days they were worked. Not
+/// date-scoped, so it can return more than one row for a label the user reused.
+pub fn find_task_identities_by_label(
+    conn: &Connection,
+    user_id: &str,
+    label: &str,
+) -> Result<Vec<Task>> {
+    let mut stmt = conn.prepare(&format!(
+        "SELECT {COLS} {JOIN}
+         WHERE t.user_id = ?1 AND t.label = ?2 COLLATE NOCASE AND {IDENTITY_DAY}
+         ORDER BY t.id ASC"
+    ))?;
+    let rows = stmt.query_map(params![user_id, label], map_row)?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 /// The day row by its own id — what a mutation returns after writing.
 pub fn get_task_by_day(conn: &Connection, user_id: &str, day_id: i64) -> Result<Option<Task>> {
     conn.query_row(
