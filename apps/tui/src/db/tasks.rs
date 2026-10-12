@@ -429,9 +429,49 @@ fn ambiguous_identity(selector: &str, rest: &[Task]) -> anyhow::Error {
     anyhow::anyhow!("ambiguous label {selector}: ids {ids} (use numeric id)")
 }
 
+/// Rename legacy sprint labels (`KEY summary`) to bare `KEY` with summary in
+/// `description`. Idempotent when the label is already normalized.
+pub fn normalize_legacy_jira_label(
+    conn: &Connection,
+    user_id: &str,
+    task_id: i64,
+    key: &str,
+    summary: &str,
+) -> Result<()> {
+    let current: String = conn.query_row(
+        "SELECT label FROM tasks WHERE id = ?1 AND user_id = ?2",
+        params![task_id, user_id],
+        |r| r.get(0),
+    )?;
+    if current.eq_ignore_ascii_case(key) {
+        return Ok(());
+    }
+    let prefix = format!("{key} ");
+    if !current
+        .to_ascii_uppercase()
+        .starts_with(&prefix.to_ascii_uppercase())
+    {
+        return Ok(());
+    }
+    let now = now_ms();
+    let desc = summary.trim();
+    conn.execute(
+        "UPDATE tasks SET label = ?1,
+         description = CASE
+           WHEN ?2 != '' THEN ?2
+           WHEN description IS NULL OR description = '' THEN substr(label, length(?1) + 2)
+           ELSE description
+         END,
+         updated_at = ?3
+         WHERE id = ?4 AND user_id = ?5",
+        params![key, desc, now, task_id, user_id],
+    )?;
+    Ok(())
+}
+
 /// Store a batch of fetched JIRA issues as timer tasks: the identity labelled
-/// `KEY summary`, its row for `work_date`, and the `jira/issue_key` +
-/// `jira/status` integration rows.
+/// with the bare `KEY`, summary in `description`, its row for `work_date`, and
+/// the `jira/issue_key` + `jira/status` integration rows.
 ///
 /// This is the one writer for both entry points — the interactive sprint
 /// picker / fetch-by-key and the headless `jira ensure` — so the label format and
@@ -461,11 +501,11 @@ pub fn ingest_jira_issues(
         // key matching two is worse than refusing.
         let existing = find_task_identity(conn, user_id, key)?;
         let task = match existing {
-            Some(task) => ensure_day_row(conn, user_id, task.id, work_date)?,
-            None => {
-                let label = format!("{key} {summary}");
-                create_task(conn, user_id, work_date, label.trim(), Some(summary))?
+            Some(task) => {
+                normalize_legacy_jira_label(conn, user_id, task.id, key, summary)?;
+                ensure_day_row(conn, user_id, task.id, work_date)?
             }
+            None => create_task(conn, user_id, work_date, key, Some(summary))?,
         };
         crate::db::integrations::upsert(conn, task.id, "jira", "issue_key", Some(key))?;
         // Kept beside the key so the detail view and the archive's integration

@@ -128,10 +128,9 @@ pub enum IntegrationAction {
 pub enum JiraAction {
     /// Fetch one issue by key and make sure the timer has a task for it.
     ///
-    /// Creates the identity (labelled `KEY summary`) and today's day row if they
-    /// are missing, and refreshes the `jira/issue_key` + `jira/status`
-    /// integration rows. Idempotent: a second run duplicates nothing. Does not
-    /// start the timer — that stays the operator's or the agent hook's call.
+    /// Creates the identity (labelled `KEY`, summary in description) and today's
+    /// day row if missing, plus `jira/issue_key` and `jira/status` rows.
+    /// Idempotent. Does not start the timer.
     Ensure {
         #[arg(value_name = "KEY")]
         key: String,
@@ -230,7 +229,14 @@ fn resolve_task(
     }
     let matches = db::tasks::find_tasks_by_label(conn, user_id, date_iso, selector)?;
     match matches.as_slice() {
-        [] => bail!("task {selector} not found"),
+        [] => {
+            // Bare JIRA keys must reach legacy `KEY summary` rows on this day —
+            // same rules as `integration` / `jira ensure` (orchestrator, work-start).
+            let identity = db::tasks::find_task_identity(conn, user_id, selector)?
+                .ok_or_else(|| anyhow::anyhow!("task {selector} not found"))?;
+            db::tasks::get_task_on(conn, user_id, identity.id, date_iso)?
+                .ok_or_else(|| anyhow::anyhow!("task {selector} is not worked on {date_iso}"))
+        }
         [task] => Ok(task.clone()),
         rest => {
             let ids = rest
@@ -618,7 +624,8 @@ mod tests {
         let rows = db::tasks::ingest_jira_issues(&conn, "u1", "2026-09-17", &issues).unwrap();
 
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].label, "US-1459 Fix login");
+        assert_eq!(rows[0].label, "US-1459");
+        assert_eq!(rows[0].description.as_deref(), Some("Fix login"));
         assert_eq!(rows[0].work_date, "2026-09-17");
         // The fetched status is cached as an integration row, and the task's own
         // status column is left to the timer.
@@ -732,12 +739,32 @@ mod tests {
         assert_eq!(rows[0].id, 1, "the existing identity must be reused");
         assert_eq!(
             rows[0].label, "US-2449",
-            "an existing label is the operator's, not the fetch's to rewrite"
+            "an existing bare-key label is left alone"
         );
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM tasks"), 1, "no second identity");
         assert_eq!(count(&conn, "SELECT COUNT(*) FROM task_days"), 1, "no second day row");
         // The rows land on the identity the runner would resolve the key to.
         assert_eq!(integration_rows(&conn)[0].2.as_deref(), Some("US-2449"));
+    }
+
+    #[test]
+    fn ingest_normalizes_a_legacy_key_summary_label_on_reuse() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO tasks (user_id, label) VALUES ('u1', 'US-2511 Old combined title');
+             INSERT INTO task_days (task_id, work_date) VALUES (1, '2026-10-12');",
+        )
+        .unwrap();
+
+        let issues = vec![(
+            "US-2511".to_string(),
+            "Fresh summary from JIRA".to_string(),
+            "To Do".to_string(),
+        )];
+        let rows = db::tasks::ingest_jira_issues(&conn, "u1", "2026-10-12", &issues).unwrap();
+
+        assert_eq!(rows[0].label, "US-2511");
+        assert_eq!(rows[0].description.as_deref(), Some("Fresh summary from JIRA"));
     }
 
     /// The same key fetched on a later day reuses the identity and gains a day
@@ -946,6 +973,11 @@ mod tests {
         .unwrap();
 
         assert_eq!(resolve_task_identity(&conn, "u1", "US-7").unwrap().id, 1);
+        assert_eq!(
+            resolve_task(&conn, "u1", "2026-09-01", "US-7").unwrap().id,
+            1,
+            "start/show must resolve bare keys on the requested day too"
+        );
     }
 
     #[test]

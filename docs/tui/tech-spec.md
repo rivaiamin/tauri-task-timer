@@ -287,8 +287,8 @@ Ingest writes two `task_integrations` rows per issue — `jira/issue_key` and
 owned by `auto_status`, never by a fetch.
 
 The ingest itself lives in `db::tasks::ingest_jira_issues`, and both the menu and
-the headless `jira ensure KEY` subcommand call it, so the `KEY summary` label
-format and the two integration rows have one writer. `jira ensure` is the
+the headless `jira ensure KEY` subcommand call it, so the bare-`KEY` label
+(summary in `description`) and the two integration rows have one writer. `jira ensure` is the
 operator's/prep-script's way to materialize a ticket the sprint runner would
 otherwise skip as `no-timer-task`; it is idempotent (the identity upserts on
 `idx_tasks_user_label`, the day row on `idx_task_days_task_date`) and never starts
