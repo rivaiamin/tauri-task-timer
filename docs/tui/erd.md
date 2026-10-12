@@ -134,7 +134,9 @@ erDiagram
 | jira | status | "In Progress" | TUI sprint sync (what JIRA reported) |
 | gcp | error_group | projects/.../groups/... | — |
 | bitbucket | pr_id | 42 | — |
-| git | branch | US-1459-fix | TUI git menu (`Ctrl+B`) |
+| git | branch | feat/US-1459-fix-login | TUI git menu (`Ctrl+B`), `work-start` / `work-resume` |
+| git | checkout | /var/www/aimsis/psb/frontend | `work-timer-sync.sh`, orchestrator dispatch |
+| paseo | workspace_id | wks_abc123… | orchestrator after `paseo run` |
 | agent | status | running | sprint orchestrator |
 | agent | session | 79ddc960-… | sprint orchestrator |
 | agent | attention | true | sprint orchestrator |
@@ -154,8 +156,11 @@ can badge it (`apps/tui/README.md` § Agent badge). All three fields are written
   known, so an update that lacks it leaves the previous value alone.
 
 Rows are keyed by `(task_id, group, field)`, so a writer updates in place rather
-than appending. Nothing outside the orchestrator writes the `agent` group, and the
-orchestrator writes no other group — that is the whole contract.
+than appending. The orchestrator writes `agent/*` and, after dispatch, `git/checkout`,
+`git/branch`, and `paseo/workspace_id`. Prep scripts set `git/*` via
+`~/.agents/bin/work-timer-sync.sh`. Learned checkout paths and Paseo workspace ids
+are also merged into `~/.agents/data/jira-repo-bindings.json` (`repoPath`,
+`paseoWorkspaceId`, `branch`).
 
 `agent/*` is also writable through the existing REST route
 (`PATCH /api/tasks/:id/integrations`, `docs/api.md`), but the orchestrator does not

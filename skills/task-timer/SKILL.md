@@ -99,3 +99,15 @@ that did not move is therefore visible, not inferred:
 - JIRA unreachable or rejecting the call → warning with the reason.
 
 Never treat exit 0 as proof the JIRA status moved; check for `JIRA WARNING` too.
+
+## Integrations (shipping context)
+
+```bash
+task-timer-tui --json integration set US-2092 git checkout /path/to/repo
+task-timer-tui --json integration set US-2092 git branch feat/US-2092-slug
+task-timer-tui --json integration set US-2092 paseo workspace_id wks_…
+task-timer-tui --json integration list US-2092
+```
+
+`work-start` / `work-resume` call `work-timer-sync.sh` to set `git/checkout` and `git/branch`.
+The orchestrator sets those plus `paseo/workspace_id` after each Paseo dispatch.
