@@ -702,24 +702,32 @@ impl App {
                 Some(final_description.as_str())
             };
             let date = self.date_str();
+            // Re-adding a label already worked today returns that day's row
+            // (`create_task`'s contract). The blank create form must not run
+            // its defaults over it: `elapsed_seconds: Some(0)` zeroes the
+            // stored time and rebases a running timer, and the flags would
+            // clear pinned/important.
+            let prior = tasks::day_row_for_label(&self.conn, &self.user_id, &date, &label)?;
             let created = tasks::create_task(&self.conn, &self.user_id, &date, &label, desc)?;
-            // `create_task` only knows label and description, so everything else
-            // the form collected — including the link and the flags — lands here.
-            // It writes the day row the create just made.
-            tasks::update_task(
-                &self.conn,
-                &self.user_id,
-                created.day_id,
-                tasks::TaskPatch {
-                    elapsed_seconds: Some(elapsed_secs),
-                    code: code_opt,
-                    status: status_opt,
-                    notes: notes_opt,
-                    tags: tags_opt,
-                    link: link_opt,
-                    ..flags
-                },
-            )?;
+            if prior.is_none() {
+                // `create_task` only knows label and description, so everything else
+                // the form collected — including the link and the flags — lands here.
+                // It writes the day row the create just made.
+                tasks::update_task(
+                    &self.conn,
+                    &self.user_id,
+                    created.day_id,
+                    tasks::TaskPatch {
+                        elapsed_seconds: Some(elapsed_secs),
+                        code: code_opt,
+                        status: status_opt,
+                        notes: notes_opt,
+                        tags: tags_opt,
+                        link: link_opt,
+                        ..flags
+                    },
+                )?;
+            }
             self.reload()?;
             if let Some(i) = self.tasks.iter().position(|t| t.id == created.id) {
                 self.selected = i;
@@ -2333,6 +2341,46 @@ mod tests {
         assert_eq!(stored.status, "21");
         assert_eq!(stored.tags.as_deref(), Some("backend"));
         assert!(!stored.is_archived);
+    }
+
+    /// Re-adding today's label used to run the blank create form's defaults
+    /// over the existing day row, zeroing its accumulated time and flags.
+    #[test]
+    fn readding_a_task_today_keeps_its_time_and_flags() {
+        let mut app = test_app();
+        let t = tasks::create_task(&app.conn, "u1", "2026-09-17", "US-9", None).unwrap();
+        app.conn
+            .execute(
+                "UPDATE task_days SET elapsed_time = 1800, is_pinned = 1 WHERE id = ?1",
+                [t.day_id],
+            )
+            .unwrap();
+        app.reload().unwrap();
+        app.overlay = Overlay::Form {
+            edit_day_id: None,
+            field: Field::Label,
+            label: "US-9".into(),
+            description: String::new(),
+            elapsed: "00:00:00".into(),
+            status: String::new(),
+            code: String::new(),
+            notes: String::new(),
+            tags: String::new(),
+            link: String::new(),
+            is_pinned: false,
+            is_important: false,
+            is_archived: false,
+            is_cancelled: false,
+            is_deleted: false,
+            is_completed: false,
+            status_pick: None,
+        };
+        app.submit_form().unwrap();
+
+        assert_eq!(app.tasks.len(), 1, "re-adding must not duplicate the task");
+        let stored = &app.tasks[0];
+        assert_eq!(stored.elapsed_time, 1800, "the accumulated time must survive");
+        assert!(stored.is_pinned, "the blank form's flags must not clear the row");
     }
 
     /// `C` opens the list and `n` writes a row through to `task_comments`.

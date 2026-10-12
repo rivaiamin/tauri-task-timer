@@ -351,6 +351,34 @@ pub fn create_task(
     ensure_day_row(conn, user_id, task_id, work_date)
 }
 
+/// The day row this label already has for `work_date`, if any.
+///
+/// The same exact-label lookup `create_task` does, so a caller that patches the
+/// row `create_task` returns can tell "created" from "reused" and leave a
+/// reused row's timer and flags alone.
+pub fn day_row_for_label(
+    conn: &Connection,
+    user_id: &str,
+    work_date: &str,
+    label: &str,
+) -> Result<Option<Task>> {
+    let label = label.trim();
+    if label.is_empty() {
+        return Ok(None);
+    }
+    let Some(task_id) = conn
+        .query_row(
+            "SELECT id FROM tasks WHERE user_id = ?1 AND label = ?2",
+            params![user_id, label],
+            |r| r.get(0),
+        )
+        .optional()?
+    else {
+        return Ok(None);
+    };
+    get_task_on(conn, user_id, task_id, work_date)
+}
+
 /// One fetched JIRA issue, as the timer stores it.
 ///
 /// The tuple shape is what `jira::fetch_issue` / `jira::search_issues` return:
