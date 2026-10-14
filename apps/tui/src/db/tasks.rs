@@ -658,7 +658,7 @@ pub fn update_task(
         is_deleted,
         is_completed,
     } = patch;
-    let Some(row) = get_task_by_day(conn, user_id, day_id)? else {
+    let Some(mut row) = get_task_by_day(conn, user_id, day_id)? else {
         return Ok(None);
     };
     if let Some(s) = elapsed_seconds {
@@ -669,10 +669,11 @@ pub fn update_task(
     let now = now_ms();
 
     // --- task identity -------------------------------------------------------
-    let new_label = label
+    let new_label: String = label
         .map(str::trim)
         .filter(|s| !s.is_empty())
-        .unwrap_or(&row.label);
+        .map(str::to_string)
+        .unwrap_or_else(|| row.label.clone());
     // A blank description clears it; an absent one leaves it.
     let new_desc = match description {
         Some(d) => Some(d.trim().to_string()).filter(|s| !s.is_empty()),
@@ -683,6 +684,43 @@ pub fn update_task(
     let new_tags = tags.map(str::trim).filter(|s| !s.is_empty()).map(str::to_string);
     // An empty link clears the column rather than storing whitespace.
     let new_link = link.map(|s| s.trim().to_string()).filter(|s| !s.is_empty());
+
+    // A rename onto a title the user already owns on ANOTHER day continues that
+    // task instead of failing: this day's row links to the existing identity and
+    // the renamed identity goes away — the same link `create_task` makes when a
+    // label returns on a new day, timer and all. The same day is still a
+    // duplicate: one task cannot hold two rows for one date. Only a supplied
+    // label can collide; a patch without one keeps its own identity.
+    let renamed = label.is_some_and(|l| !l.trim().is_empty());
+    let mut merged = false;
+    if renamed {
+        // `ORDER BY id` pins the pick when legacy case-variant identities both
+        // match; the exact-case index makes exact duplicates impossible.
+        let target: Option<i64> = conn
+            .query_row(
+                "SELECT id FROM tasks WHERE user_id = ?1 AND label = ?2 COLLATE NOCASE AND id != ?3
+                 ORDER BY id ASC",
+                params![user_id, new_label, row.id],
+                |r| r.get(0),
+            )
+            .optional()?;
+        if let Some(target) = target {
+            let same_day: Option<i64> = conn
+                .query_row(
+                    "SELECT id FROM task_days WHERE task_id = ?1 AND work_date = ?2",
+                    params![target, row.work_date],
+                    |r| r.get(0),
+                )
+                .optional()?;
+            if same_day.is_some() {
+                bail!("a task with that title already exists");
+            }
+            merge_identities(conn, user_id, target, row.id)?;
+            row = get_task_by_day(conn, user_id, day_id)?
+                .ok_or_else(|| anyhow::anyhow!("task vanished after merge"))?;
+            merged = true;
+        }
+    }
 
     // --- the day -------------------------------------------------------------
     let new_elapsed = elapsed_seconds.unwrap_or(row.elapsed_time);
@@ -734,6 +772,11 @@ pub fn update_task(
         Err(e) => Err(e),
     };
     let id_res = day_res.and_then(|_| {
+        if merged {
+            // The merged task keeps its own identity fields: the rename only
+            // links the day, it does not rewrite what the task already says.
+            return Ok(());
+        }
         tx.execute(
             "UPDATE tasks SET label = ?1, description = ?2, code = ?3, notes = ?4, tags = ?5,
              link = ?6, updated_at = ?7
@@ -765,6 +808,53 @@ pub fn update_task(
             Err(e.into())
         }
     }
+}
+
+/// Link everything `source_id` owns to `target_id` and delete the source
+/// identity. The caller guarantees the two share no work date — the day rows
+/// move wholesale, and `idx_task_days_task_date` would reject a date both have.
+/// The target's identity fields win; the source's description fills the
+/// target's only when the target has none, the same rule `create_task` uses.
+fn merge_identities(
+    conn: &Connection,
+    user_id: &str,
+    target_id: i64,
+    source_id: i64,
+) -> Result<()> {
+    let now = now_ms();
+    let tx = conn.unchecked_transaction()?;
+    tx.execute(
+        "UPDATE task_days SET task_id = ?1, updated_at = ?2 WHERE task_id = ?3",
+        params![target_id, now, source_id],
+    )?;
+    // Integrations are unique per (task, group, field) in code, not in the
+    // schema, so a key the target already holds keeps the target's value.
+    tx.execute(
+        "DELETE FROM task_integrations WHERE task_id = ?2
+         AND (\"group\", field) IN
+             (SELECT \"group\", field FROM task_integrations WHERE task_id = ?1)",
+        params![target_id, source_id],
+    )?;
+    tx.execute(
+        "UPDATE task_integrations SET task_id = ?1, updated_at = ?2 WHERE task_id = ?3",
+        params![target_id, now, source_id],
+    )?;
+    tx.execute(
+        "UPDATE task_comments SET task_id = ?1 WHERE task_id = ?2",
+        params![target_id, source_id],
+    )?;
+    tx.execute(
+        "UPDATE tasks SET description = (SELECT description FROM tasks WHERE id = ?2),
+         updated_at = ?3
+         WHERE id = ?1 AND (description IS NULL OR description = '')",
+        params![target_id, source_id, now],
+    )?;
+    tx.execute(
+        "DELETE FROM tasks WHERE id = ?1 AND user_id = ?2",
+        params![source_id, user_id],
+    )?;
+    tx.commit()?;
+    Ok(())
 }
 
 /// Set the `done` flag on one day. If becoming done while that day is running,
@@ -1032,6 +1122,15 @@ mod tests {
                value TEXT,
                created_at INTEGER NOT NULL,
                updated_at INTEGER NOT NULL
+             );
+             CREATE TABLE task_comments (
+               id INTEGER PRIMARY KEY AUTOINCREMENT,
+               task_id INTEGER NOT NULL,
+               subject TEXT,
+               summary TEXT,
+               branch TEXT,
+               pr TEXT,
+               created_at INTEGER NOT NULL
              );
              INSERT INTO users VALUES ('u1', 'a@b.c', 'x', 0);",
         )
@@ -1508,6 +1607,86 @@ mod tests {
         );
         // The rejected rename changed nothing.
         assert_eq!(list_tasks(&conn, "u1", "2026-09-17").unwrap()[0].label, "Taken");
+    }
+
+    /// A rename onto a title owned on ANOTHER day continues that task: the
+    /// renamed day links to the existing identity, its timer included, and the
+    /// duplicate identity is gone. Same-day stays a duplicate (the test above).
+    #[test]
+    fn renaming_onto_a_label_from_another_day_links_the_task() {
+        let conn = setup();
+        let a = create_task(&conn, "u1", "2026-09-17", "Alpha", Some("keep me")).unwrap();
+        let b = create_task(&conn, "u1", "2026-09-18", "Beta", Some("mine")).unwrap();
+        update_task(
+            &conn,
+            "u1",
+            b.day_id,
+            TaskPatch {
+                elapsed_seconds: Some(90),
+                ..Default::default()
+            },
+        )
+        .unwrap();
+        crate::db::integrations::upsert(&conn, a.id, "jira", "issue_key", Some("US-1")).unwrap();
+        crate::db::integrations::upsert(&conn, b.id, "jira", "issue_key", Some("US-2")).unwrap();
+
+        let merged = update_task(
+            &conn,
+            "u1",
+            b.day_id,
+            TaskPatch {
+                label: Some("Alpha"),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+
+        // One identity, both days, the renamed day's time kept.
+        assert_eq!(merged.id, a.id);
+        assert_eq!(merged.day_id, b.day_id);
+        assert_eq!(merged.elapsed_time, 90);
+        assert_eq!(merged.description.as_deref(), Some("keep me"));
+        let on_17 = list_tasks(&conn, "u1", "2026-09-17").unwrap();
+        assert_eq!(on_17.len(), 1);
+        assert_eq!(on_17[0].id, a.id);
+        let on_18 = list_tasks(&conn, "u1", "2026-09-18").unwrap();
+        assert_eq!(on_18.len(), 1);
+        assert_eq!(on_18[0].id, a.id);
+        assert_eq!(on_18[0].elapsed_time, 90);
+        assert!(get_task_identity(&conn, "u1", b.id).unwrap().is_none());
+
+        // The target's integration row wins; the source's row is dropped, not
+        // left orphaned on a deleted identity.
+        let keys: Vec<String> = {
+            let mut stmt = conn
+                .prepare(
+                    "SELECT value FROM task_integrations
+                     WHERE task_id = ?1 AND \"group\" = 'jira' AND field = 'issue_key'",
+                )
+                .unwrap();
+            let rows = stmt.query_map([a.id], |r| r.get::<_, String>(0)).unwrap();
+            rows.collect::<rusqlite::Result<Vec<_>>>().unwrap()
+        };
+        assert_eq!(keys, vec!["US-1".to_string()]);
+
+        // An empty target description is filled from the source, the same rule
+        // `create_task` applies.
+        let c = create_task(&conn, "u1", "2026-09-17", "Gamma", None).unwrap();
+        let d = create_task(&conn, "u1", "2026-09-18", "Delta", Some("delta desc")).unwrap();
+        update_task(
+            &conn,
+            "u1",
+            d.day_id,
+            TaskPatch {
+                label: Some("Gamma"),
+                ..Default::default()
+            },
+        )
+        .unwrap()
+        .unwrap();
+        let gamma = get_task_identity(&conn, "u1", c.id).unwrap().unwrap();
+        assert_eq!(gamma.description.as_deref(), Some("delta desc"));
     }
 
     #[test]

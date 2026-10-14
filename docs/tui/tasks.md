@@ -17,6 +17,7 @@ Update when shipping epics. Each section names **all apps** so web/MCP are not s
 
 - [x] Cargo workspace + crate scaffold
 - [x] `config.rs`, `db/`, `timer.rs`, `app/`, `ui/`
+- [x] Rename onto a label owned on another day links the day to that task (merge: day rows/integrations/comments move, source identity deleted); a same-day rename stays a duplicate error
 - [x] Port taskService timer ops to `db/tasks.rs`
 - [x] Keymap + `?` help + modals
 - [x] Export markdown report (`report.rs`, `x` key, clipboard)
