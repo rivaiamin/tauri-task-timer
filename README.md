@@ -138,6 +138,16 @@ pnpm --filter sv-task-timer db:migrate
 pnpm dev:tui
 ```
 
+Export the configured database and TUI config into a private timestamped folder:
+
+```bash
+make export-task-timer
+```
+
+Override the config path or destination with `TASK_TIMER_CONFIG=...` and
+`EXPORT_DIR=...`. The export uses SQLite's online backup API and requires Python
+3.11 or newer.
+
 See [`apps/tui/README.md`](apps/tui/README.md).
 
 ## Build
