@@ -63,7 +63,7 @@ function verifyParity() {
     console.error(webTest.stdout, webTest.stderr);
     process.exit(1);
   }
-  if (!/Tests\s+1 passed/.test(webTest.stdout + webTest.stderr)) {
+  if (!/Tests\s+6 passed/.test(webTest.stdout + webTest.stderr)) {
     console.error("web kanban test did not pass");
     process.exit(1);
   }
