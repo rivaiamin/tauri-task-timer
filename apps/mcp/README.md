@@ -105,6 +105,18 @@ before exposing it publicly (the default bind is loopback only).
 | `upsert_integration` | Create or update an integration field on a task (e.g. JIRA sprint, Bitbucket branch) |
 | `list_integrations` | List all integration fields on a task |
 
+### Kanban (E8)
+
+| Tool | Description |
+|------|-------------|
+| `kanban_list` | List Jira-linked non-Done cards (`GET /api/kanban/cards`; `date` or `workDate` query) |
+| `kanban_refresh` | Re-fetch Jira statuses for linked keys (`POST /api/kanban/refresh`) |
+| `kanban_pull` | Ingest open-sprint assignee issues (`POST /api/kanban/pull`; optional `workDate`) |
+
+**Pull response:** `ingested` and `issuesProcessed` are the same: issues returned by the sprint JQL and run through ingest, including idempotent re-pulls — not a count of newly created tasks.
+
+**Retries:** `kanban_pull` and `kanban_refresh` are safe to repeat on the DB but hit Jira every time. Do not retry `POST /api/kanban/pipeline` without checking side effects in the external pipeline tools.
+
 ### Settings
 
 | Tool | Description |

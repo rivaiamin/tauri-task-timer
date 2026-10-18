@@ -313,6 +313,41 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
     ({ format }) => api(`/report?format=${format ?? 'markdown'}`)
   );
 
+
+  tool(
+    'kanban_list',
+    {
+      title: 'Kanban list',
+      description:
+        'List Jira-linked timer tasks on the Kanban board (non-Done). `workDate` and `date` are aliases (ISO YYYY-MM-DD).',
+      inputSchema: {
+        date: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional(),
+        workDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+      }
+    },
+    ({ date, workDate }) => {
+      const d = workDate ?? date;
+      const qs = d ? `?workDate=${d}` : '';
+      return api(`/kanban/cards${qs}`);
+    }
+  );
+
+  tool(
+    'kanban_refresh',
+    { title: 'Kanban refresh', description: 'Re-fetch Jira status for linked issue keys.' },
+    () => api('/kanban/refresh', 'POST', {})
+  );
+
+  tool(
+    'kanban_pull',
+    {
+      title: 'Kanban pull sprint',
+      description: 'Ingest open-sprint assignee issues for monitor projects.',
+      inputSchema: { workDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional() }
+    },
+    ({ workDate }) => api('/kanban/pull', 'POST', workDate ? { workDate } : {})
+  );
+
   // E6 — Session lifecycle tools
   tool(
     'session_start',
