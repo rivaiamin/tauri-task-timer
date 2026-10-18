@@ -135,6 +135,14 @@ function getOwnedTask(userId: string, taskId: number): Task | undefined {
     .get();
 }
 
+/** Task DTO for a work date after ingest/ensure (day row must exist). */
+export function getTaskDtoForWorkDate(userId: string, taskId: number, workDate: string): TaskDTO | undefined {
+  const task = getOwnedTask(userId, taskId);
+  if (!task) return undefined;
+  const day = getDay(taskId, workDate);
+  return toDTO(task, day ?? null);
+}
+
 /** Every identity the user owns, keyed by id — one query for the batch helpers. */
 function ownedTasksById(userId: string): Map<number, Task> {
   const rows = db.select().from(tasks).where(eq(tasks.userId, userId)).all();

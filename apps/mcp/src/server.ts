@@ -348,6 +348,21 @@ export function createServer(baseUrl: string, apiKey: string): McpServer {
     ({ workDate }) => api('/kanban/pull', 'POST', workDate ? { workDate } : {})
   );
 
+  tool(
+    'jira_ensure',
+    {
+      title: 'Jira ensure issue',
+      description:
+        'Fetch a Jira issue by key and materialize it as a timer task (same as TUI `jira ensure`).',
+      inputSchema: {
+        issueKey: z.string().min(1).describe('Jira issue key, e.g. US-1459'),
+        workDate: z.string().regex(/^\d{4}-\d{2}-\d{2}$/).optional()
+      }
+    },
+    ({ issueKey, workDate }) =>
+      api('/jira/ensure', 'POST', workDate ? { issueKey, workDate } : { issueKey })
+  );
+
   // E6 — Session lifecycle tools
   tool(
     'session_start',

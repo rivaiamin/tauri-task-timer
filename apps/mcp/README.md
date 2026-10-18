@@ -104,6 +104,7 @@ before exposing it publicly (the default bind is loopback only).
 |------|-------------|
 | `upsert_integration` | Create or update an integration field on a task (e.g. JIRA sprint, Bitbucket branch) |
 | `list_integrations` | List all integration fields on a task |
+| `jira_ensure` | Fetch a Jira issue by key and materialize it as a task (`POST /api/jira/ensure`; optional `workDate`) |
 
 ### Kanban (E8)
 
