@@ -36,6 +36,7 @@ pub enum Field {
 pub enum AppMode {
     Daily,
     Archive,
+    Kanban,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -44,6 +45,12 @@ pub enum ArchiveInput {
     Tag,
     Status,
     Integration,
+}
+
+pub struct KanbanState {
+    pub cards: Vec<tasks::KanbanCard>,
+    pub projects: Vec<String>,
+    pub selected: usize,
 }
 
 pub struct ArchiveState {
@@ -132,6 +139,9 @@ pub struct App {
     pub timer_mode: String,
     pub mode: AppMode,
     pub archive: ArchiveState,
+    pub kanban: KanbanState,
+    pub jira_monitor_projects: Vec<String>,
+    pub jira_pipelines: Option<crate::config::JiraPipelinesConfig>,
     pub overlay: Overlay,
     pub status: String,
     status_until: Option<Instant>,
@@ -162,6 +172,8 @@ pub struct AppConfig {
     pub git_repo_path: Option<std::path::PathBuf>,
     pub bitbucket_workspace: Option<String>,
     pub bitbucket_repo: Option<String>,
+    pub jira_monitor_projects: Vec<String>,
+    pub jira_pipelines: Option<crate::config::JiraPipelinesConfig>,
 }
 
 impl App {
@@ -176,6 +188,8 @@ impl App {
             git_repo_path,
             bitbucket_workspace,
             bitbucket_repo,
+            jira_monitor_projects,
+            jira_pipelines,
         } = cfg;
         let mut app = Self {
             conn,
@@ -202,6 +216,13 @@ impl App {
             git_repo_path,
             bitbucket_workspace,
             bitbucket_repo,
+            kanban: KanbanState {
+                cards: Vec::new(),
+                projects: jira_monitor_projects.clone(),
+                selected: 0,
+            },
+            jira_monitor_projects,
+            jira_pipelines,
             agent_states: std::collections::HashMap::new(),
             hook_listener: crate::hooks::HookListener::new(),
         };
@@ -255,10 +276,10 @@ impl App {
     /// their own list, so anything opened from a key press must resolve through
     /// the mode rather than assuming the daily list.
     pub fn focused_task(&self) -> Option<&Task> {
-        if self.mode == AppMode::Archive {
-            self.archive_selected_task()
-        } else {
-            self.selected_task()
+        match self.mode {
+            AppMode::Archive => self.archive_selected_task(),
+            AppMode::Kanban => None,
+            AppMode::Daily => self.selected_task(),
         }
     }
 
@@ -288,8 +309,76 @@ impl App {
         Ok(())
     }
 
+
+    fn reload_kanban(&mut self) -> Result<()> {
+        let today = self.date_str();
+        self.kanban.cards = tasks::list_kanban_cards(&self.conn, &self.user_id, &today)?;
+        if self.kanban.selected >= self.kanban.cards.len() && !self.kanban.cards.is_empty() {
+            self.kanban.selected = self.kanban.cards.len() - 1;
+        }
+        if self.kanban.cards.is_empty() {
+            self.kanban.selected = 0;
+        }
+        Ok(())
+    }
+
+    fn enter_kanban(&mut self) -> Result<()> {
+        self.mode = AppMode::Kanban;
+        self.overlay = Overlay::None;
+        self.reload_kanban()?;
+        Ok(())
+    }
+
+    fn kanban_refresh(&mut self) -> Result<()> {
+        let (_, warnings) = tasks::refresh_jira_statuses(&self.conn, &self.user_id)?;
+        self.reload_kanban()?;
+        if warnings.is_empty() {
+            self.set_status("kanban: refreshed jira status");
+        } else {
+            self.set_status(format!("kanban: refreshed ({})", warnings.len()));
+        }
+        Ok(())
+    }
+
+
+    fn kanban_stub_config(&self) -> crate::config::Config {
+        crate::config::Config {
+            database_path: String::new(),
+            user_email: String::new(),
+            timer_mode: None,
+            jira_board: None,
+            jira_sprint_id: None,
+            jira_monitor_projects: Some(self.jira_monitor_projects.clone()),
+            jira_pipelines: self.jira_pipelines.clone(),
+            bitbucket_workspace: None,
+            bitbucket_repo: None,
+            git_repo_path: None,
+        }
+    }
+
+    fn kanban_pipeline_local_ok(&mut self) -> Result<()> {
+        let cfg = self.kanban_stub_config();
+        match crate::kanban::run_local_ok_pr_sync(&cfg, &self.jira_monitor_projects, true, false) {
+            Ok(_) => self.set_status("kanban: local-ok dry-run ok"),
+            Err(e) => self.set_status(format!("kanban pipeline: {e:#}")),
+        }
+        Ok(())
+    }
+
+    fn kanban_pull(&mut self) -> Result<()> {
+        let report = crate::kanban::kanban_pull_sprint(
+            &self.conn,
+            &self.user_id,
+            &self.date_str(),
+            &self.jira_monitor_projects,
+        )?;
+        self.reload_kanban()?;
+        self.set_status(format!("kanban: pulled {} issue(s)", report.ingested));
+        Ok(())
+    }
+
     fn toggle_archive(&mut self) -> Result<()> {
-        if self.mode == AppMode::Archive {
+        if self.mode == AppMode::Archive || self.mode == AppMode::Kanban {
             self.mode = AppMode::Daily;
             self.reload()?;
         } else {
@@ -1808,9 +1897,47 @@ impl App {
             }
             return Ok(false);
         }
+
+        if self.mode == AppMode::Kanban {
+            match key.code {
+                KeyCode::Char('q') | KeyCode::Char('a') | KeyCode::Esc => {
+                    self.mode = AppMode::Daily;
+                    self.reload()?;
+                    return Ok(false);
+                }
+                KeyCode::Char('?') => self.overlay = Overlay::Help,
+                KeyCode::Char('r') => self.kanban_refresh()?,
+                KeyCode::Char('P') => self.kanban_pull()?,
+                KeyCode::Char('p') => self.kanban_pipeline_local_ok()?,
+                KeyCode::Char('j') | KeyCode::Down => {
+                    if !self.kanban.cards.is_empty() {
+                        self.kanban.selected = (self.kanban.selected + 1).min(self.kanban.cards.len() - 1);
+                    }
+                }
+                KeyCode::Char('k') | KeyCode::Up => {
+                    self.kanban.selected = self.kanban.selected.saturating_sub(1);
+                }
+                KeyCode::Enter => {
+                    if let Some(card) = self.kanban.cards.get(self.kanban.selected) {
+                        let label = card.label.clone();
+                        let today = self.date_str();
+                        let _ = tasks::create_task(&self.conn, &self.user_id, &today, &label, None);
+                        self.mode = AppMode::Daily;
+                        self.reload()?;
+                        if let Some(i) = self.tasks.iter().position(|t| t.label == label) {
+                            self.selected = i;
+                        }
+                    }
+                }
+                _ => {}
+            }
+            return Ok(false);
+        }
+
         match key.code {
             KeyCode::Char('q') => return Ok(true),
             KeyCode::Char('a') => { self.toggle_archive()?; }
+            KeyCode::Char('B') => { self.enter_kanban()?; }
             KeyCode::Char('?') => self.overlay = Overlay::Help,
             KeyCode::Char('J') => self.reorder(1)?,
             KeyCode::Char('K') => self.reorder(-1)?,
@@ -2054,6 +2181,8 @@ mod tests {
             git_repo_path: None,
             bitbucket_workspace: None,
             bitbucket_repo: None,
+            jira_monitor_projects: vec!["US".into()],
+            jira_pipelines: None,
         })
         .unwrap()
     }

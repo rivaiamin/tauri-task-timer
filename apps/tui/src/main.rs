@@ -7,6 +7,7 @@ mod db;
 mod git;
 mod hooks;
 mod jira;
+mod kanban;
 mod report;
 mod timer;
 mod ui;
@@ -48,9 +49,11 @@ fn main() -> Result<()> {
                 git_repo_path: repo_root,
                 bitbucket_workspace: cfg.bitbucket_workspace.clone(),
                 bitbucket_repo: cfg.bitbucket_repo.clone(),
+                jira_monitor_projects: cfg.monitor_projects(),
+                jira_pipelines: cfg.jira_pipelines.clone(),
             })?;
             app.run()
         }
-        Some(cmd) => cli::run(cmd, &conn, &user_id, &date_iso, &timer_mode, cli.json),
+        Some(cmd) => cli::run(cmd, &conn, &user_id, &date_iso, &timer_mode, cli.json, &cfg),
     }
 }

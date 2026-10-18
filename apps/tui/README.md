@@ -174,3 +174,12 @@ keypress:
 - Read in `reload()` — one indexed query per second for the whole day, not one
   per task, and no network call. The `i` detail view lists every row.
 - The sprint orchestrator is the writer; see `~/.agents/skills/orchestrator`.
+
+### Kanban
+
+```bash
+task-timer-tui kanban list --json
+task-timer-tui kanban pull
+task-timer-tui kanban refresh
+task-timer-tui kanban pipeline local-ok --dry-run
+```
