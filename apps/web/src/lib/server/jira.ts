@@ -169,6 +169,76 @@ export const onDone = (task: Linkable, seconds = 0, startedMs: number | null = n
     await transitionTo(key, STATUS_DONE);
   });
 
+
+
+export interface JiraIssueFields {
+	key: string;
+	summary: string;
+	status: string;
+}
+
+export async function fetchIssueFields(key: string): Promise<JiraIssueFields | null> {
+	if (!loadCreds()) return null;
+	try {
+		const data = await jiraFetch(`/issue/${key}?fields=summary,status`);
+		return {
+			key,
+			summary: typeof data?.fields?.summary === 'string' ? data.fields.summary : '',
+			status: typeof data?.fields?.status?.name === 'string' ? data.fields.status.name : ''
+		};
+	} catch (err) {
+		console.error('[jira] fetch issue failed:', err instanceof Error ? err.message : err);
+		return null;
+	}
+}
+
+function parseSearchIssues(data: any): JiraIssueFields[] {
+	const issues = data?.issues;
+	if (!Array.isArray(issues)) return [];
+	return issues
+		.map((i: any) => {
+			const key = typeof i?.key === 'string' ? i.key : null;
+			if (!key) return null;
+			const fields = i.fields;
+			return {
+				key,
+				summary: typeof fields?.summary === 'string' ? fields.summary : '',
+				status: typeof fields?.status?.name === 'string' ? fields.status.name : ''
+			};
+		})
+		.filter(Boolean) as JiraIssueFields[];
+}
+
+export async function searchIssues(jql: string): Promise<JiraIssueFields[]> {
+	if (!loadCreds()) return [];
+	const body = { jql, fields: ['summary', 'status'], maxResults: 50 };
+	try {
+		let data = await jiraFetch('/search', 'POST', body);
+		return parseSearchIssues(data);
+	} catch (err) {
+		const msg = err instanceof Error ? err.message : String(err);
+		if (msg.includes('410') || msg.includes('/search/jql')) {
+			try {
+				const data = await jiraFetch('/search/jql', 'POST', body);
+				return parseSearchIssues(data);
+			} catch (e2) {
+				console.error('[jira] search failed:', e2 instanceof Error ? e2.message : e2);
+				return [];
+			}
+		}
+		console.error('[jira] search failed:', msg);
+		return [];
+	}
+}
+
+export function jqlOpenSprintAssigneeUndone(projects: string[]): string {
+	const scope = projects.length
+		? `project in (${projects.map((p) => (p.match(/^\w+$/) ? p : `"${p.replace(/"/g, '\\"')}"`)).join(', ')})`
+		: '';
+	const base = 'sprint in openSprints() AND assignee = currentUser() AND statusCategory != Done';
+	return scope ? `${scope} AND ${base}` : base;
+}
+
 // Self-check for the two pure bits (the non-trivial logic):
 //   node --experimental-strip-types src/lib/server/jira.ts --selftest
 if (process.argv.includes('--selftest')) {
