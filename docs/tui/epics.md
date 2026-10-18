@@ -223,3 +223,20 @@ graph TD
   E4 -.-> E5
   E4 -.-> E6
 ```
+
+## E8 — Kanban & Jira board monitor
+
+**Status:** Done · **Depends on:** E4
+
+**Goal:** Kanban view of Jira-linked timer tasks (non-Done), sprint pull for configured projects, status refresh, and pipeline wrappers for `jira-local-ok-pr-sync`, `jira-cek-di-prod-done`, `jira-unassigned-todo`.
+
+| App | Deliverable |
+|-----|-------------|
+| TUI | `B` Kanban mode, columns from `JIRA_STATUSES` |
+| CLI | `kanban pull|refresh|list`, `kanban pipeline …` |
+| Web | `/dashboard/kanban` + `/api/kanban/*` |
+
+Config: `jira_monitor_projects`, `[jira_pipelines]` in `~/.config/task-timer-tui/config.toml`.
+
+Verify: `node scripts/verify-kanban.mjs`, `cargo test -p task-timer-tui`.
+

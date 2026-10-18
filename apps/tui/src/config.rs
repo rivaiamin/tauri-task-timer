@@ -4,12 +4,21 @@ use std::fs;
 use std::path::{Path, PathBuf};
 
 #[derive(Debug, Deserialize, Clone)]
+pub struct JiraPipelinesConfig {
+    pub local_ok_pr_sync: Option<String>,
+    pub cek_di_prod_done: Option<String>,
+    pub unassigned_todo: Option<String>,
+}
+
+#[derive(Debug, Deserialize, Clone)]
 pub struct Config {
     pub database_path: String,
     pub user_email: String,
     pub timer_mode: Option<String>,
     pub jira_board: Option<String>,
     pub jira_sprint_id: Option<String>,
+    pub jira_monitor_projects: Option<Vec<String>>,
+    pub jira_pipelines: Option<JiraPipelinesConfig>,
     pub bitbucket_workspace: Option<String>,
     pub bitbucket_repo: Option<String>,
     pub git_repo_path: Option<String>,
@@ -21,6 +30,11 @@ user_email = "you@example.com"
 # timer_mode = "focus"  # optional: "focus" | "parallel"
 # jira_board = "AIMSIS"
 # jira_sprint_id = "123"
+# jira_monitor_projects = ["US", "AIMSIS"]
+# [jira_pipelines]
+# local_ok_pr_sync = "jira-local-ok-pr-sync"
+# cek_di_prod_done = "jira-cek-di-prod-done"
+# unassigned_todo = "jira-unassigned-todo"
 # Bitbucket (E5) — env vars: BITBUCKET_EMAIL, BITBUCKET_TOKEN
 # bitbucket_workspace = "your-workspace"
 # bitbucket_repo = "your-repo"
@@ -55,6 +69,21 @@ pub fn load(explicit: Option<&Path>) -> Result<Config> {
 
 impl Config {
     /// Resolve the git repo root: explicit config, or walk up from database_path.
+
+    pub fn monitor_projects(&self) -> Vec<String> {
+        if let Some(p) = &self.jira_monitor_projects {
+            let trimmed: Vec<String> = p
+                .iter()
+                .map(|s| s.trim().to_uppercase())
+                .filter(|s| !s.is_empty())
+                .collect();
+            if !trimmed.is_empty() {
+                return trimmed;
+            }
+        }
+        vec!["US".to_string(), "AIMSIS".to_string()]
+    }
+
     pub fn resolve_repo_root(&self) -> Option<PathBuf> {
         if let Some(ref p) = self.git_repo_path {
             let path = PathBuf::from(p);

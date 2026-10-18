@@ -8,7 +8,7 @@ import * as schema from './schema';
 // Local, file-based SQLite. Configure the path with DATABASE_PATH (default local.db).
 const dbPath = env.DATABASE_PATH || 'local.db';
 
-const sqlite = new Database(dbPath);
+export const sqlite = new Database(dbPath);
 sqlite.pragma('journal_mode = WAL');
 sqlite.pragma('foreign_keys = ON');
 

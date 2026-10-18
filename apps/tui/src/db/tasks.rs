@@ -1069,6 +1069,89 @@ fn is_unique(e: &rusqlite::Error) -> bool {
     )
 }
 
+
+#[derive(Clone, Debug, serde::Serialize)]
+pub struct KanbanCard {
+    pub task_id: i64,
+    pub label: String,
+    pub issue_key: String,
+    pub jira_status: String,
+    pub running_today: bool,
+}
+
+fn is_done_jira_status(status: &str) -> bool {
+    status.eq_ignore_ascii_case("Done") || status == "31"
+}
+
+/// Tasks linked to Jira that are not Done on the integration row.
+pub fn list_kanban_cards(conn: &Connection, user_id: &str, today: &str) -> Result<Vec<KanbanCard>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, t.label, k.value AS issue_key, COALESCE(s.value, '') AS jira_status,
+                COALESCE(td.is_running, 0) AS running
+         FROM tasks t
+         INNER JOIN task_integrations k ON k.task_id = t.id AND k.\"group\" = 'jira' AND k.field = 'issue_key'
+         LEFT JOIN task_integrations s ON s.task_id = t.id AND s.\"group\" = 'jira' AND s.field = 'status'
+         LEFT JOIN task_days td ON td.task_id = t.id AND td.work_date = ?2
+         WHERE t.user_id = ?1 AND k.value IS NOT NULL AND TRIM(k.value) != ''",
+    )?;
+    let rows = stmt.query_map([user_id, today], |r| {
+        Ok((
+            r.get::<_, i64>(0)?,
+            r.get::<_, String>(1)?,
+            r.get::<_, String>(2)?,
+            r.get::<_, String>(3)?,
+            r.get::<_, i64>(4)? != 0,
+        ))
+    })?;
+    let mut out = Vec::new();
+    for row in rows {
+        let (task_id, label, issue_key, jira_status, running_today) = row?;
+        if is_done_jira_status(&jira_status) {
+            continue;
+        }
+        out.push(KanbanCard {
+            task_id,
+            label,
+            issue_key,
+            jira_status,
+            running_today,
+        });
+    }
+    out.sort_by(|a, b| a.issue_key.cmp(&b.issue_key));
+    Ok(out)
+}
+
+pub fn list_jira_issue_keys(conn: &Connection, user_id: &str) -> Result<Vec<(i64, String)>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id, k.value FROM tasks t
+         INNER JOIN task_integrations k ON k.task_id = t.id
+         WHERE t.user_id = ?1 AND k.\"group\" = 'jira' AND k.field = 'issue_key'
+         AND k.value IS NOT NULL AND TRIM(k.value) != ''",
+    )?;
+    let rows = stmt.query_map([user_id], |r| Ok((r.get(0)?, r.get(1)?)))?;
+    Ok(rows.collect::<Result<Vec<_>, _>>()?)
+}
+
+/// Refresh `jira/status` from Jira for every linked issue key.
+pub fn refresh_jira_statuses(conn: &Connection, user_id: &str) -> Result<(Vec<(String, String)>, Vec<String>)> {
+    let keys = list_jira_issue_keys(conn, user_id)?;
+    let mut updated = Vec::new();
+    let mut warnings = Vec::new();
+    for (task_id, key) in keys {
+        match crate::jira::fetch_issue(&key) {
+            Ok((k, _summary, status)) => {
+                if !status.is_empty() {
+                    crate::db::integrations::upsert(conn, task_id, "jira", "status", Some(&status))?;
+                    updated.push((k, status));
+                }
+            }
+            Err(e) => warnings.push(format!("{key}: {e:#}")),
+        }
+    }
+    Ok((updated, warnings))
+}
+
+
 #[cfg(test)]
 mod tests {
     use super::*;

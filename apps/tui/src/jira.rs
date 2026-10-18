@@ -573,6 +573,46 @@ pub fn jql_for(query: SprintQuery, sprint_id: &str) -> String {
     format!("sprint = {sprint} AND {predicate}")
 }
 
+
+fn jql_project_in(projects: &[String]) -> String {
+    if projects.is_empty() {
+        return String::new();
+    }
+    let parts: Vec<String> = projects
+        .iter()
+        .map(|p| {
+            let p = p.trim();
+            if p.chars().all(|c| c.is_ascii_alphanumeric()) {
+                p.to_string()
+            } else {
+                format!("\"{}\"", p.replace('"', "\\\""))
+            }
+        })
+        .collect();
+    format!("project in ({})", parts.join(", "))
+}
+
+/// Open sprint, current user assignee, not Done — Kanban pull scope.
+pub fn jql_open_sprint_assignee_undone(projects: &[String]) -> String {
+    let scope = jql_project_in(projects);
+    if scope.is_empty() {
+        return "sprint in openSprints() AND assignee = currentUser() AND statusCategory != Done".to_string();
+    }
+    format!(
+        "{scope} AND sprint in openSprints() AND assignee = currentUser() AND statusCategory != Done"
+    )
+}
+
+/// Unassigned To Do in open sprint with no linked commits.
+pub fn jql_open_sprint_unassigned_todo(projects: &[String]) -> String {
+    let base = r#"assignee is EMPTY AND status = "To Do" AND sprint in openSprints() AND development[commits].all = 0"#;
+    let scope = jql_project_in(projects);
+    if scope.is_empty() {
+        return base.to_string();
+    }
+    format!("{scope} AND {base}")
+}
+
 /// Search issues by JQL. Returns (issue_key, summary, status_name) tuples.
 ///
 /// The v3 search endpoint moved to `/search/jql`; when the old path answers 410
@@ -819,6 +859,13 @@ mod tests {
     }
 
     #[test]
+    #[test]
+    fn open_sprint_assignee_includes_projects() {
+        let jql = jql_open_sprint_assignee_undone(&["US".into(), "AIMSIS".into()]);
+        assert!(jql.contains("project in (US, AIMSIS)"));
+        assert!(jql.contains("openSprints()"));
+    }
+
     fn jql_scopes_the_sprint_and_the_mode_predicate() {
         assert_eq!(
             jql_for(SprintQuery::Unassigned, "123"),

@@ -5,8 +5,10 @@ use rusqlite::Connection;
 use serde::Serialize;
 use std::path::PathBuf;
 
+use crate::config::Config;
 use crate::db;
 use crate::db::tasks::Task;
+use crate::kanban;
 use crate::jira::{self, Worklog};
 use crate::report::{self, ReportTask};
 use crate::timer::{format_time, now_ms};
@@ -102,6 +104,48 @@ pub enum Command {
     Report {
         #[arg(long, value_enum, default_value_t = ReportFormat::Markdown)]
         format: ReportFormat,
+    },
+    /// Jira kanban: list cards, pull sprint, refresh statuses, run pipelines.
+    Kanban {
+        #[command(subcommand)]
+        action: KanbanAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum KanbanAction {
+    /// Ingest open-sprint assignee issues from configured projects.
+    Pull,
+    /// Re-fetch Jira status for every linked issue key.
+    Refresh,
+    /// List kanban cards (non-Done Jira-linked tasks).
+    List,
+    Pipeline {
+        #[command(subcommand)]
+        action: KanbanPipelineAction,
+    },
+}
+
+#[derive(Subcommand, Debug)]
+pub enum KanbanPipelineAction {
+    /// Run jira-local-ok-pr-sync (PR/CI lane).
+    LocalOk {
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// Run jira-cek-di-prod-done.
+    ProdDone {
+        #[arg(long, default_value_t = 3)]
+        days: u32,
+        #[arg(long)]
+        dry_run: bool,
+        #[arg(long)]
+        apply: bool,
+    },
+    /// Run jira-unassigned-todo.
+    Unassigned {
+        #[arg(long)]
+        project: Option<String>,
     },
 }
 
@@ -273,6 +317,7 @@ pub fn run(
     date_iso: &str,
     timer_mode: &str,
     json: bool,
+    cfg: &Config,
 ) -> Result<()> {
     match cmd {
         Command::List => {
@@ -527,6 +572,75 @@ pub fn run(
                 emit_task(&task, json)
             }
         },
+
+        Command::Kanban { action } => {
+            let projects = cfg.monitor_projects();
+            match action {
+                KanbanAction::Pull => {
+                    let report = kanban::kanban_pull_sprint(conn, user_id, date_iso, &projects)?;
+                    if json {
+                        emit_json(&report)?;
+                    } else {
+                        println!("ingested {} issue(s)", report.ingested);
+                        for w in &report.warnings {
+                            eprintln!("warn: {w}");
+                        }
+                    }
+                    Ok(())
+                }
+                KanbanAction::Refresh => {
+                    let (updated, warnings) = db::tasks::refresh_jira_statuses(conn, user_id)?;
+                    if json {
+                        emit_json(&serde_json::json!({ "updated": updated, "warnings": warnings }))?;
+                    } else {
+                        println!("updated {} status(es)", updated.len());
+                        for w in &warnings {
+                            eprintln!("warn: {w}");
+                        }
+                    }
+                    Ok(())
+                }
+                KanbanAction::List => {
+                    let today = date_iso;
+                    let cards = db::tasks::list_kanban_cards(conn, user_id, today)?;
+                    if json {
+                        emit_json(&cards)?;
+                    } else {
+                        for c in &cards {
+                            let run = if c.running_today { "*" } else { "-" };
+                            println!("{run}\t{}\t{}\t{}", c.issue_key, c.jira_status, c.label);
+                        }
+                    }
+                    Ok(())
+                }
+                KanbanAction::Pipeline { action } => {
+                    let out = match action {
+                        KanbanPipelineAction::LocalOk { dry_run } => {
+                            kanban::run_local_ok_pr_sync(cfg, &projects, dry_run, json)?
+                        }
+                        KanbanPipelineAction::ProdDone { days, dry_run, apply } => {
+                            kanban::run_cek_di_prod_done(cfg, &projects, days, dry_run, apply, json)?
+                        }
+                        KanbanPipelineAction::Unassigned { project } => {
+                            kanban::run_unassigned_todo(cfg, project.as_deref(), json)?
+                        }
+                    };
+                    if json {
+                        emit_json(&serde_json::json!({
+                            "exitCode": out.exit_code,
+                            "stdout": out.stdout,
+                            "stderr": out.stderr,
+                        }))?;
+                    } else if !out.stdout.is_empty() {
+                        print!("{}", out.stdout);
+                    }
+                    if !out.stderr.is_empty() {
+                        eprint!("{}", out.stderr);
+                    }
+                    Ok(())
+                }
+            }
+        }
         Command::Report { format } => {
             let tasks = db::tasks::list_tasks(conn, user_id, date_iso)?;
             let now = now_ms();
@@ -550,6 +664,21 @@ pub fn run(
 
 #[cfg(test)]
 mod tests {
+    fn test_config() -> crate::config::Config {
+        crate::config::Config {
+            database_path: String::new(),
+            user_email: String::new(),
+            timer_mode: None,
+            jira_board: None,
+            jira_sprint_id: None,
+            jira_monitor_projects: None,
+            jira_pipelines: None,
+            bitbucket_workspace: None,
+            bitbucket_repo: None,
+            git_repo_path: None,
+        }
+    }
+
     use super::*;
 
     /// The schema the CLI writes against: identity + day rows + integrations,
@@ -850,8 +979,7 @@ mod tests {
                 "u1",
                 "2026-10-10",
                 "parallel",
-                true,
-            )
+                true, &test_config())
             .unwrap();
         };
 
@@ -888,8 +1016,7 @@ mod tests {
                 "u1",
                 "2026-10-10",
                 "parallel",
-                true,
-            )
+                true, &test_config())
             .unwrap();
         };
 
@@ -922,8 +1049,7 @@ mod tests {
                 "u1",
                 "2026-10-10",
                 "parallel",
-                true,
-            )
+                true, &test_config())
             .unwrap();
         }
 
@@ -1050,6 +1176,7 @@ mod tests {
             "2026-09-17",
             "parallel",
             true,
+            &test_config(),
         )
     }
 
