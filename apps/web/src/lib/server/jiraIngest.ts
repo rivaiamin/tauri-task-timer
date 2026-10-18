@@ -14,6 +14,30 @@ export interface JiraIssueInput {
 	status: string;
 }
 
+/** Same key detection as TUI `jira::issue_key` (selector may be a bare key or label text). */
+export function parseJiraIssueKey(selector: string): string | null {
+	const words: string[] = [];
+	for (const part of selector.trim().split(/\s+/)) {
+		if (part) words.push(part);
+	}
+	for (const word of words) {
+		const key = word.replace(/^[^\w-]+|[^\w-]+$/g, '');
+		const dash = key.indexOf('-');
+		if (dash <= 0) continue;
+		const project = key.slice(0, dash);
+		const number = key.slice(dash + 1);
+		if (
+			project.length > 0 &&
+			[...project].every((c) => (c >= 'A' && c <= 'Z') || (c >= '0' && c <= '9')) &&
+			number.length > 0 &&
+			[...number].every((c) => c >= '0' && c <= '9')
+		) {
+			return key;
+		}
+	}
+	return null;
+}
+
 export class AmbiguousJiraIdentityError extends Error {
 	constructor(
 		readonly selector: string,
