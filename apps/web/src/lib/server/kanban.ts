@@ -2,7 +2,8 @@ import { and, eq } from 'drizzle-orm';
 import { spawnSync } from 'node:child_process';
 import { db, schema, sqlite } from './db';
 import * as jira from './jira';
-import { createTask, upsertIntegration } from './taskService';
+import { upsertIntegration } from './taskService';
+import { ingestJiraIssues } from './jiraIngest';
 import { isDoneJiraStatus } from '$lib/kanbanColumns';
 import type { KanbanCard, KanbanPullResponse, KanbanPipelineName } from './kanbanContracts';
 
@@ -88,37 +89,6 @@ export async function refreshKanbanStatuses(
 	return { updated, warnings };
 }
 
-async function ingestIssue(
-	userId: string,
-	workDate: string,
-	key: string,
-	summary: string,
-	status: string
-): Promise<void> {
-	const byKey = db
-		.select({ taskId: taskIntegrations.taskId, label: tasks.label })
-		.from(taskIntegrations)
-		.innerJoin(tasks, eq(tasks.id, taskIntegrations.taskId))
-		.where(
-			and(
-				eq(tasks.userId, userId),
-				eq(taskIntegrations.group, 'jira'),
-				eq(taskIntegrations.field, 'issue_key'),
-				eq(taskIntegrations.value, key)
-			)
-		)
-		.get();
-
-	const label = byKey?.label ?? (summary ? `${key} ${summary}` : key);
-	const task = await createTask(userId, {
-		label,
-		description: summary || null,
-		workDate
-	});
-	upsertIntegration(userId, task.id, 'jira', 'issue_key', key);
-	if (status) upsertIntegration(userId, task.id, 'jira', 'status', status);
-}
-
 export async function pullKanbanSprint(
 	userId: string,
 	workDate: string
@@ -126,9 +96,15 @@ export async function pullKanbanSprint(
 	const projects = monitorProjects();
 	const jql = jira.jqlOpenSprintAssigneeUndone(projects);
 	const issues = await jira.searchIssues(jql);
-	for (const issue of issues) {
-		await ingestIssue(userId, workDate, issue.key, issue.summary, issue.status);
-	}
+	ingestJiraIssues(
+		userId,
+		workDate,
+		issues.map((issue) => ({
+			key: issue.key,
+			summary: issue.summary,
+			status: issue.status
+		}))
+	);
 	const refresh = await refreshKanbanStatuses(userId);
 	const issuesProcessed = issues.length;
 	return {
