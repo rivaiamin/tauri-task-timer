@@ -85,3 +85,21 @@ describe('kanban pull', () => {
     expect(result.ingested).toBe(result.issuesProcessed);
   });
 });
+
+describe('kanban refresh', () => {
+  it('writes jira status from fetchIssueFields', async () => {
+    const jiraMod = await import('./jira');
+    const fetch = vi.mocked(jiraMod.fetchIssueFields);
+    fetch.mockReset();
+    fetch.mockImplementation(async (key: string) => {
+      if (key === 'US-88') return { key: 'US-88', summary: 'Refresh me', status: 'Local OK' };
+      return null;
+    });
+    const task = await svc.createTask(USER, { label: 'US-88', description: null, workDate: DAY });
+    svc.upsertIntegration(USER, task.id, 'jira', 'issue_key', 'US-88');
+    svc.upsertIntegration(USER, task.id, 'jira', 'status', 'To Do');
+    const result = await kanban.refreshKanbanStatuses(USER);
+    expect(result.updated).toContainEqual({ key: 'US-88', status: 'Local OK' });
+    expect(result.warnings.some((w) => w.startsWith('US-88:'))).toBe(false);
+  });
+});

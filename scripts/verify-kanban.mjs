@@ -40,6 +40,7 @@ function verifyParity() {
     "apps/web/src/routes/dashboard/kanban/+page.svelte",
     "apps/web/src/lib/server/kanban.ts",
     "apps/web/src/lib/server/kanbanContracts.ts",
+    "apps/web/src/lib/server/jiraIngest.ts",
   ];
   for (const rel of paths) {
     if (!existsSync(join(ROOT, rel))) {
@@ -63,7 +64,7 @@ function verifyParity() {
     console.error(webTest.stdout, webTest.stderr);
     process.exit(1);
   }
-  if (!/Tests\s+6 passed/.test(webTest.stdout + webTest.stderr)) {
+  if (!/Tests\s+7 passed/.test(webTest.stdout + webTest.stderr)) {
     console.error("web kanban test did not pass");
     process.exit(1);
   }
