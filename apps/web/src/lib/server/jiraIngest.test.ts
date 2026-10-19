@@ -107,6 +107,57 @@ describe('ingestJiraIssues', () => {
 		expect(status?.value).toBe('In Progress');
 	});
 
+	it('kanban ingest does not add a day row for a new issue', () => {
+		const USER = 'u-kanban-day';
+		const DAY = '2026-10-21';
+		seedUser(USER);
+		const { taskDays } = schema;
+		ingestJiraIssues(
+			USER,
+			DAY,
+			[{ key: 'US-300', summary: 'Kanban only', status: 'To Do' }],
+			'kanban'
+		);
+		const taskId = dbmod.db.select({ id: schema.tasks.id }).from(schema.tasks).where(eq(schema.tasks.userId, USER)).get()!
+			.id;
+		const days = dbmod.db.select().from(taskDays).where(eq(taskDays.taskId, taskId)).all();
+		expect(days).toHaveLength(0);
+	});
+
+	it('kanban ingest reuses a task linked only by jira issue_key', () => {
+		const USER = 'u-kanban-key';
+		const DAY = '2026-10-22';
+		seedUser(USER);
+		const { tasks, taskIntegrations } = schema;
+		dbmod.db
+			.insert(tasks)
+			.values({
+				userId: USER,
+				label: 'Fix login flow',
+				createdAt: new Date(),
+				updatedAt: new Date()
+			})
+			.run();
+		const taskId = dbmod.db.select({ id: tasks.id }).from(tasks).where(eq(tasks.userId, USER)).get()!
+			.id;
+		dbmod.db
+			.insert(taskIntegrations)
+			.values({
+				taskId,
+				group: 'jira',
+				field: 'issue_key',
+				value: 'US-400',
+				createdAt: new Date(),
+				updatedAt: new Date()
+			})
+			.run();
+
+		ingestJiraIssues(USER, DAY, [{ key: 'US-400', summary: 'From JIRA', status: 'In Progress' }], 'kanban');
+		expect(dbmod.db.select().from(tasks).where(eq(tasks.userId, USER)).all()).toHaveLength(1);
+		const status = integrationRows(taskId).find((r) => r.field === 'status');
+		expect(status?.value).toBe('In Progress');
+	});
+
 	it('normalizes a legacy KEY summary label on reuse', () => {
 		const USER = 'u-legacy';
 		const DAY = '2026-10-12';

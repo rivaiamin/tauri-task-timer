@@ -50,14 +50,10 @@ export class AmbiguousJiraIdentityError extends Error {
 
 type IdentityRow = { id: number; label: string };
 
-const IDENTITY_DAY_JOIN = `INNER JOIN task_days td ON td.id = (
-  SELECT MAX(d2.id) FROM task_days d2 WHERE d2.task_id = t.id
-)`;
-
 function findIdentitiesByExactLabel(userId: string, label: string): IdentityRow[] {
 	return sqlite
 		.prepare(
-			`SELECT t.id, t.label FROM tasks t ${IDENTITY_DAY_JOIN}
+			`SELECT t.id, t.label FROM tasks t
        WHERE t.user_id = ? AND t.label = ? COLLATE NOCASE
        ORDER BY t.id ASC`
 		)
@@ -72,17 +68,42 @@ function findIdentitiesByLabelPrefix(userId: string, prefix: string): IdentityRo
 	const pattern = escapeLikePrefix(prefix);
 	return sqlite
 		.prepare(
-			`SELECT t.id, t.label FROM tasks t ${IDENTITY_DAY_JOIN}
+			`SELECT t.id, t.label FROM tasks t
        WHERE t.user_id = ? AND t.label LIKE ? ESCAPE '\\' COLLATE NOCASE
        ORDER BY t.id ASC`
 		)
 		.all(userId, pattern) as IdentityRow[];
 }
 
-/** Same resolution order as TUI `find_task_identity` for a Jira issue key. */
+function findTaskIdsByIssueKey(userId: string, key: string): number[] {
+	const rows = sqlite
+		.prepare(
+			`SELECT t.id FROM tasks t
+       INNER JOIN task_integrations k ON k.task_id = t.id
+         AND k."group" = 'jira' AND k.field = 'issue_key' AND k.value = ? COLLATE NOCASE
+       WHERE t.user_id = ?
+       ORDER BY t.id ASC`
+		)
+		.all(key, userId) as { id: number }[];
+	return rows.map((r) => r.id);
+}
+
+/** Same resolution order as TUI `resolve_jira_issue_identity` for a Jira issue key. */
 export function findTaskIdentityByIssueKey(userId: string, key: string): Task | undefined {
 	const selector = key.trim();
 	if (!selector) return undefined;
+
+	const byIntegration = findTaskIdsByIssueKey(userId, selector);
+	if (byIntegration.length === 1) {
+		return db
+			.select()
+			.from(tasks)
+			.where(and(eq(tasks.id, byIntegration[0]), eq(tasks.userId, userId)))
+			.get();
+	}
+	if (byIntegration.length > 1) {
+		throw new AmbiguousJiraIdentityError(selector, byIntegration);
+	}
 
 	const exact = findIdentitiesByExactLabel(userId, selector);
 	if (exact.length === 1) {
@@ -133,22 +154,31 @@ export function normalizeLegacyJiraLabel(
 		.run();
 }
 
+export type JiraIngestMode = 'timer' | 'kanban';
+
 /**
  * Store Jira issues as timer tasks with `jira/issue_key` + `jira/status` rows.
  * Reuses existing identities; refuses ambiguous key matches.
+ *
+ * `timer` — also ensures a `task_days` row (sprint picker, `jira ensure`).
+ * `kanban` — identity + integrations only; does not add to the daily list.
  */
 export function ingestJiraIssues(
 	userId: string,
 	workDate: string,
-	issues: JiraIssueInput[]
+	issues: JiraIssueInput[],
+	mode: JiraIngestMode = 'timer'
 ): { taskId: number }[] {
+	const ensureDay = mode === 'timer';
 	const out: { taskId: number }[] = [];
 	for (const { key, summary, status } of issues) {
 		const existing = findTaskIdentityByIssueKey(userId, key);
 		let taskId: number;
 		if (existing) {
 			normalizeLegacyJiraLabel(userId, existing.id, key, summary);
-			ensureDayRow(db, userId, existing.id, workDate);
+			if (ensureDay) {
+				ensureDayRow(db, userId, existing.id, workDate);
+			}
 			taskId = existing.id;
 		} else {
 			const created = insertIdentity(db, userId, {
@@ -156,7 +186,9 @@ export function ingestJiraIssues(
 				workDate,
 				description: summary.trim() || null
 			});
-			ensureDayRow(db, userId, created.id, workDate);
+			if (ensureDay) {
+				ensureDayRow(db, userId, created.id, workDate);
+			}
 			taskId = created.id;
 		}
 		upsertIntegration(userId, taskId, 'jira', 'issue_key', key);
