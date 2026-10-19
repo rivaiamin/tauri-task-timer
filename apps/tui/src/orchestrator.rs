@@ -657,5 +657,32 @@ mod tests {
             "dropping the worker waited for the child timeout"
         );
     }
+
+    /// Every other test fakes `node`, so nothing else proves the real bundle
+    /// even loads. A bundled CommonJS dependency that calls `require()` crashed
+    /// at import time ("Dynamic require of \"crypto\" is not supported").
+    #[test]
+    fn bundled_adapter_loads_under_real_node() {
+        use std::io::Write;
+        use std::process::Stdio;
+
+        let adapter = write_adapter_file().unwrap();
+        let mut child = Command::new("node")
+            .arg(&adapter)
+            .stdin(Stdio::piped())
+            .stdout(Stdio::piped())
+            .stderr(Stdio::piped())
+            .spawn()
+            .expect("node is required to run the adapter");
+        child.stdin.take().unwrap().write_all(b"not json").unwrap();
+        let output = child.wait_with_output().unwrap();
+        let _ = fs::remove_file(&adapter);
+
+        let stderr = String::from_utf8_lossy(&output.stderr);
+        assert!(
+            stderr.contains("invalid adapter request JSON"),
+            "adapter did not reach its own input validation: {stderr}"
+        );
+    }
 }
 

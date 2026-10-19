@@ -19,6 +19,9 @@ fn main() {
             "--bundle",
             "--platform=node",
             "--format=esm",
+            // Bundled CommonJS dependencies (e.g. tweetnacl) call `require()`
+            // for Node builtins, which does not exist in ESM output.
+            "--banner:js=import { createRequire as __taskTimerCreateRequire } from \"node:module\"; const require = __taskTimerCreateRequire(import.meta.url);",
         ])
         .arg(format!("--outfile={}", output.display()))
         .current_dir(root)
