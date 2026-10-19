@@ -6,3 +6,4 @@ apps/*/node_modules
 .tokensave
 .cursor/
 .chloe/
+/.pnpm-store/

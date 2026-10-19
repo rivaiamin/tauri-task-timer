@@ -17,6 +17,8 @@
       "build:all": "pnpm build:desktop && pnpm build:web && pnpm build:mcp && pnpm build:tui"
     },
     "devDependencies": {
-      "@tauri-apps/cli": "^2.9.4"
+      "@getpaseo/client": "0.11.0",
+      "@tauri-apps/cli": "^2.9.4",
+      "esbuild": "0.25.12"
     }
 }
