@@ -50,7 +50,10 @@ pub enum ArchiveInput {
 pub struct KanbanState {
     pub cards: Vec<tasks::KanbanCard>,
     pub projects: Vec<String>,
-    pub selected: usize,
+    pub selected_col: usize,
+    pub selected_row: usize,
+    /// Latest identity snapshot for the selected card (`focused_task` in Kanban).
+    pub focus_cache: Option<Task>,
 }
 
 pub struct ArchiveState {
@@ -130,6 +133,12 @@ pub enum Overlay {
     Git { mode: GitMode },
 }
 
+struct DetailUpdate {
+    prs: Vec<crate::bitbucket::PullRequest>,
+    statuses: Vec<crate::bitbucket::CommitStatus>,
+    warnings: Vec<String>,
+}
+
 pub struct App {
     pub conn: Connection,
     pub user_id: String,
@@ -158,6 +167,7 @@ pub struct App {
     /// task list, since both come from the same DB and change together.
     pub agent_states: std::collections::HashMap<i64, crate::db::integrations::AgentState>,
     hook_listener: crate::hooks::HookListener,
+    detail_updates: Option<std::sync::mpsc::Receiver<DetailUpdate>>,
 }
 
 /// Everything the app takes from `config.toml` plus the open connection and the
@@ -219,12 +229,15 @@ impl App {
             kanban: KanbanState {
                 cards: Vec::new(),
                 projects: jira_monitor_projects.clone(),
-                selected: 0,
+                selected_col: 0,
+                selected_row: 0,
+                focus_cache: None,
             },
             jira_monitor_projects,
             jira_pipelines,
             agent_states: std::collections::HashMap::new(),
             hook_listener: crate::hooks::HookListener::new(),
+            detail_updates: None,
         };
         app.reload()?;
         Ok(app)
@@ -278,9 +291,38 @@ impl App {
     pub fn focused_task(&self) -> Option<&Task> {
         match self.mode {
             AppMode::Archive => self.archive_selected_task(),
-            AppMode::Kanban => None,
+            AppMode::Kanban => self.kanban.focus_cache.as_ref(),
             AppMode::Daily => self.selected_task(),
         }
+    }
+
+    fn kanban_columns(&self) -> Vec<String> {
+        crate::kanban::kanban_column_order()
+    }
+
+    fn update_kanban_focus_cache(&mut self) {
+        let columns = self.kanban_columns();
+        let card = crate::kanban::kanban_card_at(
+            &self.kanban.cards,
+            &columns,
+            self.kanban.selected_col,
+            self.kanban.selected_row,
+        );
+        self.kanban.focus_cache = match card {
+            Some(c) => tasks::get_task_identity(&self.conn, &self.user_id, c.task_id).ok().flatten(),
+            None => None,
+        };
+    }
+
+    fn clamp_kanban_cursor(&mut self) {
+        let columns = self.kanban_columns();
+        crate::kanban::clamp_kanban_cursor(
+            &mut self.kanban.selected_col,
+            &mut self.kanban.selected_row,
+            &columns,
+            &self.kanban.cards,
+        );
+        self.update_kanban_focus_cache();
     }
 
     fn reload_archive(&mut self) -> Result<()> {
@@ -313,12 +355,7 @@ impl App {
     fn reload_kanban(&mut self) -> Result<()> {
         let today = self.date_str();
         self.kanban.cards = tasks::list_kanban_cards(&self.conn, &self.user_id, &today)?;
-        if self.kanban.selected >= self.kanban.cards.len() && !self.kanban.cards.is_empty() {
-            self.kanban.selected = self.kanban.cards.len() - 1;
-        }
-        if self.kanban.cards.is_empty() {
-            self.kanban.selected = 0;
-        }
+        self.clamp_kanban_cursor();
         Ok(())
     }
 
@@ -326,10 +363,45 @@ impl App {
         self.mode = AppMode::Kanban;
         self.overlay = Overlay::None;
         self.reload_kanban()?;
+        let columns = self.kanban_columns();
+        if !self.kanban.cards.is_empty() {
+            let (col, row) = crate::kanban::initial_kanban_cursor(&columns, &self.kanban.cards);
+            self.kanban.selected_col = col;
+            self.kanban.selected_row = row;
+        } else {
+            self.kanban.selected_col = 0;
+            self.kanban.selected_row = 0;
+        }
+        self.update_kanban_focus_cache();
+        Ok(())
+    }
+
+    fn kanban_add_to_today(&mut self) -> Result<()> {
+        let columns = self.kanban_columns();
+        let Some(card) = crate::kanban::kanban_card_at(
+            &self.kanban.cards,
+            &columns,
+            self.kanban.selected_col,
+            self.kanban.selected_row,
+        ) else {
+            self.set_status("no kanban card selected");
+            return Ok(());
+        };
+        let label = card.label.clone();
+        let task_id = card.task_id;
+        let day = tasks::ensure_day_row(&self.conn, &self.user_id, task_id, &self.date_str())?;
+        self.mode = AppMode::Daily;
+        self.overlay = Overlay::None;
+        self.reload()?;
+        if let Some(i) = self.tasks.iter().position(|t| t.id == day.id) {
+            self.selected = i;
+        }
+        self.set_status(format!("added '{}' to today", label));
         Ok(())
     }
 
     fn kanban_refresh(&mut self) -> Result<()> {
+        self.set_status("kanban: refreshing jira…");
         let (_, warnings) = tasks::refresh_jira_statuses(&self.conn, &self.user_id)?;
         self.reload_kanban()?;
         if warnings.is_empty() {
@@ -366,6 +438,7 @@ impl App {
     }
 
     fn kanban_pull(&mut self) -> Result<()> {
+        self.set_status("kanban: pulling sprint…");
         let report = crate::kanban::kanban_pull_sprint(
             &self.conn,
             &self.user_id,
@@ -911,6 +984,24 @@ impl App {
     /// key in the label or description is enough, and a task without one gets a
     /// status line rather than a failed spawn.
     fn open_jira_issue(&mut self) {
+        if self.mode == AppMode::Kanban {
+            let columns = self.kanban_columns();
+            let Some(card) = crate::kanban::kanban_card_at(
+                &self.kanban.cards,
+                &columns,
+                self.kanban.selected_col,
+                self.kanban.selected_row,
+            ) else {
+                return;
+            };
+            let key = card.issue_key.clone();
+            let url = jira::issue_url(&key);
+            match jira::open_in_browser(&url) {
+                Ok(()) => self.set_status(format!("opened {key} in browser")),
+                Err(e) => self.set_status(format!("{e:#}")),
+            }
+            return;
+        }
         let Some(task) = self.focused_task() else {
             return;
         };
@@ -1276,44 +1367,78 @@ impl App {
         Ok(imported)
     }
 
-    /// Build the detail overlay: stored comments plus whatever Bitbucket and git
-    /// can say about the selected task's branch. Network failures degrade to an
-    /// empty section and a toast — the detail view still opens.
+    /// Stored details are immediate; remote enrichment must never block input.
     fn open_detail(&mut self) {
-        let Some(task) = self.focused_task().map(|t| (t.id, t.label.clone())) else {
+        self.detail_updates = None;
+        let Some(task_id) = self.focused_task().map(|t| t.id) else {
             return;
         };
-        let (task_id, _) = task;
-        let comments = db::comments::list(&self.conn, task_id).unwrap_or_default();
-        let branch = self.git_task_branch().unwrap_or_default();
-        let mut prs = Vec::new();
-        let mut statuses = Vec::new();
-        if !branch.is_empty() {
-            if let (Some(ws), Some(repo_name)) =
-                (self.bitbucket_workspace.clone(), self.bitbucket_repo.clone())
-            {
-                match crate::bitbucket::list_prs(&ws, &repo_name, &branch) {
-                    Ok(list) => prs = list,
-                    Err(e) => self.set_status(format!("bitbucket: {e}")),
-                }
-                if let Some(repo) = self.git_repo_path.clone() {
-                    if let Ok(commits) = git::commits_for_branch(&repo, &branch, 1) {
-                        if let Some(head) = commits.first() {
-                            match crate::bitbucket::commit_statuses(&ws, &repo_name, &head.hash) {
-                                Ok(s) => statuses = s,
-                                Err(e) => self.set_status(format!("bitbucket: {e}")),
-                            }
+        self.overlay = Overlay::Detail {
+            comments: db::comments::list(&self.conn, task_id).unwrap_or_default(),
+            prs: Vec::new(),
+            statuses: Vec::new(),
+            integrations: db::integrations::list(&self.conn, task_id).unwrap_or_default(),
+        };
+        let Some(branch) = self.git_task_branch().filter(|b| !b.is_empty()) else {
+            return;
+        };
+        let (Some(workspace), Some(repo_name)) =
+            (self.bitbucket_workspace.clone(), self.bitbucket_repo.clone())
+        else {
+            return;
+        };
+        let repo = self.git_repo_path.clone();
+        let (sender, receiver) = std::sync::mpsc::channel();
+        self.detail_updates = Some(receiver);
+        std::thread::spawn(move || {
+            let mut update = DetailUpdate {
+                prs: Vec::new(),
+                statuses: Vec::new(),
+                warnings: Vec::new(),
+            };
+            match crate::bitbucket::list_prs(&workspace, &repo_name, &branch) {
+                Ok(prs) => update.prs = prs,
+                Err(e) => update.warnings.push(format!("bitbucket: {e}")),
+            }
+            if let Some(repo) = repo {
+                if let Ok(commits) = git::commits_for_branch(&repo, &branch, 1) {
+                    if let Some(head) = commits.first() {
+                        match crate::bitbucket::commit_statuses(&workspace, &repo_name, &head.hash) {
+                            Ok(statuses) => update.statuses = statuses,
+                            Err(e) => update.warnings.push(format!("bitbucket: {e}")),
                         }
                     }
                 }
             }
+            // Closing or reopening detail drops this request's receiver.
+            let _ = sender.send(update);
+        });
+    }
+
+    fn poll_detail_updates(&mut self) {
+        if !matches!(self.overlay, Overlay::Detail { .. }) {
+            self.detail_updates = None;
+            return;
         }
-        self.overlay = Overlay::Detail {
-            comments,
-            prs,
-            statuses,
-            integrations: db::integrations::list(&self.conn, task_id).unwrap_or_default(),
+        let Some(receiver) = &self.detail_updates else {
+            return;
         };
+        let update = match receiver.try_recv() {
+            Ok(update) => update,
+            Err(std::sync::mpsc::TryRecvError::Empty) => return,
+            Err(std::sync::mpsc::TryRecvError::Disconnected) => {
+                self.detail_updates = None;
+                return;
+            }
+        };
+        self.detail_updates = None;
+        if let Overlay::Detail { prs, statuses, .. } = &mut self.overlay {
+            *prs = update.prs;
+            *statuses = update.statuses;
+        }
+        if !update.warnings.is_empty() {
+            self.set_status(update.warnings.join("; "));
+        }
     }
 
     /// Open the comment list for the selected task.
@@ -1846,6 +1971,7 @@ impl App {
                 match key.code {
                     KeyCode::Esc | KeyCode::Char('i') | KeyCode::Char('q') => {
                         self.overlay = Overlay::None;
+                        self.detail_updates = None;
                     }
                     // The detail footer advertises it, so `C` works from here too.
                     KeyCode::Char('C') => self.open_comments(),
@@ -1899,6 +2025,7 @@ impl App {
         }
 
         if self.mode == AppMode::Kanban {
+            let columns = self.kanban_columns();
             match key.code {
                 KeyCode::Char('q') | KeyCode::Char('a') | KeyCode::Esc => {
                     self.mode = AppMode::Daily;
@@ -1909,26 +2036,60 @@ impl App {
                 KeyCode::Char('r') => self.kanban_refresh()?,
                 KeyCode::Char('P') => self.kanban_pull()?,
                 KeyCode::Char('p') => self.kanban_pipeline_local_ok()?,
-                KeyCode::Char('j') | KeyCode::Down => {
-                    if !self.kanban.cards.is_empty() {
-                        self.kanban.selected = (self.kanban.selected + 1).min(self.kanban.cards.len() - 1);
+                KeyCode::Left | KeyCode::Char('h') => {
+                    crate::kanban::move_kanban_col(
+                        &mut self.kanban.selected_col,
+                        &mut self.kanban.selected_row,
+                        -1,
+                        &columns,
+                        &self.kanban.cards,
+                    );
+                    self.update_kanban_focus_cache();
+                }
+                KeyCode::Right | KeyCode::Char('l') => {
+                    crate::kanban::move_kanban_col(
+                        &mut self.kanban.selected_col,
+                        &mut self.kanban.selected_row,
+                        1,
+                        &columns,
+                        &self.kanban.cards,
+                    );
+                    self.update_kanban_focus_cache();
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    crate::kanban::move_kanban_row(
+                        self.kanban.selected_col,
+                        &mut self.kanban.selected_row,
+                        -1,
+                        &columns,
+                        &self.kanban.cards,
+                    );
+                    self.update_kanban_focus_cache();
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    crate::kanban::move_kanban_row(
+                        self.kanban.selected_col,
+                        &mut self.kanban.selected_row,
+                        1,
+                        &columns,
+                        &self.kanban.cards,
+                    );
+                    self.update_kanban_focus_cache();
+                }
+                KeyCode::Char('i') => {
+                    if crate::kanban::kanban_card_at(
+                        &self.kanban.cards,
+                        &columns,
+                        self.kanban.selected_col,
+                        self.kanban.selected_row,
+                    )
+                    .is_some()
+                    {
+                        self.open_detail();
                     }
                 }
-                KeyCode::Char('k') | KeyCode::Up => {
-                    self.kanban.selected = self.kanban.selected.saturating_sub(1);
-                }
-                KeyCode::Enter => {
-                    if let Some(card) = self.kanban.cards.get(self.kanban.selected) {
-                        let label = card.label.clone();
-                        let today = self.date_str();
-                        let _ = tasks::create_task(&self.conn, &self.user_id, &today, &label, None);
-                        self.mode = AppMode::Daily;
-                        self.reload()?;
-                        if let Some(i) = self.tasks.iter().position(|t| t.label == label) {
-                            self.selected = i;
-                        }
-                    }
-                }
+                KeyCode::Char('o') => self.open_jira_issue(),
+                KeyCode::Char('c') | KeyCode::Enter => self.kanban_add_to_today()?,
                 _ => {}
             }
             return Ok(false);
@@ -2069,6 +2230,7 @@ impl App {
             let mut last_reload = Instant::now();
             loop {
                 self.tick_status();
+                self.poll_detail_updates();
                 terminal.draw(|f| crate::ui::draw(f, self))?;
                 let timeout = StdDuration::from_millis(250);
                 if event::poll(timeout)? {
@@ -2185,6 +2347,164 @@ mod tests {
             jira_pipelines: None,
         })
         .unwrap()
+    }
+
+    fn kanban_fixture(with_day: bool) -> App {
+        let mut app = test_app();
+        let id = tasks::create_task_identity(
+            &app.conn, "u1", "US-1234", Some("Ticket summary"),
+        ).unwrap();
+        if with_day {
+            tasks::ensure_day_row(&app.conn, "u1", id, &app.date_str()).unwrap();
+        }
+        db::integrations::upsert(&app.conn, id, "jira", "issue_key", Some("US-1234")).unwrap();
+        db::integrations::upsert(&app.conn, id, "jira", "status", Some("To Do")).unwrap();
+        app.handle_key(key(KeyCode::Char('B'))).unwrap();
+        app
+    }
+
+    fn screen(app: &App) -> String {
+        let backend = ratatui::backend::TestBackend::new(180, 40);
+        let mut terminal = ratatui::Terminal::new(backend).unwrap();
+        terminal.draw(|f| crate::ui::draw(f, app)).unwrap();
+        terminal.backend().buffer().content.chunks(180)
+            .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
+            .collect::<Vec<_>>().join("\n")
+    }
+
+    #[test]
+    fn kanban_distinct_title_uses_a_separate_line() {
+        let mut app = kanban_fixture(true);
+        app.handle_key(key(KeyCode::Char('i'))).unwrap();
+        assert!(screen(&app).contains("task detail"));
+        app.handle_key(key(KeyCode::Esc)).unwrap();
+        // A distinct task title belongs below the key, not concatenated to it.
+        app.kanban.cards[0].label = "Distinct title".into();
+        let rendered = screen(&app);
+        assert_eq!(rendered.matches("US-1234").count(), 1);
+        assert!(rendered.contains("Distinct title"));
+        let key_row = rendered.lines().find(|line| line.contains("US-1234")).unwrap();
+        assert!(!key_row.contains("Distinct title"));
+    }
+
+    #[test]
+    fn kanban_title_does_not_repeat_the_issue_key() {
+        let app = kanban_fixture(false);
+        let rendered = screen(&app);
+        assert_eq!(
+            rendered.matches("US-1234").count(), 1,
+            "a bare issue-key label must not be rendered as US-1234US-1234"
+        );
+    }
+
+    #[test]
+    fn kanban_detail_opens_before_adding_a_daily_row() {
+        let mut app = kanban_fixture(false);
+        app.handle_key(key(KeyCode::Char('i'))).unwrap();
+        let rendered = screen(&app);
+        assert!(rendered.contains("task detail"), "i must display the ticket detail");
+        assert!(rendered.contains("Ticket summary"), "detail must include identity content");
+        app.handle_key(key(KeyCode::Esc)).unwrap();
+        app.handle_key(key(KeyCode::Right)).unwrap();
+        assert!(matches!(app.overlay, Overlay::None));
+        assert_eq!(app.kanban.selected_col, 1, "closing detail restores navigation");
+        let days: i64 = app.conn.query_row("SELECT COUNT(*) FROM task_days", [], |r| r.get(0)).unwrap();
+        assert_eq!(days, 0, "reading detail must not add the ticket to Daily");
+    }
+
+    #[test]
+    fn kanban_detail_stays_responsive_when_bitbucket_stalls() {
+        const CHILD: &str = "TASK_TIMER_DETAIL_REPRO_CHILD";
+        if std::env::var_os(CHILD).is_some() {
+            for mode in [AppMode::Kanban, AppMode::Daily, AppMode::Archive] {
+                let mut app = kanban_fixture(true);
+                let id = app.kanban.cards[0].task_id;
+                db::integrations::upsert(&app.conn, id, "git", "branch", Some("feature/ticket")).unwrap();
+                app.bitbucket_workspace = Some("fixture".into());
+                app.bitbucket_repo = Some("fixture".into());
+                app.mode = mode;
+                app.reload().unwrap();
+                app.reload_archive().unwrap();
+                app.handle_key(key(KeyCode::Char('i'))).unwrap();
+                assert!(screen(&app).contains("task detail"), "{mode:?} detail must appear");
+                app.handle_key(key(KeyCode::Esc)).unwrap();
+                assert!(matches!(app.overlay, Overlay::None), "{mode:?} must accept Escape");
+            }
+            return;
+        }
+        // Child-only proxy/credentials isolate this test from other tests and
+        // guarantee that no request can reach Bitbucket or use real credentials.
+        let proxy = std::net::TcpListener::bind("127.0.0.1:0").unwrap();
+        let address = proxy.local_addr().unwrap();
+        std::thread::spawn(move || {
+            if let Ok((_connection, _)) = proxy.accept() {
+                std::thread::sleep(StdDuration::from_secs(2));
+            }
+        });
+        let mut child = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", "app::tests::kanban_detail_stays_responsive_when_bitbucket_stalls", "--nocapture"])
+            .env(CHILD, "1")
+            .env("HTTPS_PROXY", format!("http://{address}"))
+            .env("ALL_PROXY", format!("http://{address}"))
+            .env("NO_PROXY", "")
+            .env("no_proxy", "")
+            .env("BITBUCKET_EMAIL", "fixture@example.invalid")
+            .env("BITBUCKET_TOKEN", "fixture-not-a-secret")
+            .spawn().unwrap();
+        let deadline = Instant::now() + StdDuration::from_secs(1);
+        loop {
+            if let Some(status) = child.try_wait().unwrap() {
+                assert!(status.success(), "detail child failed");
+                break;
+            }
+            if Instant::now() >= deadline {
+                child.kill().unwrap();
+                child.wait().unwrap();
+                panic!("opening detail freezes input while Bitbucket is stalled");
+            }
+            std::thread::sleep(StdDuration::from_millis(10));
+        }
+    }
+
+    #[test]
+    fn detail_enrichment_cannot_overwrite_a_reopened_ticket() {
+        let mut app = kanban_fixture(true);
+        let second = tasks::create_task(&app.conn, "u1", &app.date_str(), "US-9999", Some("Second ticket")).unwrap();
+        db::integrations::upsert(&app.conn, second.id, "jira", "issue_key", Some("US-9999")).unwrap();
+        app.enter_kanban().unwrap();
+        app.handle_key(key(KeyCode::Char('i'))).unwrap();
+        let (old_sender, receiver) = std::sync::mpsc::channel();
+        app.detail_updates = Some(receiver);
+        old_sender.send(DetailUpdate {
+            prs: Vec::new(), statuses: Vec::new(), warnings: vec!["stale failure".into()],
+        }).unwrap();
+        app.handle_key(key(KeyCode::Esc)).unwrap();
+        let columns = app.kanban_columns();
+        let other = columns.iter().position(|c| c == "Other").unwrap();
+        for _ in 0..other {
+            app.handle_key(key(KeyCode::Right)).unwrap();
+        }
+        app.handle_key(key(KeyCode::Char('i'))).unwrap();
+        app.poll_detail_updates();
+        assert!(screen(&app).contains("Second ticket"));
+        assert!(!screen(&app).contains("stale failure"));
+
+        let (sender, receiver) = std::sync::mpsc::channel();
+        app.detail_updates = Some(receiver);
+        sender.send(DetailUpdate {
+            prs: vec![crate::bitbucket::PullRequest {
+                id: 7, title: "Current ticket PR".into(), state: "OPEN".into(),
+                author: None, url: None,
+            }],
+            statuses: Vec::new(),
+            warnings: vec!["fixture status unavailable".into()],
+        }).unwrap();
+        app.poll_detail_updates();
+        let rendered = screen(&app);
+        assert!(rendered.contains("Second ticket"));
+        assert!(rendered.contains("Current ticket PR"));
+        assert!(rendered.contains("fixture status unavailable"));
+        assert!(!rendered.contains("stale failure"));
     }
 
     #[test]

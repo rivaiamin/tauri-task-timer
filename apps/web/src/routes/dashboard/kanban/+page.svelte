@@ -1,5 +1,6 @@
 <script lang="ts">
   import { columnForJiraStatus } from "$lib/kanbanColumns";
+  import { withPending } from "$lib/stores/pending";
   import type { PageData } from "./$types";
   export let data: PageData;
   let cards = data.cards;
@@ -13,10 +14,18 @@
     busy = true;
     statusMsg = "";
     try {
-      const res = await fetch(path, { method: "POST", headers: body ? { "content-type": "application/json" } : {}, body: body ? JSON.stringify(body) : undefined });
-      statusMsg = res.ok ? "ok" : await res.text();
-      await reload();
-    } finally { busy = false; }
+      await withPending(async () => {
+        const res = await fetch(path, {
+          method: "POST",
+          headers: body ? { "content-type": "application/json" } : {},
+          body: body ? JSON.stringify(body) : undefined
+        });
+        statusMsg = res.ok ? "ok" : await res.text();
+        await reload();
+      });
+    } finally {
+      busy = false;
+    }
   }
 </script>
 <div class="p-4">
@@ -28,6 +37,7 @@
     <button disabled={busy} on:click={() => post("/api/kanban/pipeline", { pipeline: "local-ok", dryRun: true })}>local-ok</button>
     <a href="/dashboard" class="underline">Daily</a>
   </div>
+  {#if busy}<p class="text-sm text-indigo-600 dark:text-indigo-400">Working…</p>{/if}
   {#if statusMsg}<p class="text-sm">{statusMsg}</p>{/if}
   <div class="flex gap-2 overflow-x-auto">
     {#each data.columns as col}

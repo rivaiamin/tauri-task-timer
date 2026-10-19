@@ -743,6 +743,61 @@ mod tests {
     }
 
     #[test]
+    fn kanban_ingest_does_not_create_a_day_row() {
+        let conn = setup();
+        let issues = vec![(
+            "US-300".to_string(),
+            "Kanban only".to_string(),
+            "To Do".to_string(),
+        )];
+        let rows = db::tasks::ingest_jira_issues_with_options(
+            &conn,
+            "u1",
+            "2026-10-21",
+            &issues,
+            db::tasks::IngestJiraOptions {
+                ensure_day_row: false,
+            },
+        )
+        .unwrap();
+        assert_eq!(rows.len(), 1);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM task_days"), 0);
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tasks"), 1);
+    }
+
+    #[test]
+    fn kanban_ingest_reuses_task_linked_by_issue_key() {
+        let conn = setup();
+        conn.execute_batch(
+            "INSERT INTO tasks (user_id, label) VALUES ('u1', 'Fix login flow');",
+        )
+        .unwrap();
+        db::integrations::upsert(&conn, 1, "jira", "issue_key", Some("US-400")).unwrap();
+
+        let issues = vec![(
+            "US-400".to_string(),
+            "From JIRA".to_string(),
+            "In Progress".to_string(),
+        )];
+        db::tasks::ingest_jira_issues_with_options(
+            &conn,
+            "u1",
+            "2026-10-22",
+            &issues,
+            db::tasks::IngestJiraOptions {
+                ensure_day_row: false,
+            },
+        )
+        .unwrap();
+
+        assert_eq!(count(&conn, "SELECT COUNT(*) FROM tasks"), 1);
+        assert_eq!(
+            integration_rows(&conn)[1].2.as_deref(),
+            Some("In Progress")
+        );
+    }
+
+    #[test]
     fn ingest_creates_the_identity_the_day_row_and_the_jira_rows() {
         let conn = setup();
         let issues = vec![(

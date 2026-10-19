@@ -84,6 +84,28 @@ describe('kanban pull', () => {
     expect(result.issuesProcessed).toBe(2);
     expect(result.ingested).toBe(result.issuesProcessed);
   });
+
+  it('does not add pulled issues to the daily task list', async () => {
+    const USER = 'u-pull-daily';
+    const DAY = '2026-10-23';
+    const { users, taskDays, tasks } = await import('./db/schema');
+    const { eq } = await import('drizzle-orm');
+    const dbmod = await import('./db');
+    const now = new Date();
+    dbmod.db.insert(users).values({ id: USER, email: 'pull@example.com', passwordHash: 'x', createdAt: now }).run();
+    const before = svc.listTasks(USER, DAY).tasks.length;
+    await kanban.pullKanbanSprint(USER, DAY);
+    const after = svc.listTasks(USER, DAY).tasks.length;
+    expect(after).toBe(before);
+    const userTaskIds = dbmod.db.select({ id: tasks.id }).from(tasks).where(eq(tasks.userId, USER)).all().map((r) => r.id);
+    const days = dbmod.db
+      .select()
+      .from(taskDays)
+      .all()
+      .filter((d) => userTaskIds.includes(d.taskId));
+    expect(days).toHaveLength(0);
+    expect(kanban.listKanbanCards(USER, DAY).length).toBeGreaterThan(0);
+  });
 });
 
 describe('kanban refresh', () => {

@@ -103,7 +103,8 @@ export async function pullKanbanSprint(
 			key: issue.key,
 			summary: issue.summary,
 			status: issue.status
-		}))
+		})),
+		'kanban'
 	);
 	const refresh = await refreshKanbanStatuses(userId);
 	const issuesProcessed = issues.length;

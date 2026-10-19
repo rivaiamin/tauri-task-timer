@@ -2,13 +2,10 @@ use crate::timer::{current_elapsed_seconds, now_ms};
 use anyhow::{bail, Result};
 use rusqlite::{params, Connection, OptionalExtension};
 
-/// One task, joined with one of its days.
+/// One task identity with a day snapshot when available.
 ///
-/// `tasks` holds the identity (label, description, code, link, notes, tags);
-/// `task_days` holds everything that varies per day (the timer, the day's
-/// ordering, and the day's lifecycle state). A `Task` is therefore always "this
-/// task, on one particular day" — `day_id` is the day it was read from, and the
-/// flat timer/status fields come from that day's row.
+/// Identity-only reads use day_id = 0, empty work_date, and idle timer defaults
+/// until the task is explicitly added to a day.
 #[derive(Clone, Debug)]
 pub struct Task {
     /// The task identity's id. Stable across every day the task is worked.
@@ -184,14 +181,24 @@ pub fn get_task_on(
 const IDENTITY_DAY: &str =
     "td.id = (SELECT MAX(d2.id) FROM task_days d2 WHERE d2.task_id = t.id)";
 
-/// The task identity by its own id, whatever days it was worked.
+/// The task identity by its own id, including tickets not yet worked on any day.
 pub fn get_task_identity(
     conn: &Connection,
     user_id: &str,
     task_id: i64,
 ) -> Result<Option<Task>> {
     conn.query_row(
-        &format!("SELECT {COLS} {JOIN} WHERE t.user_id = ?1 AND t.id = ?2 AND {IDENTITY_DAY}"),
+        &format!(
+            "SELECT t.id, t.label, t.description, t.code, t.link, t.notes, t.tags,
+                    COALESCE(td.id, 0), COALESCE(td.status, 'todo'),
+                    COALESCE(td.elapsed_time, 0), COALESCE(td.total_time, 0), COALESCE(td.position, 0),
+                    COALESCE(td.is_running, 0), COALESCE(td.done, 0), COALESCE(td.is_completed, 0),
+                    COALESCE(td.is_cancelled, 0), COALESCE(td.is_deleted, 0), COALESCE(td.is_archived, 0),
+                    COALESCE(td.is_pinned, 0), COALESCE(td.is_important, 0),
+                    td.start_time, td.end_time, COALESCE(td.work_date, '')
+             FROM tasks t LEFT JOIN task_days td ON td.task_id = t.id AND {IDENTITY_DAY}
+             WHERE t.user_id = ?1 AND t.id = ?2"
+        ),
         params![user_id, task_id],
         map_row,
     )
@@ -201,18 +208,39 @@ pub fn get_task_identity(
 
 /// Every identity whose label matches, whatever days they were worked. Not
 /// date-scoped, so it can return more than one row for a label the user reused.
+fn find_task_ids_by_exact_label(conn: &Connection, user_id: &str, label: &str) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT id FROM tasks WHERE user_id = ?1 AND label = ?2 COLLATE NOCASE ORDER BY id ASC",
+    )?;
+    let rows = stmt.query_map(params![user_id, label], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
+fn find_task_ids_by_issue_key(conn: &Connection, user_id: &str, key: &str) -> Result<Vec<i64>> {
+    let mut stmt = conn.prepare(
+        "SELECT t.id FROM tasks t
+         INNER JOIN task_integrations k ON k.task_id = t.id
+           AND k.\"group\" = 'jira' AND k.field = 'issue_key' AND k.value = ?1 COLLATE NOCASE
+         WHERE t.user_id = ?2
+         ORDER BY t.id ASC",
+    )?;
+    let rows = stmt.query_map(params![key, user_id], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 pub fn find_task_identities_by_label(
     conn: &Connection,
     user_id: &str,
     label: &str,
 ) -> Result<Vec<Task>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {COLS} {JOIN}
-         WHERE t.user_id = ?1 AND t.label = ?2 COLLATE NOCASE AND {IDENTITY_DAY}
-         ORDER BY t.id ASC"
-    ))?;
-    let rows = stmt.query_map(params![user_id, label], map_row)?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    let ids = find_task_ids_by_exact_label(conn, user_id, label)?;
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        if let Some(task) = get_task_identity(conn, user_id, id)? {
+            out.push(task);
+        }
+    }
+    Ok(out)
 }
 
 /// Identities whose label *starts with* `prefix` followed by a word boundary.
@@ -221,22 +249,68 @@ pub fn find_task_identities_by_label(
 /// natural handle for a task whose label carries extra text. Matching on the
 /// space keeps `US-1` from also matching `US-10`, and the caller rejects an
 /// ambiguous result rather than picking one.
+fn find_task_ids_by_label_prefix(conn: &Connection, user_id: &str, prefix: &str) -> Result<Vec<i64>> {
+    let pattern = format!(
+        "{} %",
+        prefix.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
+    );
+    let mut stmt = conn.prepare(
+        "SELECT id FROM tasks WHERE user_id = ?1 AND label LIKE ?2 ESCAPE '\\' COLLATE NOCASE ORDER BY id ASC",
+    )?;
+    let rows = stmt.query_map(params![user_id, pattern], |r| r.get(0))?;
+    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+}
+
 pub fn find_task_identities_by_label_prefix(
     conn: &Connection,
     user_id: &str,
     prefix: &str,
 ) -> Result<Vec<Task>> {
-    let mut stmt = conn.prepare(&format!(
-        "SELECT {COLS} {JOIN}
-         WHERE t.user_id = ?1 AND t.label LIKE ?2 ESCAPE '\\' COLLATE NOCASE AND {IDENTITY_DAY}
-         ORDER BY t.id ASC"
-    ))?;
-    let pattern = format!(
-        "{} %",
-        prefix.replace('\\', "\\\\").replace('%', "\\%").replace('_', "\\_")
-    );
-    let rows = stmt.query_map(params![user_id, pattern], map_row)?;
-    Ok(rows.collect::<rusqlite::Result<Vec<_>>>()?)
+    let ids = find_task_ids_by_label_prefix(conn, user_id, prefix)?;
+    let mut out = Vec::with_capacity(ids.len());
+    for id in ids {
+        if let Some(task) = get_task_identity(conn, user_id, id)? {
+            out.push(task);
+        }
+    }
+    Ok(out)
+}
+
+/// Resolve a Jira issue key to a task identity id (integration row, then label).
+pub fn resolve_jira_issue_identity(
+    conn: &Connection,
+    user_id: &str,
+    key: &str,
+) -> Result<Option<i64>> {
+    let selector = key.trim();
+    if selector.is_empty() {
+        bail!("task selector is required");
+    }
+    match find_task_ids_by_issue_key(conn, user_id, selector)?.as_slice() {
+        [] => {}
+        [id] => return Ok(Some(*id)),
+        rest => return Err(ambiguous_identity(selector, &identity_tasks(conn, user_id, rest)?)),
+    }
+    match find_task_ids_by_exact_label(conn, user_id, selector)?.as_slice() {
+        [] => {}
+        [id] => return Ok(Some(*id)),
+        rest => return Err(ambiguous_identity(selector, &identity_tasks(conn, user_id, rest)?)),
+    }
+    match find_task_ids_by_label_prefix(conn, user_id, selector)?.as_slice() {
+        [] => Ok(None),
+        [id] => Ok(Some(*id)),
+        rest => Err(ambiguous_identity(selector, &identity_tasks(conn, user_id, rest)?)),
+    }
+}
+
+fn identity_tasks(conn: &Connection, user_id: &str, ids: &[i64]) -> Result<Vec<Task>> {
+    let mut out = Vec::new();
+    for id in ids {
+        if let Some(task) = get_task_identity(conn, user_id, *id)? {
+            out.push(task);
+        }
+    }
+    Ok(out)
 }
 
 /// The day row by its own id — what a mutation returns after writing.
@@ -303,13 +377,13 @@ pub fn ensure_day_row(
 /// caller-supplied description fills in a task that has none, and a task that
 /// already has one keeps it. That is what "the description carries over to the
 /// next day" means now — there is only ever one.
-pub fn create_task(
+/// Insert or reuse a task identity (no `task_days` row).
+pub fn create_task_identity(
     conn: &Connection,
     user_id: &str,
-    work_date: &str,
     label: &str,
     description: Option<&str>,
-) -> Result<Task> {
+) -> Result<i64> {
     let label = label.trim();
     if label.is_empty() {
         bail!("label is required");
@@ -325,18 +399,16 @@ pub fn create_task(
         )
         .optional()?;
 
-    let task_id = match existing_id {
+    match existing_id {
         Some(id) => {
             if let Some(desc) = supplied {
-                // Only fill a gap: an existing description is the task's, not
-                // this day's to overwrite.
                 conn.execute(
                     "UPDATE tasks SET description = ?1, updated_at = ?2
                      WHERE id = ?3 AND (description IS NULL OR description = '')",
                     params![desc, now, id],
                 )?;
             }
-            id
+            Ok(id)
         }
         None => {
             conn.execute(
@@ -344,10 +416,19 @@ pub fn create_task(
                  VALUES (?1, ?2, ?3, ?4, ?4)",
                 params![user_id, label, supplied, now],
             )?;
-            conn.last_insert_rowid()
+            Ok(conn.last_insert_rowid())
         }
-    };
+    }
+}
 
+pub fn create_task(
+    conn: &Connection,
+    user_id: &str,
+    work_date: &str,
+    label: &str,
+    description: Option<&str>,
+) -> Result<Task> {
+    let task_id = create_task_identity(conn, user_id, label, description)?;
     ensure_day_row(conn, user_id, task_id, work_date)
 }
 
@@ -486,37 +567,83 @@ pub fn normalize_legacy_jira_label(
 /// key names.
 ///
 /// A task with no such identity is created (upsert on `idx_tasks_user_label`, day
-/// row on `idx_task_days_task_date`), which is what makes a repeated call
-/// idempotent. The task's own `status` column is left alone; the timer owns it.
+/// row on `idx_task_days_task_date` when `ensure_day_row`), which is what makes
+/// a repeated call idempotent. The task's own `status` column is left alone;
+/// the timer owns it.
+#[derive(Clone, Copy, Debug)]
+pub struct IngestJiraOptions {
+    pub ensure_day_row: bool,
+}
+
+impl Default for IngestJiraOptions {
+    fn default() -> Self {
+        Self { ensure_day_row: true }
+    }
+}
+
 pub fn ingest_jira_issues(
     conn: &Connection,
     user_id: &str,
     work_date: &str,
     issues: &[JiraIssue],
 ) -> Result<Vec<Task>> {
+    ingest_jira_issues_with_options(conn, user_id, work_date, issues, IngestJiraOptions::default())
+}
+
+pub fn ingest_jira_issues_with_options(
+    conn: &Connection,
+    user_id: &str,
+    work_date: &str,
+    issues: &[JiraIssue],
+    options: IngestJiraOptions,
+) -> Result<Vec<Task>> {
     let mut tasks = Vec::with_capacity(issues.len());
     for (key, summary, status) in issues {
-        // Prefer the task this key already names. An ambiguous match propagates
-        // as an error rather than falling through to a create — a third row for a
-        // key matching two is worse than refusing.
-        let existing = find_task_identity(conn, user_id, key)?;
-        let task = match existing {
-            Some(task) => {
-                normalize_legacy_jira_label(conn, user_id, task.id, key, summary)?;
-                ensure_day_row(conn, user_id, task.id, work_date)?
+        let task_id = match resolve_jira_issue_identity(conn, user_id, key)? {
+            Some(id) => {
+                normalize_legacy_jira_label(conn, user_id, id, key, summary)?;
+                if options.ensure_day_row {
+                    ensure_day_row(conn, user_id, id, work_date)?;
+                }
+                id
             }
-            None => create_task(conn, user_id, work_date, key, Some(summary))?,
+            None => {
+                if options.ensure_day_row {
+                    create_task(conn, user_id, work_date, key, Some(summary))?.id
+                } else {
+                    create_task_identity(conn, user_id, key, Some(summary))?
+                }
+            }
         };
-        crate::db::integrations::upsert(conn, task.id, "jira", "issue_key", Some(key))?;
-        // Kept beside the key so the detail view and the archive's integration
-        // filter can read what JIRA reported. An empty status (a fetch that
-        // returned no status) must not blank a previously stored one.
+        crate::db::integrations::upsert(conn, task_id, "jira", "issue_key", Some(key))?;
         if !status.is_empty() {
-            crate::db::integrations::upsert(conn, task.id, "jira", "status", Some(status))?;
+            crate::db::integrations::upsert(conn, task_id, "jira", "status", Some(status))?;
         }
+        let task = snapshot_task_after_ingest(
+            conn,
+            user_id,
+            task_id,
+            work_date,
+            options.ensure_day_row,
+        )?;
         tasks.push(task);
     }
     Ok(tasks)
+}
+
+fn snapshot_task_after_ingest(
+    conn: &Connection,
+    user_id: &str,
+    task_id: i64,
+    work_date: &str,
+    ensure_day_row: bool,
+) -> Result<Task> {
+    if ensure_day_row {
+        return get_task_on(conn, user_id, task_id, work_date)?
+            .ok_or_else(|| anyhow::anyhow!("task {task_id} missing day row for {work_date}"));
+    }
+    get_task_identity(conn, user_id, task_id)?
+        .ok_or_else(|| anyhow::anyhow!("task {task_id} missing after ingest"))
 }
 
 /// Close a running day row, committing its live seconds. Returns the delta that

@@ -603,16 +603,6 @@ pub fn jql_open_sprint_assignee_undone(projects: &[String]) -> String {
     )
 }
 
-/// Unassigned To Do in open sprint with no linked commits.
-pub fn jql_open_sprint_unassigned_todo(projects: &[String]) -> String {
-    let base = r#"assignee is EMPTY AND status = "To Do" AND sprint in openSprints() AND development[commits].all = 0"#;
-    let scope = jql_project_in(projects);
-    if scope.is_empty() {
-        return base.to_string();
-    }
-    format!("{scope} AND {base}")
-}
-
 /// Search issues by JQL. Returns (issue_key, summary, status_name) tuples.
 ///
 /// The v3 search endpoint moved to `/search/jql`; when the old path answers 410
