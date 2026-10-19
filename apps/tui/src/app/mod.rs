@@ -438,6 +438,7 @@ impl App {
     }
 
     fn kanban_pull(&mut self) -> Result<()> {
+        self.set_status("kanban: pulling sprint…");
         let report = crate::kanban::kanban_pull_sprint(
             &self.conn,
             &self.user_id,

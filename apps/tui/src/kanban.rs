@@ -159,7 +159,7 @@ pub fn kanban_card_at<'a>(
     cards.get(*idx)
 }
 
-fn resolve_bin(cfg: &Config, configured: Option<String>, default_name: &str) -> Result<PathBuf> {
+fn resolve_bin(configured: Option<String>, default_name: &str) -> Result<PathBuf> {
     if let Some(p) = configured {
         let pb = PathBuf::from(p);
         if pb.exists() {
@@ -191,7 +191,6 @@ fn run_cmd(bin: &PathBuf, args: &[&str]) -> Result<PipelineOutput> {
 
 pub fn run_local_ok_pr_sync(cfg: &Config, projects: &[String], dry_run: bool, json: bool) -> Result<PipelineOutput> {
     let bin = resolve_bin(
-        cfg,
         cfg.jira_pipelines.as_ref().and_then(|p| p.local_ok_pr_sync.clone()),
         "jira-local-ok-pr-sync",
     )?;
@@ -225,7 +224,6 @@ pub fn run_cek_di_prod_done(
     json: bool,
 ) -> Result<PipelineOutput> {
     let bin = resolve_bin(
-        cfg,
         cfg.jira_pipelines.as_ref().and_then(|p| p.cek_di_prod_done.clone()),
         "jira-cek-di-prod-done",
     )?;
@@ -252,7 +250,6 @@ pub fn run_cek_di_prod_done(
 
 pub fn run_unassigned_todo(cfg: &Config, project: Option<&str>, json: bool) -> Result<PipelineOutput> {
     let bin = resolve_bin(
-        cfg,
         cfg.jira_pipelines.as_ref().and_then(|p| p.unassigned_todo.clone()),
         "jira-unassigned-todo",
     )?;
