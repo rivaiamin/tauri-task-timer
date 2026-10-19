@@ -71,6 +71,94 @@ pub fn column_for_status(status: &str) -> String {
     "Other".to_string()
 }
 
+pub fn column_card_indices(cards: &[tasks::KanbanCard], column: &str) -> Vec<usize> {
+    cards
+        .iter()
+        .enumerate()
+        .filter(|(_, c)| column_for_status(&c.jira_status) == column)
+        .map(|(i, _)| i)
+        .collect()
+}
+
+pub fn clamp_kanban_cursor(
+    col: &mut usize,
+    row: &mut usize,
+    columns: &[String],
+    cards: &[tasks::KanbanCard],
+) {
+    if columns.is_empty() {
+        *col = 0;
+        *row = 0;
+        return;
+    }
+    if *col >= columns.len() {
+        *col = columns.len() - 1;
+    }
+    let indices = column_card_indices(cards, &columns[*col]);
+    if indices.is_empty() {
+        *row = 0;
+    } else if *row >= indices.len() {
+        *row = indices.len() - 1;
+    }
+}
+
+pub fn initial_kanban_cursor(columns: &[String], cards: &[tasks::KanbanCard]) -> (usize, usize) {
+    for (col, name) in columns.iter().enumerate() {
+        if !column_card_indices(cards, name).is_empty() {
+            return (col, 0);
+        }
+    }
+    (0, 0)
+}
+
+pub fn move_kanban_col(
+    col: &mut usize,
+    row: &mut usize,
+    delta: i32,
+    columns: &[String],
+    cards: &[tasks::KanbanCard],
+) {
+    if columns.is_empty() {
+        return;
+    }
+    let next = (*col as i32 + delta).clamp(0, columns.len() as i32 - 1) as usize;
+    *col = next;
+    clamp_kanban_cursor(col, row, columns, cards);
+}
+
+pub fn move_kanban_row(
+    col: usize,
+    row: &mut usize,
+    delta: i32,
+    columns: &[String],
+    cards: &[tasks::KanbanCard],
+) {
+    if columns.is_empty() {
+        return;
+    }
+    let col_name = &columns[col.min(columns.len() - 1)];
+    let len = column_card_indices(cards, col_name).len();
+    if len == 0 {
+        return;
+    }
+    let next = (*row as i32 + delta).clamp(0, len as i32 - 1) as usize;
+    *row = next;
+}
+
+pub fn kanban_card_at<'a>(
+    cards: &'a [tasks::KanbanCard],
+    columns: &[String],
+    col: usize,
+    row: usize,
+) -> Option<&'a tasks::KanbanCard> {
+    if columns.is_empty() || col >= columns.len() {
+        return None;
+    }
+    let indices = column_card_indices(cards, &columns[col]);
+    let idx = indices.get(row)?;
+    cards.get(*idx)
+}
+
 fn resolve_bin(cfg: &Config, configured: Option<String>, default_name: &str) -> Result<PathBuf> {
     if let Some(p) = configured {
         let pb = PathBuf::from(p);
@@ -180,4 +268,81 @@ pub fn run_unassigned_todo(cfg: &Config, project: Option<&str>, json: bool) -> R
         bail!("jira-unassigned-todo failed: {}", out.stderr);
     }
     Ok(out)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::db::tasks::KanbanCard;
+
+    fn card(key: &str, status: &str) -> KanbanCard {
+        KanbanCard {
+            task_id: 1,
+            label: key.to_string(),
+            issue_key: key.to_string(),
+            jira_status: status.to_string(),
+            running_today: false,
+        }
+    }
+
+    fn sample_cards() -> Vec<KanbanCard> {
+        vec![
+            card("US-1", "To Do"),
+            card("US-2", "To Do"),
+            card("US-3", "In Progress"),
+        ]
+    }
+
+    #[test]
+    fn initial_cursor_skips_empty_leading_columns() {
+        let cols = kanban_column_order();
+        let cards = sample_cards();
+        let (c, r) = initial_kanban_cursor(&cols, &cards);
+        let name = &cols[c];
+        assert!(!column_card_indices(&cards, name).is_empty());
+        assert_eq!(r, 0);
+    }
+
+    #[test]
+    fn move_row_does_not_wrap() {
+        let cols = kanban_column_order();
+        let cards = sample_cards();
+        let todo = "To Do".to_string();
+        let col = cols.iter().position(|c| c == &todo).unwrap();
+        let mut row = 0usize;
+        move_kanban_row(col, &mut row, -1, &cols, &cards);
+        assert_eq!(row, 0);
+        let len = column_card_indices(&cards, &todo).len();
+        row = len - 1;
+        move_kanban_row(col, &mut row, 1, &cols, &cards);
+        assert_eq!(row, len - 1);
+    }
+
+    #[test]
+    fn move_col_into_empty_lane_yields_no_card() {
+        let cols = kanban_column_order();
+        let cards = sample_cards();
+        let todo = "To Do".to_string();
+        let mut col = cols.iter().position(|c| c == &todo).unwrap();
+        let mut row = 0usize;
+        for _ in 0..cols.len() {
+            move_kanban_col(&mut col, &mut row, 1, &cols, &cards);
+            if column_card_indices(&cards, &cols[col]).is_empty() {
+                assert!(kanban_card_at(&cards, &cols, col, row).is_none());
+                return;
+            }
+        }
+    }
+
+    #[test]
+    fn clamp_row_after_shrink() {
+        let cols = kanban_column_order();
+        let cards = sample_cards();
+        let todo = "To Do".to_string();
+        let mut col = cols.iter().position(|c| c == &todo).unwrap();
+        let mut row = 5usize;
+        clamp_kanban_cursor(&mut col, &mut row, &cols, &cards);
+        let len = column_card_indices(&cards, &todo).len();
+        assert_eq!(row, len - 1);
+    }
 }

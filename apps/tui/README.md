@@ -54,8 +54,10 @@ by key. A fetched issue becomes a task labelled `KEY summary`, and both its
 
 Reading the ticket in full is the browser's job: `o` (in the daily list, the
 archive, or the detail view) hands `{JIRA_SITE}/browse/{KEY}` to your default
-browser. The detail view (`i`) shows the stored integration rows alongside
-comments and PR state.
+browser. The detail view (`i`) immediately shows stored task content, integrations,
+and comments. PRs and commit statuses load in the background; slow Bitbucket or git
+lookups do not block navigation or closing the view. Closing/reopening detail
+discards results from the previous request.
 
 ### `jira ensure` (headless)
 
@@ -176,6 +178,12 @@ keypress:
 - The sprint orchestrator is the writer; see `~/.agents/skills/orchestrator`.
 
 ### Kanban
+
+Press `B` to open the board. Use `←/→` (`h/l`) for lanes and `↑/↓` (`j/k`)
+for cards, `i` for details, `o` for JIRA, and `c`/Enter to add the selected
+ticket to the viewed Daily date. Details work before a ticket has any daily row
+and do not add one. A card shows its issue key once, with a distinct task title
+on a separate line when present.
 
 ```bash
 task-timer-tui kanban list --json
