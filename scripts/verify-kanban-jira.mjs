@@ -218,6 +218,13 @@ async function verifyPull() {
       console.error("issue_key not written for pull");
       process.exit(1);
     }
+    const dayRows = new DatabaseSync(fixture.dbPath, { readOnly: true })
+      .prepare("SELECT COUNT(*) AS c FROM task_days")
+      .get()?.c;
+    if (dayRows !== 0) {
+      console.error("kanban pull must not create task_days rows", dayRows);
+      process.exit(1);
+    }
   } finally {
     await stub.close();
     rmSync(fixture.dir, { recursive: true, force: true });

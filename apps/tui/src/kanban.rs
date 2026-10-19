@@ -34,7 +34,16 @@ pub fn kanban_pull_sprint(
     }
     let jql = jql_open_sprint_assignee_undone(projects);
     let issues = jira::search_issues(&jql).with_context(|| format!("JQL: {jql}"))?;
-    let ingested = tasks::ingest_jira_issues(conn, user_id, work_date, &issues)?.len();
+    let ingested = tasks::ingest_jira_issues_with_options(
+        conn,
+        user_id,
+        work_date,
+        &issues,
+        tasks::IngestJiraOptions {
+            ensure_day_row: false,
+        },
+    )?
+    .len();
     let (_, warnings) = tasks::refresh_jira_statuses(conn, user_id)?;
     Ok(KanbanPullReport { ingested, warnings })
 }
