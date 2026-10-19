@@ -193,7 +193,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
     }
 }
 
-fn draw_help(frame: &mut Frame) {
+pub(super) fn draw_help(frame: &mut Frame) {
     let area = centered(
         frame.area(),
         52,

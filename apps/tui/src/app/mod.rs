@@ -1,4 +1,5 @@
 mod keymap;
+pub mod orchestrator;
 
 use anyhow::Result;
 use chrono::{Duration, NaiveDate};
@@ -37,6 +38,7 @@ pub enum AppMode {
     Daily,
     Archive,
     Kanban,
+    Orchestrator,
 }
 
 #[derive(Clone, Copy, PartialEq, Eq, Debug)]
@@ -166,6 +168,7 @@ pub struct App {
     /// Agent state per task id, for the daily list's badge. Refreshed with the
     /// task list, since both come from the same DB and change together.
     pub agent_states: std::collections::HashMap<i64, crate::db::integrations::AgentState>,
+    pub orchestrator: orchestrator::State,
     hook_listener: crate::hooks::HookListener,
     detail_updates: Option<std::sync::mpsc::Receiver<DetailUpdate>>,
 }
@@ -236,6 +239,7 @@ impl App {
             jira_monitor_projects,
             jira_pipelines,
             agent_states: std::collections::HashMap::new(),
+            orchestrator: orchestrator::State::new(),
             hook_listener: crate::hooks::HookListener::new(),
             detail_updates: None,
         };
@@ -293,6 +297,7 @@ impl App {
             AppMode::Archive => self.archive_selected_task(),
             AppMode::Kanban => self.kanban.focus_cache.as_ref(),
             AppMode::Daily => self.selected_task(),
+            AppMode::Orchestrator => None,
         }
     }
 
@@ -374,6 +379,18 @@ impl App {
         }
         self.update_kanban_focus_cache();
         Ok(())
+    }
+
+    fn enter_orchestrator(&mut self) {
+        let previous = self.mode;
+        self.mode = AppMode::Orchestrator;
+        self.overlay = Overlay::None;
+        self.orchestrator.enter(previous);
+    }
+
+    fn leave_orchestrator(&mut self) {
+        self.mode = self.orchestrator.previous_mode;
+        self.orchestrator.leave();
     }
 
     fn kanban_add_to_today(&mut self) -> Result<()> {
@@ -1916,7 +1933,24 @@ impl App {
         if key.kind != KeyEventKind::Press {
             return Ok(false);
         }
+        if self.orchestrator.quit_confirmation {
+            match key.code {
+                KeyCode::Char('y') | KeyCode::Char('Y') => {
+                    self.orchestrator.quit_confirmation = false;
+                    return Ok(true);
+                }
+                KeyCode::Esc | KeyCode::Char('n') | KeyCode::Char('N') => {
+                    self.orchestrator.quit_confirmation = false;
+                }
+                _ => return Ok(false),
+            }
+            return Ok(false);
+        }
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+            if self.orchestrator.needs_quit_confirmation() {
+                self.orchestrator.quit_confirmation = true;
+                return Ok(false);
+            }
             return Ok(true);
         }
         match &self.overlay {
@@ -1988,6 +2022,19 @@ impl App {
             Overlay::Jira { .. } => return self.handle_jira_key(key),
             Overlay::Git { .. } => return self.handle_git_key(key),
             Overlay::None => {}
+        }
+
+        if self.mode == AppMode::Orchestrator {
+            match self.orchestrator.handle_key(key) {
+                orchestrator::ViewAction::Stay => {}
+                orchestrator::ViewAction::Return => self.leave_orchestrator(),
+                orchestrator::ViewAction::Help => self.overlay = Overlay::Help,
+            }
+            return Ok(false);
+        }
+        if key.code == KeyCode::Char('O') {
+            self.enter_orchestrator();
+            return Ok(false);
         }
 
         if self.mode == AppMode::Archive {
@@ -2096,7 +2143,13 @@ impl App {
         }
 
         match key.code {
-            KeyCode::Char('q') => return Ok(true),
+            KeyCode::Char('q') => {
+                if self.orchestrator.needs_quit_confirmation() {
+                    self.orchestrator.quit_confirmation = true;
+                } else {
+                    return Ok(true);
+                }
+            }
             KeyCode::Char('a') => { self.toggle_archive()?; }
             KeyCode::Char('B') => { self.enter_kanban()?; }
             KeyCode::Char('?') => self.overlay = Overlay::Help,
@@ -2224,22 +2277,53 @@ impl App {
         Ok(())
     }
 
+    /// Bracketed paste is enabled for the Orchestrator composer. Everywhere else
+    /// the text is replayed as keystrokes, which is what terminals delivered
+    /// before it was enabled, so pasting into forms and filters keeps working.
+    fn handle_paste(&mut self, text: &str) -> Result<bool> {
+        if self.mode == AppMode::Orchestrator && matches!(self.overlay, Overlay::None) {
+            self.orchestrator.handle_paste(text);
+            return Ok(false);
+        }
+        for c in text.chars() {
+            let code = if c == '\n' || c == '\r' { KeyCode::Enter } else { KeyCode::Char(c) };
+            if self.handle_key(KeyEvent::new(code, KeyModifiers::NONE))? {
+                return Ok(true);
+            }
+        }
+        Ok(false)
+    }
+
     pub fn run(&mut self) -> Result<()> {
         let mut terminal = ratatui::init();
         let result = (|| {
+            crossterm::execute!(
+                std::io::stdout(),
+                crossterm::event::EnableBracketedPaste
+            )?;
             let mut last_reload = Instant::now();
             loop {
                 self.tick_status();
                 self.poll_detail_updates();
+                if self.mode == AppMode::Orchestrator {
+                    let width = terminal.size()?.width.saturating_sub(2).max(1) as usize;
+                    self.orchestrator.set_content_width(width);
+                }
                 terminal.draw(|f| crate::ui::draw(f, self))?;
                 let timeout = StdDuration::from_millis(250);
                 if event::poll(timeout)? {
-                    if let Event::Key(key) = event::read()? {
-                        match self.handle_key(key) {
+                    match event::read()? {
+                        Event::Key(key) => match self.handle_key(key) {
                             Ok(true) => break,
                             Ok(false) => {}
                             Err(e) => self.err_status(e),
-                        }
+                        },
+                        Event::Paste(text) => match self.handle_paste(&text) {
+                            Ok(true) => break,
+                            Ok(false) => {}
+                            Err(e) => self.err_status(e),
+                        },
+                        _ => {}
                     }
                 }
                 // Poll hook socket for agent events.
@@ -2248,19 +2332,28 @@ impl App {
                         self.err_status(e);
                     }
                 }
+                if self.mode == AppMode::Orchestrator {
+                    self.orchestrator.poll();
+                }
                 if last_reload.elapsed() >= StdDuration::from_secs(1) {
                     if self.mode == AppMode::Daily {
                         if let Err(e) = self.reload() {
                             self.err_status(e);
                         }
-                    } else if let Err(e) = self.reload_archive() {
-                        self.err_status(e);
+                    } else if self.mode != AppMode::Orchestrator {
+                        if let Err(e) = self.reload_archive() {
+                            self.err_status(e);
+                        }
                     }
                     last_reload = Instant::now();
                 }
             }
             Ok(())
         })();
+        let _ = crossterm::execute!(
+            std::io::stdout(),
+            crossterm::event::DisableBracketedPaste
+        );
         ratatui::restore();
         result
     }
@@ -2348,6 +2441,41 @@ mod tests {
         })
         .unwrap()
     }
+    #[test]
+    fn pasting_into_an_existing_form_still_reaches_its_field() {
+        let mut app = test_app();
+        app.handle_key(key(KeyCode::Char('n'))).unwrap();
+        assert!(matches!(app.overlay, Overlay::Form { .. }));
+        assert!(!app.handle_paste("US-42").unwrap());
+        match &app.overlay {
+            Overlay::Form { label, .. } => assert_eq!(label, "US-42"),
+            _ => panic!("form closed by paste"),
+        }
+    }
+
+    #[test]
+    fn quitting_with_orchestrator_draft_or_send_requires_confirmation() {
+        let mut app = test_app();
+        app.mode = AppMode::Orchestrator;
+        app.orchestrator.previous_mode = AppMode::Daily;
+        app.orchestrator.draft = "unsent instruction".into();
+        app.handle_key(key(KeyCode::Esc)).unwrap();
+        assert_eq!(app.mode, AppMode::Daily);
+        assert_eq!(app.orchestrator.draft, "unsent instruction");
+        assert!(!app.handle_key(key(KeyCode::Char('q'))).unwrap());
+        assert!(app.orchestrator.quit_confirmation);
+        app.handle_key(key(KeyCode::Char('n'))).unwrap();
+        assert!(!app.orchestrator.quit_confirmation);
+        assert_eq!(app.orchestrator.draft, "unsent instruction");
+
+        app.orchestrator.draft.clear();
+        app.orchestrator.delivery = orchestrator::DeliveryState::Sending;
+        let ctrl_c = KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL);
+        assert!(!app.handle_key(ctrl_c).unwrap());
+        assert!(app.orchestrator.quit_confirmation);
+        assert!(app.handle_key(key(KeyCode::Char('y'))).unwrap());
+    }
+
 
     fn kanban_fixture(with_day: bool) -> App {
         let mut app = test_app();
@@ -2944,4 +3072,41 @@ mod tests {
         app.archive.filter_integration = Some("1459".into());
         app.reload_archive().unwrap();
         assert_eq!(app.archive.tasks.len(), 1);
-    }}
+    }
+
+    #[test]
+    fn a_toggles_daily_archive_and_back() {
+        let mut app = test_app();
+
+        app.handle_key(key(KeyCode::Char('a'))).unwrap();
+        assert_eq!(app.mode, AppMode::Archive);
+
+        app.handle_key(key(KeyCode::Char('a'))).unwrap();
+        assert_eq!(app.mode, AppMode::Daily);
+    }
+
+    #[test]
+    fn uppercase_o_opens_and_returns_from_each_view_without_losing_selection() {
+        for mode in [AppMode::Daily, AppMode::Archive, AppMode::Kanban] {
+            let mut app = test_app();
+            app.orchestrator.discovery_program = "task-timer-missing-paseo".into();
+            app.mode = mode;
+            app.selected = 0;
+            app.archive.selected = 1;
+            app.kanban.selected_col = 2;
+            app.kanban.selected_row = 3;
+            let date = app.date;
+
+            app.handle_key(key(KeyCode::Char('O'))).unwrap();
+            assert_eq!(app.mode, AppMode::Orchestrator);
+            app.handle_key(key(KeyCode::Esc)).unwrap();
+
+            assert_eq!(app.mode, mode);
+            assert_eq!(app.date, date);
+            assert_eq!(app.selected, 0);
+            assert_eq!(app.archive.selected, 1);
+            assert_eq!(app.kanban.selected_col, 2);
+            assert_eq!(app.kanban.selected_row, 3);
+        }
+    }
+}

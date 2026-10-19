@@ -8,6 +8,7 @@ mod git;
 mod hooks;
 mod jira;
 mod kanban;
+mod orchestrator;
 mod report;
 mod timer;
 mod ui;
