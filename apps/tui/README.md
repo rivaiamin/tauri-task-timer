@@ -177,6 +177,47 @@ keypress:
   per task, and no network call. The `i` detail view lists every row.
 - The sprint orchestrator is the writer; see `~/.agents/skills/orchestrator`.
 
+### Orchestrator
+
+Press `O` (capital O) from Daily, Archive, or Kanban to open the **Orchestrator**
+driver conversation. It discovers Paseo agents labeled `orchestrator.role=driver`,
+shows retained history for the selected driver, and sends instructions with an
+exact-target `paseo send --no-wait --json <id> --prompt <text>` — not through the
+sprint runner's `driver-send` fallback. `Esc` or `q` returns to the mode you came
+from without losing selection or date.
+
+| Key / action | Behavior |
+|---|---|
+| `O` | Enter Orchestrator from Daily / Archive / Kanban |
+| `j` / `k`, `Enter` | Choose among multiple labeled drivers |
+| `Tab` | Focus composer; `Tab` / `Esc` from composer returns to history |
+| `Enter` | Newline in composer |
+| `Ctrl+S` | Send once to the confirmed driver |
+| `[` / `]` | Older / newer history page |
+| `r` | Refresh discovery or history |
+| `?` | Help overlay (shared with other modes) |
+| `q` / `Esc` | Back to the previous mode |
+
+**Delivery** is shown separately from agent activity and from history content:
+
+- *Sending…* while the Paseo CLI is in flight.
+- *Paseo accepted the message* means transport accepted the prompt — not a reply
+  or completion. The authoritative transcript is whatever history refresh shows.
+- *Not sent:* pre-dispatch refusal (no driver, busy worker, empty input).
+- *Delivery unknown:* nonzero exit, timeout, or malformed acknowledgment. The
+  draft stays in memory; there is no automatic resend. Retry requires explicit
+  confirmation when delivery was unknown.
+
+**Runtime:** history reads use a bundled Node adapter over the public Paseo SDK.
+**Node.js 22+** and a reachable local Paseo daemon are required for real drivers.
+The TUI does not store transcripts in SQLite and does not write orchestrator
+state files; reopening reloads from Paseo.
+
+When no labeled driver exists, the view stays read-only (refresh does **not**
+start a driver). Explicit Start/adopt is planned separately; see
+`docs/tui/orchestrator-contract.md` for the verified CLI/SDK contract and
+limitations.
+
 ### Kanban
 
 Press `B` to open the board. Use `←/→` (`h/l`) for lanes and `↑/↓` (`j/k`)
