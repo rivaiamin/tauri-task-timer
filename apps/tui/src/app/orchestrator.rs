@@ -1,6 +1,7 @@
 use crate::orchestrator::{
-    history_entry_rendered_lines, parse_drivers, parse_history_page, CommandResponse,
-    CommandWorker, Driver, HistoryCursor, HistoryEntry, HistoryPage,
+    history_entry_rendered_lines, parse_driver_start_id, parse_drivers, parse_history_page,
+    CommandResponse, CommandWorker, Driver, HistoryCursor, HistoryEntry, HistoryPage,
+    LIFECYCLE_COMMAND_TIMEOUT,
 };
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use serde_json::{json, Value};
@@ -30,11 +31,13 @@ pub struct State {
     pub error: Option<String>,
     pub(super) discovery_program: String,
     pub(super) node_program: String,
+    pub(super) lifecycle_program: String,
     pub loading: bool,
     pub focus: Focus,
     pub draft: String,
     pub delivery: DeliveryState,
     pub retry_confirmation: bool,
+    pub start_adopt_confirmation: bool,
     pub quit_confirmation: bool,
     pub history: Vec<HistoryEntry>,
     pub history_scroll: usize,
@@ -52,11 +55,13 @@ pub struct State {
     generation: u64,
     pending: Option<Pending>,
     driver_confirmed: bool,
+    pending_adopt_id: Option<String>,
     worker: Option<CommandWorker>,
 }
 
 enum Pending {
     Discovery,
+    DriverStart,
     HistoryStatus {
         agent_id: String,
         direction: HistoryDirection,
@@ -87,11 +92,13 @@ impl State {
             error: None,
             discovery_program: "paseo".into(),
             node_program: "node".into(),
+            lifecycle_program: "orchestrator-run".into(),
             loading: false,
             focus: Focus::DriverList,
             draft: String::new(),
             delivery: DeliveryState::Idle,
             retry_confirmation: false,
+            start_adopt_confirmation: false,
             quit_confirmation: false,
             history: Vec::new(),
             history_scroll: 0,
@@ -109,6 +116,7 @@ impl State {
             generation: 0,
             pending: None,
             driver_confirmed: false,
+            pending_adopt_id: None,
             worker: None,
         }
     }
@@ -122,6 +130,8 @@ impl State {
         self.generation = self.generation.wrapping_add(1);
         self.loading = false;
         self.pending = None;
+        self.start_adopt_confirmation = false;
+        self.pending_adopt_id = None;
         self.worker = None;
     }
     pub(super) fn set_content_width(&mut self, width: usize) {
@@ -130,6 +140,12 @@ impl State {
 
     pub fn enter(&mut self, previous_mode: super::AppMode) {
         self.previous_mode = previous_mode;
+        if let Ok(program) = std::env::var("ORCHESTRATOR_LIFECYCLE_PROGRAM") {
+            let program = program.trim();
+            if !program.is_empty() {
+                self.lifecycle_program = program.to_owned();
+            }
+        }
         if self.worker.is_none() {
             match CommandWorker::new() {
                 Ok(worker) => self.worker = Some(worker),
@@ -192,6 +208,15 @@ impl State {
                 Err(error) => self.error = Some(error.to_string()),
             },
             (Some(Pending::Discovery), Err(error)) => self.error = Some(error),
+            (Some(Pending::DriverStart), Ok(output)) => match parse_driver_start_id(&output.stdout)
+            {
+                Ok(id) => {
+                    self.pending_adopt_id = Some(id);
+                    self.refresh();
+                }
+                Err(error) => self.error = Some(error.to_string()),
+            },
+            (Some(Pending::DriverStart), Err(error)) => self.error = Some(error),
             (
                 Some(Pending::HistoryStatus {
                     agent_id,
@@ -249,6 +274,32 @@ impl State {
     }
 
     fn accept_discovery(&mut self, drivers: Vec<Driver>) {
+        if let Some(adopt_id) = self.pending_adopt_id.take() {
+            self.drivers = drivers;
+            self.error = None;
+            self.last_success = Some(Instant::now());
+            if let Some(position) = self.drivers.iter().position(|driver| driver.id == adopt_id) {
+                self.selected = position;
+                if self.drivers.len() == 1 {
+                    self.driver_confirmed = true;
+                    self.focus = Focus::History;
+                    self.request_history(HistoryDirection::Tail);
+                } else {
+                    self.driver_confirmed = false;
+                    self.focus = Focus::DriverList;
+                    self.clear_history();
+                }
+            } else {
+                self.selected = 0;
+                self.driver_confirmed = false;
+                self.focus = Focus::DriverList;
+                self.clear_history();
+                self.error = Some(format!(
+                    "driver-start returned {adopt_id}, but discovery did not list that id"
+                ));
+            }
+            return;
+        }
         let old_id = self.selected_driver().map(|driver| driver.id.clone());
         self.drivers = drivers;
         self.selected = old_id
@@ -506,6 +557,41 @@ impl State {
     pub fn driver_confirmed(&self) -> bool {
         self.driver_confirmed
     }
+
+    pub fn can_offer_start_adopt(&self) -> bool {
+        !self.driver_confirmed
+            && self.drivers.is_empty()
+            && !self.loading
+            && !self.start_adopt_confirmation
+            && self.pending_adopt_id.is_none()
+            && !matches!(self.pending, Some(Pending::DriverStart))
+    }
+
+    fn confirm_start_adopt(&mut self) {
+        self.start_adopt_confirmation = false;
+        if !self.can_offer_start_adopt() {
+            return;
+        }
+        let Some(worker) = self.worker.as_ref() else {
+            self.error = Some("Paseo worker unavailable".into());
+            return;
+        };
+        self.generation = self.generation.wrapping_add(1);
+        self.loading = true;
+        self.error = None;
+        self.pending = Some(Pending::DriverStart);
+        if !worker.submit_with_timeout(
+            self.generation,
+            &self.lifecycle_program,
+            &["driver-start"],
+            &[],
+            LIFECYCLE_COMMAND_TIMEOUT,
+        ) {
+            self.loading = false;
+            self.pending = None;
+            self.error = Some("Start/adopt is already in progress".into());
+        }
+    }
     pub fn needs_quit_confirmation(&self) -> bool {
         !self.draft.is_empty() || self.delivery == DeliveryState::Sending
     }
@@ -608,10 +694,32 @@ impl State {
     }
 
     pub fn handle_key(&mut self, key: KeyEvent) -> ViewAction {
+        if self.start_adopt_confirmation {
+            match key.code {
+                KeyCode::Enter => {
+                    self.confirm_start_adopt();
+                    ViewAction::Stay
+                }
+                KeyCode::Esc => {
+                    self.start_adopt_confirmation = false;
+                    ViewAction::Stay
+                }
+                _ => ViewAction::Stay,
+            }
+        } else {
+            self.handle_key_without_start_confirm(key)
+        }
+    }
+
+    fn handle_key_without_start_confirm(&mut self, key: KeyEvent) -> ViewAction {
         match self.focus {
             Focus::DriverList => match key.code {
                 KeyCode::Char('q') | KeyCode::Esc => ViewAction::Return,
                 KeyCode::Char('?') => ViewAction::Help,
+                KeyCode::Char('s') if self.can_offer_start_adopt() => {
+                    self.start_adopt_confirmation = true;
+                    ViewAction::Stay
+                }
                 KeyCode::Char('r') => {
                     self.refresh();
                     ViewAction::Stay
@@ -1254,6 +1362,198 @@ mod tests {
             "ws://127.0.0.1:6767/ws"
         );
         assert!(parse_daemon_url(br#"{"listen":"0.0.0.0:6767"}"#).is_err());
+    }
+
+    #[test]
+    fn driver_start_confirmation_cancel_does_not_invoke_lifecycle() {
+        let mut state = State::new();
+        state.worker = Some(CommandWorker::new().unwrap());
+        assert!(state.can_offer_start_adopt());
+        state.handle_key(key(KeyCode::Char('s')));
+        assert!(state.start_adopt_confirmation);
+        state.handle_key(key(KeyCode::Esc));
+        assert!(!state.start_adopt_confirmation);
+        assert!(state.can_offer_start_adopt());
+    }
+
+    #[cfg(unix)]
+    fn fake_driver_start_tools(
+        driver_id: &str,
+        lifecycle_fails: bool,
+    ) -> (
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+        std::path::PathBuf,
+    ) {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir().join(format!(
+            "task-timer-orchestrator-start-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let paseo = directory.join("paseo");
+        let lifecycle = directory.join("orchestrator-run");
+        let lifecycle_log = directory.join("lifecycle.log");
+        let discovery_log = directory.join("discovery.log");
+        let node = directory.join("node");
+        let after_start = directory.join("after_start");
+        let fail = if lifecycle_fails { "1" } else { "0" };
+        let history = json!({
+            "agentId": driver_id,
+            "epoch": "epoch-a",
+            "direction": "tail",
+            "startCursor": {"epoch": "epoch-a", "seq": 1},
+            "endCursor": {"epoch": "epoch-a", "seq": 1},
+            "hasOlder": false,
+            "hasNewer": false,
+            "reset": false,
+            "staleCursor": false,
+            "gap": false,
+            "window": {"minSeq": 1, "maxSeq": 1, "nextSeq": 2},
+            "entries": []
+        })
+        .to_string();
+        std::fs::write(
+            &paseo,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\nif [ \"$1\" = ls ]; then\n  if [ -f '{}' ]; then\n    printf '[{{\"id\":\"{}\",\"name\":\"driver\",\"status\":\"idle\"}}]'\n  else\n    printf '[]'\n  fi\n  exit 0\nfi\nif [ \"$1\" = status ]; then printf '{{\"listen\":\"127.0.0.1:6767\"}}'; exit 0; fi\nexit 2\n",
+                discovery_log.display(),
+                after_start.display(),
+                driver_id
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &lifecycle,
+            format!(
+                "#!/bin/sh\nprintf '%s\\n' \"$@\" >> '{}'\nif [ \"$1\" = driver-start ]; then\n  if [ '{fail}' = 1 ]; then\n    echo lifecycle failed >&2\n    exit 1\n  fi\n  touch '{}'\n  printf '%s\\n' '{}'\n  exit 0\nfi\nexit 2\n",
+                lifecycle_log.display(),
+                after_start.display(),
+                driver_id
+            ),
+        )
+        .unwrap();
+        std::fs::write(
+            &node,
+            format!(
+                "#!/bin/sh\ncat >/dev/null\nprintf '%s\\n' {}\n",
+                shell_quote(&history)
+            ),
+        )
+        .unwrap();
+        for executable in [&paseo, &lifecycle, &node] {
+            std::fs::set_permissions(executable, std::fs::Permissions::from_mode(0o700))
+                .unwrap();
+        }
+        (directory, paseo, lifecycle, lifecycle_log, node)
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn driver_start_adopts_returned_driver_after_rediscovery() {
+        let driver_id = "550e8400-e29b-41d4-a716-446655440000";
+        let (directory, paseo, lifecycle, lifecycle_log, node) =
+            fake_driver_start_tools(driver_id, false);
+        let mut state = State::new();
+        state.worker = Some(CommandWorker::new().unwrap());
+        state.discovery_program = paseo.to_string_lossy().into_owned();
+        state.lifecycle_program = lifecycle.to_string_lossy().into_owned();
+        state.node_program = node.to_string_lossy().into_owned();
+        state.refresh();
+        wait_until_idle(&mut state);
+        assert!(state.drivers.is_empty());
+
+        state.handle_key(key(KeyCode::Char('s')));
+        state.handle_key(key(KeyCode::Enter));
+        wait_until_idle(&mut state);
+        assert!(state.driver_confirmed);
+        assert_eq!(state.selected_driver().unwrap().id, driver_id);
+        assert_eq!(
+            std::fs::read_to_string(&lifecycle_log).unwrap().trim(),
+            "driver-start"
+        );
+
+        state.handle_key(key(KeyCode::Char('r')));
+        wait_until_idle(&mut state);
+        assert_eq!(
+            std::fs::read_to_string(&lifecycle_log).unwrap().trim(),
+            "driver-start"
+        );
+        drop(state);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn driver_start_malformed_identity_surfaces_error_without_adoption() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let directory = std::env::temp_dir().join(format!(
+            "task-timer-orchestrator-start-bad-{}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&directory).unwrap();
+        let lifecycle = directory.join("orchestrator-run");
+        std::fs::write(
+            &lifecycle,
+            "#!/bin/sh\nprintf 'not-a-uuid\\n'\nexit 0\n",
+        )
+        .unwrap();
+        std::fs::set_permissions(&lifecycle, std::fs::Permissions::from_mode(0o700)).unwrap();
+        let mut state = State::new();
+        state.worker = Some(CommandWorker::new().unwrap());
+        state.lifecycle_program = lifecycle.to_string_lossy().into_owned();
+        state.handle_key(key(KeyCode::Char('s')));
+        state.handle_key(key(KeyCode::Enter));
+        wait_until_idle(&mut state);
+        assert!(!state.driver_confirmed);
+        assert!(state.error.as_ref().is_some_and(|error| error.contains("malformed")));
+        drop(state);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn driver_start_failure_shows_explicit_error_without_follow_up_discovery() {
+        let driver_id = "550e8400-e29b-41d4-a716-446655440111";
+        let (directory, paseo, lifecycle, lifecycle_log, node) =
+            fake_driver_start_tools(driver_id, true);
+        let mut state = State::new();
+        state.worker = Some(CommandWorker::new().unwrap());
+        state.discovery_program = paseo.to_string_lossy().into_owned();
+        state.lifecycle_program = lifecycle.to_string_lossy().into_owned();
+        state.node_program = node.to_string_lossy().into_owned();
+        state.handle_key(key(KeyCode::Char('s')));
+        state.handle_key(key(KeyCode::Enter));
+        wait_until_idle(&mut state);
+        assert!(!state.driver_confirmed);
+        assert!(state.error.is_some());
+        assert_eq!(
+            std::fs::read_to_string(&lifecycle_log).unwrap().trim(),
+            "driver-start"
+        );
+        drop(state);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[cfg(unix)]
+    fn wait_until_idle(state: &mut State) {
+        let deadline = Instant::now() + Duration::from_secs(5);
+        while Instant::now() < deadline {
+            state.poll();
+            if !state.loading {
+                return;
+            }
+            std::thread::sleep(Duration::from_millis(10));
+        }
+        assert!(!state.loading, "orchestrator state did not settle");
     }
 }
 

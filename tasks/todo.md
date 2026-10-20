@@ -1,6 +1,6 @@
 # Tasks: Orchestrator Driver Conversation
 
-Plan: [plan.md](plan.md). Scope: Rust TUI with a bundled Node adapter over Paseo's public SDK; runtime requires Node. Status: Tasks 1–4 complete; waiting for human review at Checkpoint B before Task 5. Use this file as the feature task tracker; leave the existing `docs/tui/tasks.md` backlog intact.
+Plan: [plan.md](plan.md). Scope: Rust TUI with a bundled Node adapter over Paseo's public SDK; runtime requires Node. Status: Tasks 1–5 implemented (Task 5 gates in `GATES-orchestrator-task5.md`); Task 6 and Checkpoint C remain. Use this file as the feature task tracker; leave the existing `docs/tui/tasks.md` backlog intact.
 
 ## Before Implementation
 
@@ -138,13 +138,13 @@ The `jira.rs` duplicate-test-attribute warning is pre-existing and unrelated. Th
 **Description:** Provide the disconnected view with an explicit Start/adopt action backed by the existing `orchestrator-run driver-start`. Explain the bootstrap side effect and require confirmation. After the command returns an ID, rediscover/validate the driver and use the existing history/send path. Never implement a second driver lifecycle manager or automatically start the daemon.
 
 **Acceptance criteria:**
-- [ ] With no driver discovered, the view offers Start/adopt with confirmation; cancel does nothing. Refresh/open/reconnect never starts it. Confirmed action invokes the existing idempotent wrapper once, shows progress, and adopts the returned validated driver rather than constructing a new `paseo run` command.
-- [ ] Repeated action while pending is disabled; malformed IDs, CLI failure, missing daemon, and identity races show explicit errors without follow-up send or retry. An already-existing driver is adopted, and ambiguous results require selection.
-- [ ] Start/adopt does not issue runner resume/tick, task start/stop, or Jira transitions; existing driver bootstrap and approval rules remain unchanged. Driver replacement is visible and does not merge histories or silently retarget an uncertain send.
+- [x] With no driver discovered, the view offers Start/adopt with confirmation; cancel does nothing. Refresh/open/reconnect never starts it. Confirmed action invokes the existing idempotent wrapper once, shows progress, and adopts the returned validated driver rather than constructing a new `paseo run` command.
+- [x] Repeated action while pending is disabled; malformed IDs, CLI failure, missing daemon, and identity races show explicit errors without follow-up send or retry. An already-existing driver is adopted, and ambiguous results require selection.
+- [x] Start/adopt does not issue runner resume/tick, task start/stop, or Jira transitions; existing driver bootstrap and approval rules remain unchanged. Driver replacement is visible and does not merge histories or silently retarget an uncertain send.
 
 **Verification:**
-- [ ] Focused behavior tests: `cargo test -p task-timer-tui orchestrator` for cancel, adoption, double activation, failure, malformed identity, and rediscovery races using fake lifecycle commands.
-- [ ] Build: `cargo build -p task-timer-tui`.
+- [x] Focused behavior tests: `cargo test -p task-timer-tui orchestrator` for cancel, adoption, double activation, failure, malformed identity, and rediscovery races using fake lifecycle commands.
+- [x] Build: `cargo build -p task-timer-tui`.
 - [ ] Actual TUI smoke with isolated HOME and fake lifecycle: absent driver, cancel, explicit adoption, delayed creation, failure, then history/send availability. Do not create or replace the real persistent driver during automated verification.
 
 **Dependencies:** Task 4; Checkpoint B.

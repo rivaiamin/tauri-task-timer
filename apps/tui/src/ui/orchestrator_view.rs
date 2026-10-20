@@ -65,7 +65,7 @@ pub fn draw(frame: &mut Frame, app: &App) {
             } else if state.error.is_some() {
                 "No successful discovery result; the last successful data is retained."
             } else {
-                "No active driver labeled orchestrator.role=driver."
+                "No active driver labeled orchestrator.role=driver. Press s to Start/adopt (confirmation required)."
             };
             vec![ListItem::new(message)]
         } else {
@@ -210,6 +210,10 @@ pub fn draw(frame: &mut Frame, app: &App) {
         }
     } else if state.driver_confirmed() {
         "Tab:compose  [:older  ]:newer  j/k:scroll  r:refresh  ?:help  q/Esc:back"
+    } else if state.can_offer_start_adopt() {
+        "s:Start/adopt  r:refresh  ?:help  q/Esc:back"
+    } else if !state.driver_confirmed() && state.drivers.is_empty() {
+        "r:refresh  ?:help  q/Esc:back"
     } else {
         "j/k:select  Enter:open  r:refresh  ?:help  q/Esc:back"
     }));
@@ -231,9 +235,30 @@ pub fn draw(frame: &mut Frame, app: &App) {
     );
 
 
+    if state.start_adopt_confirmation {
+        draw_start_adopt_confirmation(frame);
+    }
+
     if matches!(&app.overlay, Overlay::Help) {
         super::timer_view::draw_help(frame);
     }
+}
+
+fn draw_start_adopt_confirmation(frame: &mut Frame) {
+    let area = super::widgets::centered(frame.area(), 70, 7);
+    frame.render_widget(Clear, area);
+    frame.render_widget(
+        Paragraph::new(
+            "Start/adopt runs orchestrator-run driver-start once. That may create the persistent driver and send its bootstrap prompt under the existing orchestrator contract.\n\nEnter confirms. Esc cancels.",
+        )
+        .wrap(Wrap { trim: false })
+        .block(
+            Block::default()
+                .borders(Borders::ALL)
+                .title(" Confirm Start/adopt "),
+        ),
+        area,
+    );
 }
 
 pub fn draw_quit_confirmation(frame: &mut Frame) {

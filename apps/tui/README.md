@@ -190,6 +190,7 @@ from without losing selection or date.
 |---|---|
 | `O` | Enter Orchestrator from Daily / Archive / Kanban |
 | `j` / `k`, `Enter` | Choose among multiple labeled drivers |
+| `s` | Start/adopt when discovery finds **no** driver (confirmation required) |
 | `Tab` | Focus composer; `Tab` / `Esc` from composer returns to history |
 | `Enter` | Newline in composer |
 | `Ctrl+S` | Send once to the confirmed driver |
@@ -213,8 +214,11 @@ from without losing selection or date.
 The TUI does not store transcripts in SQLite and does not write orchestrator
 state files; reopening reloads from Paseo.
 
-When no labeled driver exists, the view stays read-only (refresh does **not**
-start a driver). Explicit Start/adopt is planned separately; see
+When no labeled driver exists, the view stays read-only: `r` only rediscovers and
+does **not** start a driver. Press `s` to Start/adopt; you must confirm because
+`orchestrator-run driver-start` may create the persistent driver and send its
+bootstrap prompt. After it returns an agent id, the TUI rediscovers labeled
+drivers and opens history for a single unambiguous match. See
 `docs/tui/orchestrator-contract.md` for the verified CLI/SDK contract and
 limitations.
 

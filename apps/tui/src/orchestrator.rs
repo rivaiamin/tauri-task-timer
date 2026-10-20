@@ -16,6 +16,7 @@ use std::time::{Duration, Instant};
 pub const ADAPTER_BUNDLE: &str = include_str!(concat!(env!("OUT_DIR"), "/orchestrator-adapter.mjs"));
 const MAX_OUTPUT: usize = 1024 * 1024;
 const COMMAND_TIMEOUT: Duration = Duration::from_secs(5);
+pub const LIFECYCLE_COMMAND_TIMEOUT: Duration = Duration::from_secs(120);
 static TEMP_ID: AtomicU64 = AtomicU64::new(0);
 
 pub fn display_text(value: &str) -> String {
@@ -270,6 +271,36 @@ struct DriverRow {
     status: String,
 }
 
+pub fn parse_driver_start_id(stdout: &[u8]) -> Result<String> {
+    let text = String::from_utf8_lossy(stdout);
+    for line in text.lines() {
+        let candidate = line.trim();
+        if candidate.is_empty() {
+            continue;
+        }
+        if is_agent_id(candidate) {
+            return Ok(candidate.to_owned());
+        }
+        return Err(anyhow!(
+            "driver-start returned a malformed agent id: {}",
+            display_text(candidate)
+        ));
+    }
+    Err(anyhow!("driver-start returned no agent id"))
+}
+
+fn is_agent_id(value: &str) -> bool {
+    let parts: Vec<&str> = value.split('-').collect();
+    if parts.len() != 5 {
+        return false;
+    }
+    let lengths = [8, 4, 4, 4, 12];
+    parts
+        .iter()
+        .zip(lengths)
+        .all(|(part, expected)| part.len() == expected && part.chars().all(|ch| ch.is_ascii_hexdigit()))
+}
+
 pub fn parse_drivers(json: &[u8]) -> Result<Vec<Driver>> {
     let rows: Vec<DriverRow> = serde_json::from_slice(json)
         .map_err(|e| anyhow!("invalid Paseo driver list: {e}"))?;
@@ -302,6 +333,7 @@ struct CommandRequest {
     program: String,
     args: Vec<String>,
     stdin: Vec<u8>,
+    timeout: Duration,
 }
 
 enum WorkerMessage {
@@ -353,6 +385,17 @@ impl CommandWorker {
     }
 
     pub fn submit(&self, generation: u64, program: &str, args: &[&str], stdin: &[u8]) -> bool {
+        self.submit_with_timeout(generation, program, args, stdin, COMMAND_TIMEOUT)
+    }
+
+    pub fn submit_with_timeout(
+        &self,
+        generation: u64,
+        program: &str,
+        args: &[&str],
+        stdin: &[u8],
+        timeout: Duration,
+    ) -> bool {
         if stdin.len() > MAX_OUTPUT {
             return false;
         }
@@ -361,6 +404,7 @@ impl CommandWorker {
             program: program.to_owned(),
             args: args.iter().map(|arg| (*arg).to_owned()).collect(),
             stdin: stdin.to_vec(),
+            timeout,
         };
         match self.requests.try_send(WorkerMessage::Run(request)) {
             Ok(()) => true,
@@ -453,7 +497,7 @@ fn run_command(request: &CommandRequest, cancelled: &AtomicBool) -> Result<Comma
             terminate(&mut child);
             return Err("command cancelled".into());
         }
-        if started.elapsed() >= COMMAND_TIMEOUT {
+        if started.elapsed() >= request.timeout {
             terminate(&mut child);
             return Err("command timed out".into());
         }
@@ -526,6 +570,16 @@ fn terminate(child: &mut Child) {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn driver_start_id_parser_accepts_uuid_and_rejects_garbage() {
+        assert_eq!(
+            parse_driver_start_id(b"550e8400-e29b-41d4-a716-446655440000\n").unwrap(),
+            "550e8400-e29b-41d4-a716-446655440000"
+        );
+        assert!(parse_driver_start_id(b"not-a-uuid\n").is_err());
+        assert!(parse_driver_start_id(b"\n").is_err());
+    }
 
     #[test]
     fn driver_list_requires_a_valid_array_and_complete_identity() {
